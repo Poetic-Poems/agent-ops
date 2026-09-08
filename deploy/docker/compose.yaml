@@ -205,9 +205,27 @@ x-agent-ops: &agent-ops
     # `cgroup_parent` is set on the scheduler alone and `memory_cgroup_verdict`
     # is read only there (doctor.sh runs in the scheduler; the dashboard reads
     # the JSON it writes). Splitting the list to scope one entry would mean
-    # maintaining two copies of six mounts, which is the more likely thing to
-    # go wrong.
+    # maintaining two copies of this whole list, which is the more likely
+    # thing to go wrong.
     - ${AGENT_OPS_SCHEDULER_CGROUP_HIGH:-/dev/null}:/run/cgroup-parent/memory.high:ro
+    # Two more windows onto the same parent, added by agent-ops#1305 for the
+    # same reason as the one above — invisible from inside a cgroup namespace,
+    # and needed for `memory_cgroup_verdict`/`doctor.sh` to tell a livelock
+    # band apart from a genuinely closed one. `memory.high` alone only ever
+    # said the parent throttles; it never said whether anything would
+    # eventually kill what that throttling failed to reclaim. `memory.max` is
+    # that hard ceiling itself, so its verdict can tell `parented` (a real
+    # ceiling exists) from `livelocked` (none does, so throttling never
+    # disengages — the state that wedged `ockham-container` for 75 minutes)
+    # from `unconfirmed` (this mount not yet present on an un-migrated node —
+    # never guessed as `parented`). `memory.events` is the parent's own raw
+    # `high` counter, which `doctor.sh` reads directly: a rising delta is a
+    # cheap, decisive throttling signal that needs no ceiling configured
+    # correctly first, so it still fires on a `livelocked` or `unconfirmed`
+    # node. Same `/dev/null` no-op default, same idiom, same reasoning as the
+    # mount above in every other respect.
+    - ${AGENT_OPS_SCHEDULER_CGROUP_MAX:-/dev/null}:/run/cgroup-parent/memory.max:ro
+    - ${AGENT_OPS_SCHEDULER_CGROUP_EVENTS:-/dev/null}:/run/cgroup-parent/memory.events:ro
   labels:
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.

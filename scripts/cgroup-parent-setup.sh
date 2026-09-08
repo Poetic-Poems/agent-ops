@@ -29,6 +29,34 @@
 # only property that distinguishes this from the one-shot recipe it replaces,
 # and it is the whole point.
 #
+# ## The livelock band, and why the parent also needs a hard ceiling
+#
+# `memory.high` alone is not enough. It only throttles — it never kills — so
+# it needs a hard `memory.max` somewhere in the hierarchy for the kernel to
+# actually reclaim past, or actually kill, once. Setting `memory.high` on the
+# parent with `memory.max` left at `max` there (this script's own behaviour
+# before agent-ops#1305) opens exactly that gap: the container sits above the
+# parent's soft ceiling and below both cgroups' hard ones, `memory.high`
+# throttles forever without ever disengaging, and every allocating task parks
+# in uninterruptible `D` state. Measured on `ockham-container` 2026-09-09:
+# 2,788,595 throttle events climbing at ~96/second, 14 processes wedged in
+# `D` state, `docker exec` itself hanging, and 75 minutes before a human
+# broke it by hand (`echo max > memory.high`). `doctor.sh`'s own `parented`
+# verdict read this exact state as `[ ok ]` throughout (lib/memory.sh,
+# `memory_cgroup_verdict`'s `livelocked`/`unconfirmed` branches close that
+# gap; see that file for the full mechanism).
+#
+# So this script also sets the parent's `memory.max` (`--max`, default the sum
+# of what runs under it — 1536m, the scheduler's own `AGENT_OPS_SCHEDULER_
+# MEMORY`) and `memory.swap.max` (`--swap`, default `0`): a hard ceiling
+# somewhere above `memory.high` closes the band, and a capped swap keeps a
+# cgroup over its ceiling from instead swapping the *host* to a crawl — the
+# same incident took 100% of host swap on a 5.8 GiB WSL2 VM. Raising
+# `memory.high` above the children's `memory.max` instead — closing the band
+# by making `memory.high` inert — was considered and rejected: it would
+# discard the proactive reclaim this parent exists for and return the fleet to
+# the unbounded, ratcheting behaviour agent-ops#1296 was merged to end.
+#
 # ## What this script does, and why it asks rather than assumes
 #
 # Nothing here hardcodes a path, because every path involved is a function of
@@ -67,17 +95,34 @@
 # so a shared 768 MiB is 768 MiB between them, not each.
 #
 #   --name NAME    parent cgroup name; letters, digits and `-`. Required.
-#   --limit SIZE   ceiling as bytes, or with a `k`/`m`/`g` suffix. Default 768m.
+#   --limit SIZE   memory.high ceiling: bytes, or with a `k`/`m`/`g` suffix.
+#                  Default 768m.
+#   --max SIZE     memory.max hard ceiling: bytes, a `k`/`m`/`g` suffix, or
+#                  `max` for none (not recommended — see "the livelock band"
+#                  above). Default 1536m, the sum of this parent's own
+#                  children's `mem_limit` (one scheduler today,
+#                  AGENT_OPS_SCHEDULER_MEMORY). This is what makes
+#                  `memory.high`'s proactive reclaim actually matter: without
+#                  a hard ceiling somewhere, nothing ever kills what
+#                  `memory.high` failed to reclaim in time.
+#   --swap SIZE    memory.swap.max ceiling: bytes, a `k`/`m`/`g` suffix, or
+#                  `max` for unbounded (the previous, unsafe default).
+#                  Default 0 — on a memory-capped host, unbounded swap
+#                  degrades every other container and the host itself long
+#                  before anything is killed.
 #   --check        report what is in force and change nothing.
 #   --no-boot-hook skip installing the reboot persistence (cgroupfs hosts).
 #
 # Exit status: 0 on success or a clean `--check`, 1 on error, 2 on a `--check`
-# that found the parent absent or unbounded.
+# that found the parent absent, unbounded, or in the livelock band (a real
+# `memory.high` with `memory.max` left at `max`).
 
 set -uo pipefail
 
 name=""
 limit="768m"
+max="1536m"
+swap="0"
 check=0
 boot_hook=1
 
@@ -92,6 +137,8 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage; exit 0 ;;
     --name) [[ $# -ge 2 ]] || die "--name needs a value"; name="$2"; shift 2 ;;
     --limit) [[ $# -ge 2 ]] || die "--limit needs a value"; limit="$2"; shift 2 ;;
+    --max) [[ $# -ge 2 ]] || die "--max needs a value"; max="$2"; shift 2 ;;
+    --swap) [[ $# -ge 2 ]] || die "--swap needs a value"; swap="$2"; shift 2 ;;
     --check) check=1; shift ;;
     --no-boot-hook) boot_hook=0; shift ;;
     *) die "unknown argument: $1" ;;
@@ -110,16 +157,29 @@ to_bytes() {
   local v="${1:-}" n unit
   n="${v%%[kKmMgG]}"
   unit="${v#"$n"}"
-  [[ "$n" =~ ^[0-9]+$ ]] || die "--limit is not a size: $v"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "size is not a number: $v"
   case "$unit" in
     k|K) printf '%s' $(( n * 1024 )) ;;
     m|M) printf '%s' $(( n * 1024 * 1024 )) ;;
     g|G) printf '%s' $(( n * 1024 * 1024 * 1024 )) ;;
     '')  printf '%s' "$n" ;;
-    *)   die "--limit has an unknown unit: $v" ;;
+    *)   die "size has an unknown unit: $v" ;;
   esac
 }
+# to_ceiling SIZE — as to_bytes, but `max` passes through verbatim: the one
+# value `--max`/`--swap` accept that `--limit` never needs to, since cgroup v2
+# spells "no ceiling" as the literal word `max` rather than a number.
+to_ceiling() {
+  [[ "${1:-}" == "max" ]] && { printf 'max'; return 0; }
+  to_bytes "$1"
+}
 limit_bytes="$(to_bytes "$limit")"
+max_val="$(to_ceiling "$max")"
+swap_val="$(to_ceiling "$swap")"
+# systemd's unit-file grammar spells "no ceiling" `infinity`, not the sysfs
+# `max` cgroupfs itself accepts — the two paths below write the same decision
+# in each one's own vocabulary.
+systemd_ceiling() { [[ "${1:-}" == "max" ]] && printf 'infinity' || printf '%s' "$1"; }
 
 command -v docker >/dev/null 2>&1 || die "docker is not on PATH; run this on the host, not in a container"
 driver="$(docker info --format '{{.CgroupDriver}}' 2>/dev/null)" \
@@ -166,6 +226,8 @@ case "$driver" in
 esac
 
 high_file="$parent_dir/memory.high"
+max_file="$parent_dir/memory.max"
+swap_file="$parent_dir/memory.swap.max"
 
 report() {
   printf 'driver        %s (cgroup v%s)\n' "$driver" "$version"
@@ -173,6 +235,8 @@ report() {
   printf 'cgroup path   %s\n' "$parent_dir"
   if [[ -r "$high_file" ]]; then
     printf 'memory.high   %s\n' "$(cat "$high_file")"
+    printf 'memory.max    %s\n' "$(cat "$max_file" 2>/dev/null || echo '-')"
+    printf 'memory.swap.max %s\n' "$(cat "$swap_file" 2>/dev/null || echo '-')"
     printf 'memory.current %s\n' "$(cat "$parent_dir/memory.current" 2>/dev/null || echo '-')"
   else
     printf 'memory.high   (parent does not exist yet)\n'
@@ -181,8 +245,17 @@ report() {
 
 if ((check)); then
   report
-  if [[ -r "$high_file" ]] && [[ "$(cat "$high_file")" != "max" ]]; then
-    exit 0
+  if [[ -r "$high_file" ]]; then
+    high_now="$(cat "$high_file" 2>/dev/null)"
+    if [[ "$high_now" != "max" ]]; then
+      max_now="$(cat "$max_file" 2>/dev/null || printf 'max')"
+      if [[ "$max_now" == "max" ]]; then
+        printf '\nIn the livelock band: memory.high (%s) is set but memory.max is unbounded, so nothing anywhere ever kills what memory.high fails to reclaim in time (agent-ops#1305). Re-run without --check.\n' \
+          "$high_now" >&2
+        exit 2
+      fi
+      exit 0
+    fi
   fi
   printf '\nNot in force. Re-run without --check to set it.\n' >&2
   exit 2
@@ -217,6 +290,8 @@ Before=docker.service
 
 [Slice]
 MemoryHigh=$limit_bytes
+MemoryMax=$(systemd_ceiling "$max_val")
+MemorySwapMax=$(systemd_ceiling "$swap_val")
 
 [Install]
 WantedBy=slices.target
@@ -226,11 +301,21 @@ UNIT
       || die "could not enable $name.slice"
     # Re-derive: creating the unit may have made the slice resolvable.
     live="$(systemctl show -p ControlGroup --value "$name.slice" 2>/dev/null)"
-    [[ -n "$live" ]] && { parent_dir="/sys/fs/cgroup$live"; high_file="$parent_dir/memory.high"; }
-    printf 'wrote %s (MemoryHigh=%s)\n' "$unit" "$limit_bytes"
+    if [[ -n "$live" ]]; then
+      parent_dir="/sys/fs/cgroup$live"
+      high_file="$parent_dir/memory.high"
+      max_file="$parent_dir/memory.max"
+      swap_file="$parent_dir/memory.swap.max"
+    fi
+    printf 'wrote %s (MemoryHigh=%s, MemoryMax=%s, MemorySwapMax=%s)\n' \
+      "$unit" "$limit_bytes" "$max_val" "$swap_val"
     ;;
   cgroupfs)
     mkdir -p "$parent_dir" || die "cannot create $parent_dir"
+    printf '%s\n' "$max_val" > "$max_file" || die "cannot write $max_file"
+    printf 'set %s = %s\n' "$max_file" "$max_val"
+    printf '%s\n' "$swap_val" > "$swap_file" || die "cannot write $swap_file"
+    printf 'set %s = %s\n' "$swap_file" "$swap_val"
     printf '%s\n' "$limit_bytes" > "$high_file" \
       || die "cannot write $high_file"
     printf 'set %s = %s\n' "$high_file" "$limit_bytes"
@@ -238,9 +323,11 @@ UNIT
     # container recreation (verified 2026-09-08) but not a reboot, which
     # repopulates /sys/fs/cgroup empty. Docker will recreate the directory
     # when the container starts — with no ceiling on it — so something has to
-    # put the number back.
+    # put the numbers back, memory.max and memory.swap.max included: a
+    # reboot-restored memory.high with no restored hard ceiling is the
+    # livelock band all over again (agent-ops#1305).
     if ((boot_hook)); then
-      hook="mkdir -p $parent_dir && echo $limit_bytes > $high_file"
+      hook="mkdir -p $parent_dir && echo $max_val > $max_file && echo $swap_val > $swap_file && echo $limit_bytes > $high_file"
       if [[ "$(ps -p 1 -o comm=)" == "systemd" ]]; then
         cat > "/etc/systemd/system/agent-ops-cgroup-parent-$name.service" <<UNIT
 # Written by agent-ops scripts/cgroup-parent-setup.sh.
@@ -276,5 +363,7 @@ esac
 printf '\nAdd to this .env, then re-create the container with "docker compose up -d":\n\n'
 printf '  AGENT_OPS_SCHEDULER_CGROUP_PARENT=%s\n' "$name${unit:+.slice}"
 printf '  AGENT_OPS_SCHEDULER_CGROUP_HIGH=%s\n' "$high_file"
+printf '  AGENT_OPS_SCHEDULER_CGROUP_MAX=%s\n' "$max_file"
+printf '  AGENT_OPS_SCHEDULER_CGROUP_EVENTS=%s\n' "$parent_dir/memory.events"
 printf '\nThen confirm from inside the container:\n\n'
 printf '  docker compose exec scheduler /app/scripts/doctor.sh --offline | grep "container memory"\n'

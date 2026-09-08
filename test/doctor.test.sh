@@ -2020,11 +2020,53 @@ assert_contains "0 turns the memory warning off entirely, regardless of real ava
   "[ ok ] host memory" "$out"
 
 # The cgroup line is advisory and reports whatever this host actually is, so
-# the assertion is that it always says one of the four things it can say —
-# never that it says a particular one, which would make the test depend on
-# whether it happens to be run inside a container.
-assert_eq "the container-memory line always reports one of its four verdicts" \
-  "yes" "$(if grep -qE 'container memory: (memory\.high is set|no cgroup ceiling|no cgroup v2 memory files|this container holds)' <<<"$out"; then echo yes; else echo no; fi)"
+# the assertion is that it always says one of the things it can say — never
+# that it says a particular one, which would make the test depend on whether
+# it happens to be run inside a container, and if so which of the seven
+# verdicts (lib/memory.sh's memory_cgroup_verdict) that container is in.
+assert_eq "the container-memory line always reports one of its verdicts" \
+  "yes" "$(if grep -qE 'container memory: (memory\.high is set|no cgroup ceiling|no cgroup v2 memory files|this container holds|memory\.high set to|memory\.max cannot be read)' <<<"$out"; then echo yes; else echo no; fi)"
+
+# --- Memory: a rising memory.events high delta on the parent (agent-ops#1305) -
+#
+# The verdict above needs a correctly configured ceiling before it can say
+# anything useful; this check does not — it is a raw throttling counter, so it
+# still fires on a livelocked or unconfirmed node, which is exactly the gap
+# agent-ops#1305 fell through (`doctor.sh` reported `[ ok ]` for 75 minutes
+# while the node throttled at ~96 events/second). MEMORY_CGROUP_PARENT_EVENTS
+# points doctor.sh's own read (lib/memory.sh's `memory_cgroup_parent_events_high`)
+# at a fixture rather than a real cgroup, and each run persists one sample to
+# state_dir so the next run can take a delta.
+events_state_dir="$tmp/events-state-dir"
+mkdir -p "$events_state_dir"
+events_config="$tmp/events-config.json"
+jq --arg sd "$events_state_dir" '.state_dir = $sd' "$base_config" > "$events_config"
+events_fixture="$tmp/parent-memory.events"
+
+run_doctor_events() {
+  env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH \
+    PATH="$stub_bin:$PATH" MEMORY_CGROUP_PARENT_EVENTS="$events_fixture" \
+    bash "$DOCTOR" --config "$events_config" 2>&1
+}
+
+printf 'low 0\nhigh 1000\nmax 0\noom 0\noom_kill 0\n' > "$events_fixture"
+out="$(run_doctor_events)"
+events_state_file="$events_state_dir/.doctor-memory-events-high"
+assert_eq "the first sample establishes a baseline, with no verdict to compare against yet" \
+  "0" "$(grep -c 'memory.events high' <<<"$out")"
+assert_eq "…and persists the sample for the next run" "1" \
+  "$( [[ -f "$events_state_file" ]] && echo 1 || echo 0 )"
+assert_contains "…the persisted sample carries the observed count" "1000" "$(cat "$events_state_file")"
+
+printf 'low 0\nhigh 1500\nmax 0\noom 0\noom_kill 0\n' > "$events_fixture"
+out="$(run_doctor_events)"
+assert_contains "a rising delta warns, naming the count" \
+  "container memory: the parent cgroup's memory.events high rose by 500" "$out"
+
+printf 'low 0\nhigh 1500\nmax 0\noom 0\noom_kill 0\n' > "$events_fixture"
+out="$(run_doctor_events)"
+assert_contains "a flat delta is reported ok, not warned" \
+  "[ ok ] container memory: the parent cgroup's memory.events high has not moved" "$out"
 
 # --- shellcheck ---
 

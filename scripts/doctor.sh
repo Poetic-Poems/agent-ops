@@ -860,12 +860,46 @@ fi
 # left unbounded held 2465 MiB between them while idle, against 891 MiB once
 # `memory.high` was set.
 case "$(memory_cgroup_verdict)" in
-  unbounded) warn "container memory: $(memory_cgroup_describe)" ;;
-  parented)  ok "container memory: $(memory_cgroup_parent_describe)" ;;
-  bounded)   warn "container memory: memory.high is set on this container, so the kernel reclaims before the hard ceiling — but it is set on the container, so the next roll will wipe it; see deploy/docker/compose.yaml for the parent cgroup that survives one" ;;
-  unlimited) ok "container memory: no cgroup ceiling, so there is nothing to reclaim against" ;;
-  *)         ok "container memory: no cgroup v2 memory files to read (not a cgroup v2 container)" ;;
+  unbounded)   warn "container memory: $(memory_cgroup_describe)" ;;
+  parented)    ok "container memory: $(memory_cgroup_parent_describe)" ;;
+  livelocked)  warn "container memory: $(memory_cgroup_livelock_describe)" ;;
+  unconfirmed) warn "container memory: $(memory_cgroup_unconfirmed_describe)" ;;
+  bounded)     warn "container memory: memory.high is set on this container, so the kernel reclaims before the hard ceiling — but it is set on the container, so the next roll will wipe it; see deploy/docker/compose.yaml for the parent cgroup that survives one" ;;
+  unlimited)   ok "container memory: no cgroup ceiling, so there is nothing to reclaim against" ;;
+  *)           ok "container memory: no cgroup v2 memory files to read (not a cgroup v2 container)" ;;
 esac
+
+# A rising memory.events `high` delta on the *parent* is a cheap, decisive
+# throttling signal that needs no ceiling to be correctly configured first:
+# even a `livelocked` node announces itself here before the wedge, and a node
+# that is merely `unconfirmed` still shows whether it is actively throttling
+# right now. agent-ops#1305 measured ~96 events/second on a node whose verdict
+# above read `[ ok ]`; a healthy node reads zero. The child's own copy cannot
+# substitute (lib/memory.sh, `memory_cgroup_parent_high`'s own header), so this
+# reads the parent's window and persists one sample across doctor runs to turn
+# the cumulative counter into a delta.
+events_state_file="$state_dir/.doctor-memory-events-high"
+events_high="$(memory_cgroup_parent_events_high)"
+if [[ -n "$events_high" ]]; then
+  prev_ts="" prev_high=""
+  [[ -r "$events_state_file" ]] && read -r prev_ts prev_high _ < "$events_state_file" 2>/dev/null
+  now_ts="$(date -u +%s)"
+  if [[ "$prev_ts" =~ ^[0-9]+$ && "$prev_high" =~ ^[0-9]+$ ]]; then
+    elapsed_min=$(( (now_ts - prev_ts) / 60 ))
+    delta=$(( events_high - prev_high ))
+    if (( delta > 0 )); then
+      warn "container memory: the parent cgroup's memory.events high rose by $delta over the last ${elapsed_min}m — it is throttling right now, whatever the verdict above says"
+    else
+      ok "container memory: the parent cgroup's memory.events high has not moved in the last ${elapsed_min}m (no throttling)"
+    fi
+  fi
+  events_tmp="$state_dir/.doctor-memory-events-high.$$"
+  if printf '%s %s\n' "$now_ts" "$events_high" > "$events_tmp" 2>/dev/null; then
+    mv -f "$events_tmp" "$events_state_file" 2>/dev/null || rm -f "$events_tmp" 2>/dev/null
+  else
+    rm -f "$events_tmp" 2>/dev/null || true
+  fi
+fi
 
 # --- Crontab ---
 
