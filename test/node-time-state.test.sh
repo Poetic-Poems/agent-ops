@@ -435,14 +435,15 @@ run_shim_review "$d"
 assert_eq "a lock.json naming a pid that is gone does not suppress the transition" \
   "idle-without-demand/no-demand" "$(node_states_of "$d")"
 
-# --- review-cycle.sh: the same five sites also suppress against a live peer
+# --- review-cycle.sh: the same six sites also suppress against a live peer
 #     *review* run, not just a live implementation cycle (issue #1275) -------
 #
 # Same shape as the agent-cycle.sh case above, but the peer is another
 # review-cycle.sh holding review-lock.json rather than agent-cycle.sh holding
-# lock.json. Every site under test here runs before this process's own
-# acquire_lock (R2) ever writes review-lock.json, so a live pid found there
-# is necessarily a peer, never this run itself.
+# lock.json. The site exercised here — the not_before stand-down — is one of
+# the five that run before this process's own acquire_lock (R2) ever writes
+# review-lock.json, so a live pid found there is necessarily a peer. The
+# sixth site, which runs *after* it, is the case below.
 
 sleep 60 &
 live_pid=$!
@@ -462,6 +463,24 @@ jq -nc '{pid: 2147483646}' > "$d/home/.local/state/poetic-agents/review-lock.jso
 run_shim_review "$d"
 assert_eq "a review-lock.json naming a pid that is gone does not suppress the transition" \
   "idle-without-demand/no-demand" "$(node_states_of "$d")"
+
+# The negative that the review-lock.json probe makes possible to get wrong:
+# the sixth guarded site — the usage-limit cooldown (3.1) — runs *after*
+# acquire_lock, over a review-lock.json this very run has just written its own
+# live pid into. A probe that only asked "is this lock held by something
+# alive" would suppress `externally-blocked`/`usage-limit` on every single
+# tick, against nothing but itself. Drop `not_before` so the run reaches 3.1,
+# and put a limit-hit whose `resume_at` is in the future into the node's own
+# log.jsonl, which `fleet_logs` unions into the stream 3.1 reads.
+d="$(shim_node usage-limit-own-lock)"
+jq 'del(.project_review.defaults.not_before)' "$d/config.json" > "$d/config.json.tmp"
+mv "$d/config.json.tmp" "$d/config.json"
+jq -nc --arg r "$(date -u -d '+3 hours' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{event: "limit-hit", ts: "2000-01-01T00:00:00Z", resume_at: $r, class: "other"}' \
+  > "$d/home/.local/state/poetic-agents/log.jsonl"
+run_shim_review "$d"
+assert_eq "the usage-limit cooldown still records its state while holding this run's own lock" \
+  "externally-blocked/usage-limit" "$(node_states_of "$d")"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"

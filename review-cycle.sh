@@ -288,18 +288,27 @@ impl_cycle_running() {
 
 # review_cycle_running — is a peer `review-cycle.sh` holding this node right
 # now? The same question as `impl_cycle_running` above, asked of our own
-# lock file instead of the implementation pipeline's. Every one of this
-# function's five callers below runs before this process's own `acquire_lock`
-# (R2) ever writes `review-lock.json`, so a live pid found there at that point
-# is necessarily a peer process, never this one — no self-exclusion check is
-# needed. Same "err toward not-running" reasoning as `impl_cycle_running`,
-# and for the same reason: over-reporting "running" loses a transition
-# permanently, under-reporting merely restores today's behaviour.
+# lock file instead of the implementation pipeline's.
+#
+# `"$pid" != "$$"` is what makes it *peer* detection rather than "is this
+# lock held at all". Five of this function's six callers below run before
+# `acquire_lock` (R2) ever writes `review-lock.json`, where any live pid is a
+# peer by construction; the sixth — the usage-limit cooldown stand-down (3.1)
+# — runs *after* it, over a lock file this process has just written its own
+# pid into. Without the self-exclusion that site would suppress its
+# `externally-blocked`/`usage-limit` transition on every tick, against
+# nothing but itself.
+#
+# Same "err toward not-running" reasoning as `impl_cycle_running`, and for
+# the same reason: over-reporting "running" loses a transition permanently,
+# under-reporting merely restores today's behaviour. The self-exclusion errs
+# that same safe way — a foreign-host lock whose pid happens to collide with
+# ours reads as not-running rather than as a peer.
 review_cycle_running() {
   local pid
   [[ -f "$lock_file" ]] || return 1
   pid="$(jq -r '.pid // empty' "$lock_file" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+  [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" != "$$" ]] && kill -0 "$pid" 2>/dev/null
 }
 
 # suppress_node_state_if_peer_owns_node — the one line every stand-down that
