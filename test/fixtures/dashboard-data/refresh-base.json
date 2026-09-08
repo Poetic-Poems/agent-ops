@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-09-09T00:00:00Z",
+  "fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "node": "poetic-1",
+  "status": {
+    "switch": {
+      "disabled": false
+    },
+    "limit": {
+      "active": false
+    },
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "noop_ticks": {
+    "total": 87,
+    "standdown": 61,
+    "skipped": 26,
+    "last_ts": "2026-09-08T23:55:00Z"
+  },
+  "max_open_agent_prs": 3,
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementer": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "counts": {
+    "spend_today_usd": 0,
+    "spend_total_usd": 0,
+    "failures_shown": 0,
+    "cycles_shown": 2,
+    "prs_reached_ready": 0,
+    "by_day": [],
+    "by_model": [],
+    "by_actor": []
+  },
+  "github": {
+    "ok": true,
+    "fetched_at": "2026-09-08T23:59:00Z",
+    "prs": [],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "cron_tail": [
+    "*/15 * * * *  /app/agent-cycle.sh"
+  ],
+  "blocked": [],
+  "void": [],
+  "log_tail": [],
+  "cycles": [],
+  "cycle_render": {
+    "ok": true,
+    "error": null
+  }
+}

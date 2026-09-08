@@ -3477,6 +3477,12 @@ assert_eq "  ... which is exactly the no-op skip's own fingerprint" \
   "$(cat "$sp_fp_file")" "$(jq -r '.fingerprint' <<<"$sdata")"
 assert_eq "  ... and agrees with data.js's own generated_at" \
   "$(jq -r '.generated_at' <<<"$(data_of "$sp")")" "$(jq -r '.generated_at' <<<"$sdata")"
+# data.js carries its own copy of the same fingerprint (agent-ops#1300's
+# review): index.html's first load reads its starting comparison value back
+# out of data.js, not out of stamp.js, so the two must never disagree — see
+# below for why a separate HTTP request for each could otherwise race.
+assert_eq "  ... and data.js embeds that identical fingerprint too" \
+  "$(jq -r '.fingerprint' <<<"$sdata")" "$(jq -r '.fingerprint' <<<"$(data_of "$sp")")"
 
 # A no-op tick must leave the stamp exactly as it found it — the same proof
 # the no-op skip's own test (above) holds data.js to: "skipped" means
@@ -3504,6 +3510,42 @@ assert_eq "a real change moves the stamp's fingerprint" "1" \
 # never poll it in the first place.
 assert_contains "the copied page references stamp.js" \
   "stamp.js" "$(cat "$sp_state/dashboard/index.html")"
+
+# --- a failed render's stamp must not read as "unchanged" (agent-ops#1300 review) --
+# The no-op skip's own $fingerprint_file is already dropped on a failed
+# render (tested above, "A window that failed to render..."), so the *next*
+# tick always rebuilds. But between that drop and the next tick, an open tab
+# is polling stamp.js against whatever *this* tick just published — and
+# before this fix, that was still the real state hash. Unchanged state
+# (the ordinary case: nothing about the fleet moved, only the render itself
+# broke) means the same hash a healthy publish would have written, so a tab
+# already holding that fingerprint would keep reading "unchanged" and never
+# re-fetch the repaired page once the render started working again. The fix
+# is a fallback to `$now_iso` — unique to the tick — whenever
+# cycle_render_ok != true, mirroring the $fingerprint_file drop; distinguished
+# here from a real hash by shape alone (a 64-hex digest vs. an ISO-8601
+# instant), which needs no second publish and so cannot be timing-flaky.
+sr="$(new_home nodeStampRenderFail)"
+make_cycle "$sr" "${today_day}T113000Z-1" 1 model-a
+(
+  jq() {
+    local _arg
+    for _arg in "$@"; do [[ "$_arg" == "events_raw" ]] && return 126; done
+    command jq "$@"
+  }
+  export -f jq
+  env HOME="$sr" NODE_NAME=nodeSRF "$PUBLISH" --no-github >/dev/null 2>"$tmp_dir/stamp-render.err"
+)
+srdata="$(data_of "$sr")"
+assert_eq "the render failure is confirmed (same mechanism as the render-fail test above)" \
+  "false" "$(jq -r '.cycle_render.ok' <<<"$srdata")"
+srsdata="$(stamp_of "$sr")"
+assert_eq "a failed render's stamp fingerprint is not the real state hash" "false" \
+  "$(jq -r '.fingerprint | test("^[0-9a-f]{64}$")' <<<"$srsdata")"
+assert_eq "  ... it is this tick's own timestamp instead, so a polling tab sees it move" \
+  "true" "$(jq -r '.fingerprint | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")' <<<"$srsdata")"
+assert_eq "  ... and data.js's own embedded fingerprint matches it, not a real hash either" \
+  "$(jq -r '.fingerprint' <<<"$srsdata")" "$(jq -r '.fingerprint' <<<"$srdata")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

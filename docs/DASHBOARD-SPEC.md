@@ -480,14 +480,25 @@ treating its absence as "reset known".
 
 ## The Publisher (`scripts/publish-dashboard.sh`)
 
-Reads the state above, assembles one JSON object, redacts it, and writes it
-as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`),
+Reads the state above, assembles one JSON object, embeds this tick's own
+`fingerprint` in it (below), redacts the whole thing, and writes it as
+`window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`),
 then writes `window.DASHBOARD_STAMP = {generated_at, fingerprint}` the same
-way to a `stamp.js` sibling — the fingerprint is the no-op skip's own (below),
-computed once data.js is written and reused as-is, so client and skip logic
-never disagree about what "changed" means. Both writes happen back to back,
-with nothing state-changing between them, so a reader can never observe a
-stamp/data pair spanning two different publishes. It is `set -uo pipefail`
+way to a `stamp.js` sibling, carrying that identical fingerprint value — the
+no-op skip's own (below), so client and skip logic never disagree about what
+"changed" means. Falls back to `$now_iso`, unique to this tick, whenever
+`local_state_fingerprint` could not produce a whole hash, or whenever this
+tick's own cycle render failed: either failure would otherwise read as
+"unchanged" to every open tab forever. Both writes happen back to back, with
+nothing state-changing between them, so the two files' own content can never
+disagree about which publish they came from — but a *reader* fetching them as
+two separate HTTP requests is not part of that atomicity, and can still
+observe them from two different publishes (a publish landing between the
+requests). That only matters for the plain `<script src>` pair `index.html`
+loads on first open, not for the SPA refresh tick, which always re-fetches
+`data.js` itself once its fingerprint has moved — see "the client" below for
+how the first load avoids the same wedge by reading its starting fingerprint
+back out of `data.js` rather than out of `stamp.js`. It is `set -uo pipefail`
 (not `-e`) because most reads are best-effort, and ends `exit 0`. It sets its
 own `PATH` for cron and is `shellcheck`-clean.
 Several measures keep a *rebuild* proportional to the window rather than to
@@ -1138,17 +1149,39 @@ bytes: `{generated_at, fingerprint}`) first, and `data.js` itself only when
 `stamp.js`'s `fingerprint` no longer matches the one the page last loaded
 (issue #1288: every open tab was re-downloading the multi-megabyte `data.js`
 on every tick, unconditionally, regardless of whether the underlying data had
-moved). It re-renders the body **only when the data actually changed** (a
-signature compare that ignores the always-moving `generated_at`); the header's
-own staleness clock still ticks every refresh, from `stamp.js`'s own
-`generated_at`, whether or not `data.js` was worth re-fetching. Expanded cycle rows,
-opened void rows and a void list showing past its cap, open transcript panels
-and scroll position survive the re-render — both the page's own scroll
-position and, independently, the position scrolled to within any transcript
-box (a stage's status/result/stderr, or the cron.log tail): each such box
-carries a stable key across rebuilds so a reader mid-scroll through a long
-transcript is not dropped back to its top by the next refresh; the header's
-staleness clock ticks every interval and warns if the heartbeat looks stopped.
+moved). A refresh tick's own `data.js` fetch failing (a lost connection: the
+injected `<script>`'s `onerror` fires) leaves the page's last-loaded
+fingerprint unmoved, so the very next tick sees its stamp still disagree and
+retries — advancing it regardless, on a fetch that never actually landed,
+would wedge the tab on stale data indefinitely, since every later tick would
+then find its own fresher stamp "agree" with a fingerprint the tab never
+actually applied. It re-renders the body **only when the data actually
+changed** (a signature compare that ignores the always-moving `generated_at`);
+the header's own staleness clock still ticks every refresh, from `stamp.js`'s
+own `generated_at`, whether or not `data.js` was worth re-fetching. Expanded
+cycle rows, opened void rows and a void list showing past its cap, open
+transcript panels and scroll position survive the re-render — both the page's
+own scroll position and, independently, the position scrolled to within any
+transcript box (a stage's status/result/stderr, or the cron.log tail): each
+such box carries a stable key across rebuilds so a reader mid-scroll through a
+long transcript is not dropped back to its top by the next refresh; the
+header's staleness clock ticks every interval and warns if the heartbeat looks
+stopped.
+
+The page's very first load — a plain `<script src>` pair in `<head>`, not the
+refresh tick's cache-busted injection — fetches `data.js` and `stamp.js` as
+two separate, uncoordinated HTTP requests, so a publish landing between them
+can pair a *newer* stamp with the `data.js` the tab actually has (the
+Publisher's own back-to-back writes only make the two files agree with each
+other, not with what a reader fetches when — see the Publisher section
+above). `index.html` sidesteps this rather than relying on that window being
+narrow: `data.js` carries the Publisher's fingerprint embedded in its own
+JSON, and the page's starting comparison value is read from there, not from
+`stamp.js`, so it is always exactly the fingerprint of the data the tab
+actually parsed on load, however stale that publish might already be by the
+time `stamp.js` answers. Only the initial load needs this — every later tick
+already re-fetches `data.js` itself the moment its fingerprint moves, so it
+can never fall behind its own stamp.
 
 The header carries **two** clocks, because the page has two ages: `data <age>`
 from `generated_at`, which moves every few seconds, and `· GitHub <age>` from
@@ -2604,6 +2637,21 @@ number's twins elsewhere on the page.
   pull request rather than every ready one, and that the narrowing itself
   never reaches a `CHANGES_REQUESTED` pull request, which the pipeline owes a
   change at every level.
+- `test/dashboard-refresh.test.sh` drives the SPA refresh tick itself (issue
+  #1288), under a second, narrower stub (`test/dashboard-refresh-harness.js`)
+  that fires the page's own `#refreshbtn` click listener — the one external
+  hook onto `tick()` — against a scripted, synchronous sequence of simulated
+  `stamp.js`/`data.js` fetch outcomes; unlike `test/dashboard-render.test.sh`
+  it asserts nothing about the DOM, only which files get fetched. A page load
+  seeded with `data.js`'s own embedded fingerprint disagreeing from
+  `stamp.js`'s (the two-request race a publish landing between the page's
+  initial `<script src>` pair can produce) still fetches `data.js` on the
+  first tick rather than reading the disagreement as "unchanged". A `data.js`
+  fetch that fails leaves the tab's own comparison fingerprint unmoved, so
+  the very next tick — polled with the *same* fingerprint the failed fetch
+  never got to apply — retries rather than skipping; only a fetch that
+  actually lands may advance it, confirmed by a further tick then correctly
+  reading that fingerprint as unchanged.
 - `test/rework-panel.test.sh` drives `lib/rework-panel.sh`'s own fold
   directly, on `test/item-lifecycle.test.sh`'s own precedent: the three
   questions computed correctly over one hand-traceable fixture (tokens'/
@@ -3442,7 +3490,14 @@ number's twins elsewhere on the page.
   `stamp.js`; `data.js` follows only when its `fingerprint` differs from the
   one the tab last loaded. `generated_at` still ticks the header clock on
   every tick regardless, so the staleness display is exactly as live as
-  before — only the multi-megabyte fetch became conditional.
+  before — only the multi-megabyte fetch became conditional. Two follow-up
+  correctness fixes to the first version of this: a `data.js` fetch that
+  failed used to advance the tab's fingerprint anyway, permanently wedging it
+  on stale data with no retry; and the page's first load — a plain
+  `<script src>` pair, not the refresh tick's cache-busted one — used to seed
+  that fingerprint from `stamp.js`, which a publish landing between the two
+  requests could answer for a newer publish than the `data.js` the tab
+  actually got. See "the client" above for both.
 - **The dequeued warning is the Publisher's own memory, not GitHub's timeline**
   (agent-ops#375, D17). The obvious first design reads `merge_queue_probe`'s
   `dequeued_at`/`dequeue_reason` straight through — the same fields

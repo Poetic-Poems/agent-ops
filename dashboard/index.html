@@ -3579,7 +3579,17 @@
   // asking that the multi-MB payload behind it cannot have moved either.
   // stamp.js is a few dozen bytes; data.js is not fetched at all on a tick
   // where the two agree.
-  var lastFingerprint = (window.DASHBOARD_STAMP && window.DASHBOARD_STAMP.fingerprint) || null;
+  //
+  // Initialised from data.js's *own* embedded `fingerprint` (also written by
+  // the Publisher), not from stamp.js: the page's first load fetches the two
+  // as a plain <script src> pair, two separate HTTP requests, and a publish
+  // landing between them would otherwise pair a newer stamp with the older
+  // data.js the tab actually has — wedging the tab exactly as a lost fetch
+  // does below, since every later tick would then see its own fresher stamp
+  // "agree" with that already-stale fingerprint and skip forever. Reading
+  // the fingerprint back out of the file the tab actually parsed removes the
+  // second request from this comparison entirely.
+  var lastFingerprint = (window.DASHBOARD_DATA && window.DASHBOARD_DATA.fingerprint) || null;
 
   var loading = false;
   function tick() {
@@ -3588,10 +3598,15 @@
     loadStamp(function (stamp) {
       if (!stamp) { loading = false; renderHeaderStatus(); return; }
       if (stamp.fingerprint !== lastFingerprint) {
-        lastFingerprint = stamp.fingerprint;
         loadData(function (nd) {
           loading = false;
-          if (nd) applyData(nd);
+          // Advance lastFingerprint only once the new data has actually been
+          // applied: a fetch that fails (loadScript's onerror passes null)
+          // must leave it unmoved, or this tab would never retry — every
+          // later tick would keep seeing the same already-advanced
+          // fingerprint "agree" with the stamp and skip forever, silently
+          // stuck on stale data while the header clock kept ticking.
+          if (nd) { applyData(nd); lastFingerprint = stamp.fingerprint; }
           renderHeaderStatus();      // tick the clock even when the body didn't change
         });
       } else {
