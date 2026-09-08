@@ -6756,8 +6756,11 @@ implements.
    died: `GraphQL: API rate limit already exceeded`, having spent everything
    and produced nothing. Git's own transport is not rate-limited, so this step
    cannot fail that way. Authentication is unchanged —
-   `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the credential
-   helper serves this HTTPS remote exactly as it serves the push that follows.
+   `deploy/docker/entrypoint.sh` wires git's own credential helper to
+   `!gh auth git-credential` (component 7), an unqualified `gh` that `PATH`
+   resolves to the transport shim and so to the on-demand credential seam
+   (component 22c), so the helper serves this HTTPS remote exactly as it
+   serves the push that follows.
    `review-cycle.sh` clones through the same function, so the two cannot
    diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
    its own right, because a test that wants the clone to fail can no longer get
@@ -18053,10 +18056,13 @@ What exists, and the requirements each part answers to:
     validity, but never fails over its absence: landing with the values
     unset is the expected state until an owner provisions the App (D25's own
     text on why this cannot be done by the pipeline itself).
-    Sourced, never executed. Sourced by `agent-cycle.sh` and by
-    `deploy/docker/entrypoint.sh`, ahead of the latter's `gh auth setup-git`
-    call, so a node carrying only this identity (no `GH_TOKEN` at container
-    start) still has something to configure the git credential helper with.
+    Sourced, never executed. Sourced by `agent-cycle.sh`, by
+    `lib/gh-shim.sh` (component 22c, which mints through it on every call),
+    and by `deploy/docker/entrypoint.sh` — the last of these purely for
+    `author_token_credential_present`, which is what decides whether the
+    entrypoint stashes the node's ambient PAT into `PW_GH_DEGRADE_TOKEN` and
+    leaves `GH_TOKEN` empty for the seam to resolve through; it mints nothing
+    itself.
     Regression-tested in `test/author-token.test.sh`, on the same terms
     `test/approver-token.test.sh` covers component 14b's own identity — the
     success path, the cache and its expiry/ownership/tmpfs guarantees, every

@@ -235,11 +235,13 @@ gh_shim_state_dir() {
 # A stable, short tag for whichever credential this process authenticates
 # with — the App and the PAT can legitimately see different data for the same
 # path, so their cache entries and budget readings must never collide.
+# Read after gh_shim_resolve_token has already run, so a token that function
+# just minted is the one hashed here, not the empty value it was handed.
 # "no-token" when neither GH_TOKEN nor GITHUB_TOKEN is set (gh's own
 # keyring/`gh auth login` session, or no credential at all) — rare in this
-# fleet (lib/forge-auth.sh always sets GH_TOKEN when anything is configured)
-# and safe to lump together since there is exactly one such identity per
-# process either way.
+# fleet, since gh_shim_resolve_token above leaves GH_TOKEN empty only when
+# neither an App nor PW_GH_DEGRADE_TOKEN is configured — and safe to lump
+# together since there is exactly one such identity per process either way.
 gh_shim_identity() {
   local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   if [[ -z "$token" ]]; then
