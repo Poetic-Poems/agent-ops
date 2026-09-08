@@ -16,10 +16,18 @@
 # within 90 minutes, and one then hit its hard ceiling 23,995 times before a
 # human happened to look at a dashboard (TD-PPagop-26090401, agent-ops#1266).
 #
+# On a systemd-driver host it does not even last that long: any `systemctl
+# daemon-reload` resets it on a live container, because systemd re-applies the
+# properties a unit declares and a `docker-<id>.scope` declares no MemoryHigh.
+# Verified on the poetic node 2026-09-08 — written, read back, one unrelated
+# reload, back to `max` with the container still running.
+#
 # A ceiling on the container's *parent* governs the container just as well and
-# outlives it, because the parent is not what gets recreated. That is the only
-# property that distinguishes this from the one-shot recipe it replaces, and
-# it is the whole point.
+# outlives it, because the parent is not what gets recreated — and, where the
+# parent is a slice, because it *is* declared, so a daemon-reload re-asserts
+# it rather than clearing it (verified the same day, same host). That is the
+# only property that distinguishes this from the one-shot recipe it replaces,
+# and it is the whole point.
 #
 # ## What this script does, and why it asks rather than assumes
 #

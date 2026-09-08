@@ -371,12 +371,26 @@ services:
     #       >/dev/null
     #   done
     #
-    # That is a stopgap and nothing more: it is wiped by the next `up -d`,
-    # watchtower roll or reboot, and measured on this fleet 2026-09-08 that is
-    # a median of well under an hour — three of four schedulers lost it within
-    # 90 minutes of it being applied, one of them going on to hit its hard
-    # ceiling 23,995 times before anyone noticed (TD-PPagop-26090401). Use it
-    # to stop a node dying now, then set the parent so it stays stopped.
+    # That is a stopgap and nothing more. It is wiped by the next `up -d`,
+    # watchtower roll or reboot — measured on this fleet 2026-09-08, a median
+    # of well under an hour: three of four schedulers lost it within 90
+    # minutes of it being applied, one of them going on to hit its hard
+    # ceiling 23,995 times before anyone noticed (TD-PPagop-26090401).
+    #
+    # On a `systemd`-driver host it is weaker still, and in a way worth
+    # knowing: **any `systemctl daemon-reload` erases it**, on a live
+    # container, with nothing recreated and nothing restarted. Verified on the
+    # poetic node 2026-09-08 — written, read back, one unrelated reload, back
+    # to `max` while the container kept running. systemd re-applies the
+    # properties a unit *declares* on every reload, and a `docker-<id>.scope`
+    # declares no `MemoryHigh`, so re-applying means resetting it. A package
+    # upgrade touching any unit on the host is enough. That is also exactly
+    # why the parent below is durable rather than merely longer-lived: a slice
+    # unit does declare `MemoryHigh`, so the same reload re-asserts the
+    # ceiling instead of clearing it.
+    #
+    # Use the stopgap to stop a node dying now, then set the parent so it
+    # stays stopped.
     #
     # `scripts/doctor.sh` reports which of the two is in force — its "container
     # memory" line reads `unbounded` with no ceiling at all, warns that a

@@ -2107,8 +2107,11 @@ implements.
       `deploy/docker/compose.yaml`. The parent is the mechanism precisely
       because it is not what gets recreated: a ceiling written onto the
       container itself is wiped by the next `up -d`, watchtower roll or
-      reboot, which on the measured fleet is a median of under an hour
-      (TD-PPagop-26090401).
+      reboot, which on the measured fleet is a median of under an hour — and
+      on a `systemd`-driver host by any `systemctl daemon-reload`, on a live
+      container, since systemd re-applies the properties a unit declares and a
+      `docker-<id>.scope` declares none (TD-PPagop-26090401). A slice parent
+      declares `MemoryHigh`, so the same reload re-asserts it.
 
       What the pipeline contributes is still the detection —
       `memory_cgroup_verdict`, reported by `doctor.sh` (component 14) — and

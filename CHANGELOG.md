@@ -414,7 +414,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three had lost it again within 90 minutes to ordinary rolls, and one had hit
   its hard ceiling 23,995 times in the 92 minutes since being recreated. The
   register item filed against this in September predicted it; what was new was
-  the half-life.
+  the half-life — and, on a `systemd`-driver host, that "until the next
+  recreation" was itself optimistic: any `systemctl daemon-reload` erases a
+  container-level `memory.high` on a live container, nothing recreated and
+  nothing restarted, because systemd re-applies the properties a unit
+  *declares* and a `docker-<id>.scope` declares no `MemoryHigh`. A package
+  upgrade touching any unit on the host is enough.
 
   The ceiling now goes on the scheduler's **parent** cgroup, selected with
   Compose's `cgroup_parent`, because the parent is not what gets recreated.
@@ -425,7 +430,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the parent window mounts `/dev/null`, so a node that has not opted in
   behaves exactly as before. Under the `systemd` driver the parent is a slice
   unit, so systemd re-applies `MemoryHigh=` on every start and reboots are
-  covered; under `cgroupfs` the directory survives recreation but not a
+  covered — and, because a slice unit *does* declare the property, a
+  `daemon-reload` re-asserts the ceiling rather than clearing it, the same
+  mechanism read the other way round; under `cgroupfs` the directory survives recreation but not a
   reboot, so the script installs a boot hook — a unit where systemd is PID 1,
   a root `@reboot` crontab entry where it is not, which on the ockham node it
   is not.
