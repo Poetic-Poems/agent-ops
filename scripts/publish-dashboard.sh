@@ -97,9 +97,13 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # against the bare id every stage-end's own `model` field already carries.
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/labels.sh
-# `labels_ensure_role` alone — lib/pager.sh's own filing primitives call it
-# before creating a `pw::pager`/`pw::decision` issue, on the identical
-# precedent lib/enabler.sh's create_escalation_issue already sets.
+# `labels_ensure_role` alone: lib/pager.sh's `_pager_ensure_label_role` calls
+# it — only on the path that actually creates an issue — before filing a
+# `pw::pager`/`pw::decision` issue, on the identical precedent
+# lib/enabler.sh's create_escalation_issue already sets. It is a `declare -F`
+# probe there, so sourcing this here is what turns it on; without it the
+# pager's own filings would land unlabelled and never be found again by
+# either its dedup or its auto-close.
 . "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/pager.sh
 . "$SCRIPT_DIR/lib/pager.sh"
@@ -239,6 +243,14 @@ image_cache="$state_dir/.image-drift-cache.json"
 # this instead. `null` when no unattended pass has run yet on this node.
 doctor_status_file="$state_dir/.doctor-status.json"
 doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
+# The same projection scripts/state-sync.sh folds into `heartbeat.json` for a
+# peer (requirement 2.5): `{timestamp, verdict}` and nothing else. This node's
+# own *fleet row* has to carry exactly the shape a peer's does, or the fleet
+# would be a set of rows only one of which answers to the same schema — and
+# `verdict-unanimous` reads `.doctor.verdict` across all of them alike. The
+# full record still reaches `status.doctor` above, where it is local to this
+# node and the page's own doctor panel reads `fails`/`warns` from it.
+doctor_heartbeat_json="$(jq -c '{timestamp, verdict}' "$doctor_status_file" 2>/dev/null || echo null)"
 # This node's own per-stage health verdict (lib/stage-health.sh,
 # agent-ops#662), written by agent-cycle.sh's own cleanup at the end of every
 # real cycle — read rather than recomputed, on the identical precedent
@@ -2189,7 +2201,7 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
   --argjson updater "$updater_json" \
-  --argjson doctor "$doctor_status_json" \
+  --argjson doctor "$doctor_heartbeat_json" \
   --argjson pu "$provider_unreachable_json" \
   --argjson pub "$self_pub_json" \
   '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,

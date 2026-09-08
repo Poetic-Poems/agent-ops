@@ -16102,14 +16102,34 @@ with the Reviewer's own.
     `pager_file`/`pager_close` are the filing and auto-close primitives.
     Every firing invariant that reaches the hysteresis threshold gets one
     issue per key, in `pager_repo` (empty falls back to `crash_loop_repo`;
-    both empty disables filing — invariants still evaluate and their
-    transitions still reach the dashboard, but nothing is filed or assigned),
+    both empty disables filing — invariants still evaluate and `pager_file`
+    still logs `pager-fired`, with `issue_number`/`issue_url` null, so the
+    transition still reaches the dashboard and the key can still return to
+    `clear` later; nothing is filed on GitHub and nothing is assigned),
     carrying the fixed `pw::pager` label (`lib/labels.sh`'s `escalation` role
     catalogue, fixed for the identical reason `pw::decision` is: a renamed
     label would silently stop being found by this framework's own dedup and
     auto-close search), deduped on the item reference `pager:<key>` exactly
     as `create_escalation_issue` dedupes — a body-contains-item-ref search,
-    never a second index. `pager_close` closes it with a one-line comment
+    never a second index.
+
+    The label is *ensured* in `pager_repo` on the create path, and only
+    there, exactly as `create_escalation_issue` does it (requirement 6a's
+    `labels_ensure_role`, the `escalation` role) and for the reason that
+    function states: an escalation repository is by construction not one any
+    cycle otherwise touches, so its labels have nowhere else to be created.
+    Here the label is load-bearing rather than cosmetic — both the dedup
+    above and the auto-close below find a page *by* it — so a page filed
+    through the retry-without-label fallback would be re-filed on every later
+    fire and never auto-closed, leaving on the owner's open list precisely
+    the stale page this requirement exists to prevent. Both dedup searches
+    and the auto-close search state `--limit 200` rather than inheriting
+    `gh`'s undeclared default of 30, on `lib/tech-debt-file.sh`'s own
+    `TECHDEBT_DEDUP_LIST_LIMIT` reasoning: a truncated listing is
+    indistinguishable from a complete one, and the direction of harm is a
+    duplicate filed against an issue the dedup could not see.
+
+    `pager_close` closes it with a one-line comment
     naming that the fact cleared, on `approver_escalation_retire`'s own
     established pattern (requirement 8f's #1215 retirement), and logs
     `pager-cleared` regardless of whether an open issue was actually found to
@@ -16145,19 +16165,28 @@ with the Reviewer's own.
       heartbeat already, requirement 2.8), `updater.status == "stuck"` on
       every active node (requirement 2.6), or `doctor.verdict == "fail"` on
       every active node — the last of these needed a heartbeat change of its
-      own: `.doctor-status.json`'s verdict (never the full record —
-      `fails`/`warns`/`skips` stay local) now folds into `heartbeat.json` as
-      `doctor`, the same way `stage_health`'s does, since this invariant is
-      the first reader anywhere that needs a peer's doctor verdict rather
-      than only this node's own. Its pipeline-act remedy files a
+      own: `.doctor-status.json`'s `{timestamp, verdict}` (never the full
+      record — `fails`/`warns`/`skips` are unbounded diagnostic prose and
+      `token_expiry` has no reader off the node holding the credential, so
+      all four stay local) now folds into `heartbeat.json` as `doctor`, the
+      same way `stage_health`'s does, since this invariant is the first
+      reader anywhere that needs a peer's doctor verdict rather than only
+      this node's own. `publish-dashboard.sh` projects this node's own fleet
+      row identically, so every row in the fleet answers to one shape. Its
+      pipeline-act remedy files a
       `pw::type:tech-debt` issue against this pipeline's own repository (the
       reader lives here, never in a target repo), never asking.
     - **`page-outlived-item`** (pipeline-act). Fires when any open issue
       carrying `enabler_escalation_label` or `pw::pager` in `pager_repo`
       links a PR or issue (the first `github.com/…/pull/<n>` or
       `github.com/…/issues/<n>` its body names) that has already gone
-      terminal — merged, closed. The one documented exception to "pure over
-      replicated facts": an issue's own live state is the fact in question,
+      terminal — merged, closed. "Or" is a union of two listings, one per
+      label, merged and deduped on the issue number, because `gh issue
+      list`'s own `--label "a,b"` is an *intersection* — it filters for
+      issues carrying every name given — and no page ever carries both, so a
+      single comma-joined listing would be empty in every real case and leave
+      this invariant permanently clear. The one documented exception to "pure
+      over replicated facts": an issue's own live state is the fact in question,
       so its EVAL_FN reads GitHub directly, through
       `PAGER_EVAL_REPO`/`PAGER_EVAL_ESCALATION_LABEL`, plain shell variables
       `pager_evaluate` sets before calling it — deliberately not threaded

@@ -291,6 +291,82 @@ assert_eq "a failing remedy still lets the tracking issue file" "1" \
   "$(count_events "$union_log" pager-fired broken)"
 STUB_REMEDY_FAIL=""
 
+# --- The pw::pager label is ensured on the create path, and only there -------
+# Both the dedup search and the auto-close find a page *by* its label, so a
+# page filed into a repository that has never carried `pw::pager` — which
+# `pager_repo` is, by construction: it falls back to `crash_loop_repo`, which
+# no cycle otherwise touches — would be re-filed on every later fire and
+# never auto-closed. lib/enabler.sh's create_escalation_issue ensures the
+# catalogue on its own create path for exactly this reason; lib/pager.sh
+# probes for `labels_ensure_role` with `declare -F` so the rest of this file
+# still runs without lib/labels.sh sourced at all.
+ENSURE_CALLS_FILE="$WORKDIR/ensure-calls"; : > "$ENSURE_CALLS_FILE"
+labels_ensure_role() { printf '%s\n' "$3 $4" >> "$ENSURE_CALLS_FILE"; }
+ensure_calls() { wc -l < "$ENSURE_CALLS_FILE" | tr -d ' '; }
+
+PAGER_EVAL_FN=(); PAGER_REMEDY_CLASS=(); PAGER_REMEDY_ARG=(); PAGER_KEYS=()
+pager_register labelled stub_eval owner-only "a human must decide this"
+union_log="$WORKDIR/labelled.jsonl"; : > "$union_log"
+: > "$GH_CALLS_FILE"
+STUB_FIRING="true"; STUB_GH_LIST_OPEN="[]"; STUB_GH_LIST_ALL="[]"
+pager_evaluate "$CLAIM_STUB" "o/r" "pw::pager" "enabler-escalation" \
+  "the-owner" "" 0 "$union_log" "$union_log" '[]' n1 c1
+pager_evaluate "$CLAIM_STUB" "o/r" "pw::pager" "enabler-escalation" \
+  "the-owner" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "filing ensures the escalation label catalogue in pager_repo first" \
+  "o/r escalation" "$(head -n1 "$ENSURE_CALLS_FILE")"
+assert_eq "  ... exactly once, on the create path" "1" "$(ensure_calls)"
+
+# The page now exists on the fake GitHub, so the next fire dedups onto it —
+# and the ensure must not run again: it is a label listing per call, and the
+# dedup path is the common one.
+: > "$ENSURE_CALLS_FILE"
+STUB_GH_LIST_OPEN="$(jq -nc '[{number: 501, url: "https://github.com/o/r/issues/501",
+                               body: "ref: pager:labelled", stateReason: null}]')"
+PAGER_EVAL_FN=(); PAGER_REMEDY_CLASS=(); PAGER_REMEDY_ARG=(); PAGER_KEYS=()
+pager_register labelled2 stub_eval owner-only "a human must decide this"
+union_log="$WORKDIR/labelled2.jsonl"; : > "$union_log"
+printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","event":"pager-candidate","key":"labelled2","first_seen":"2026-01-01T00:00:00Z"}' > "$union_log"
+STUB_GH_LIST_OPEN="$(jq -nc '[{number: 502, url: "https://github.com/o/r/issues/502",
+                               body: "ref: pager:labelled2", stateReason: null}]')"
+pager_evaluate "$CLAIM_STUB" "o/r" "pw::pager" "enabler-escalation" \
+  "the-owner" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "  ... and never on the dedup path, where the label already exists" \
+  "0" "$(ensure_calls)"
+unset -f labels_ensure_role
+
+# --- pager_repo empty: the transition is still logged, nothing is filed ------
+# This is the whole reason `pager_enabled` is a boolean rather than reusing
+# `pager_repo` empty as the off switch `crash_loop_repo` uses (requirement
+# 51): an installation with nowhere to file still gets the fired/cleared
+# history on its dashboard. An early return here instead would strand the key
+# on `candidate` for ever — never firing, and never able to clear.
+
+PAGER_EVAL_FN=(); PAGER_REMEDY_CLASS=(); PAGER_REMEDY_ARG=(); PAGER_KEYS=()
+pager_register norepo stub_eval pipeline-act stub_remedy
+union_log="$WORKDIR/norepo.jsonl"; : > "$union_log"
+: > "$GH_CALLS_FILE"; : > "$REMEDY_CALLS_FILE"
+STUB_FIRING="true"; STUB_GH_LIST_OPEN="[]"; STUB_GH_LIST_ALL="[]"
+pager_evaluate "$CLAIM_STUB" "" "pw::pager" "enabler-escalation" \
+  "" "" 0 "$union_log" "$union_log" '[]' n1 c1
+pager_evaluate "$CLAIM_STUB" "" "pw::pager" "enabler-escalation" \
+  "" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "no pager_repo: the invariant still fires and the transition is logged" \
+  "1" "$(count_events "$union_log" pager-fired norepo)"
+assert_eq "  ... with a null issue_number, not a missing one" "null" \
+  "$(jq -r '.issue_number | tostring' <<<"$(last_event "$union_log" pager-fired norepo)")"
+assert_eq "  ... and a null issue_url" "null" \
+  "$(jq -r '.issue_url | tostring' <<<"$(last_event "$union_log" pager-fired norepo)")"
+assert_eq "  ... nothing was created on GitHub" "0" "$(grep -c '^issue create' "$GH_CALLS_FILE")"
+assert_eq "  ... the state really is fired, not stranded on candidate" \
+  "fired" "$(pager_state_for norepo < "$union_log")"
+STUB_FIRING="false"
+pager_evaluate "$CLAIM_STUB" "" "pw::pager" "enabler-escalation" \
+  "" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "  ... and it can clear again, with nothing to close" \
+  "1" "$(count_events "$union_log" pager-cleared norepo)"
+assert_eq "  ... state back to clear" "clear" "$(pager_state_for norepo < "$union_log")"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

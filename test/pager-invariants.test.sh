@@ -108,6 +108,13 @@ assert_eq "no single signal is unanimous across all three: does not fire" \
 
 GH_CALLS_FILE="$WORKDIR/gh-calls"; : > "$GH_CALLS_FILE"
 STUB_GH_LIST_OPEN="[]"
+# Per-label listings, keyed by the `--label` value the call actually passes.
+# The stub answers *by label* rather than returning one fixed array for every
+# listing, because the relation `_pager_open_page_issues` needs is a union and
+# `gh issue list --label "a,b"` gives an intersection — a label-blind stub
+# cannot tell the two apart, and the comma-joined listing this replaced was
+# empty against real GitHub while passing every assertion here.
+declare -A STUB_GH_LIST_BY_LABEL=()
 STUB_GH_CREATE_URL="https://github.com/o/r/issues/701"
 STUB_GH_PR_STATE_MAP=""    # "<url>=<state>;<url>=<state>;..." — pr view lookups
 STUB_GH_ISSUE_STATE_MAP="" # same shape, for issue view lookups
@@ -119,10 +126,25 @@ gh_state_lookup() {  # gh_state_lookup MAP URL -> STATE, default OPEN
   done
   printf 'OPEN'
 }
+stub_gh_label_of() {  # stub_gh_label_of ARGS... -> the value after --label
+  local a next=""
+  for a in "$@"; do
+    [[ "$next" == "label" ]] && { printf '%s' "$a"; return 0; }
+    [[ "$a" == "--label" ]] && next="label"
+  done
+  return 0
+}
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS_FILE"
   case "$1 $2" in
-    "issue list") printf '%s' "$STUB_GH_LIST_OPEN"; return 0 ;;
+    "issue list")
+      local lbl; lbl="$(stub_gh_label_of "$@")"
+      if (( ${#STUB_GH_LIST_BY_LABEL[@]} )); then
+        printf '%s' "${STUB_GH_LIST_BY_LABEL[$lbl]:-[]}"
+      else
+        printf '%s' "$STUB_GH_LIST_OPEN"
+      fi
+      return 0 ;;
     "issue create") printf 'created: %s\n' "$STUB_GH_CREATE_URL"; return 0 ;;
     "issue close") return 0 ;;
     "pr view") gh_state_lookup "$STUB_GH_PR_STATE_MAP" "$3" ;;
@@ -152,14 +174,21 @@ PAGER_EVAL_REPO="o/r"
 PAGER_EVAL_ESCALATION_LABEL="enabler-escalation"
 
 # Three open pages: one whose PR merged (outlived), one whose PR is still
-# open (not outlived), one whose linked issue is closed (outlived).
-STUB_GH_LIST_OPEN="$(jq -nc \
-  --arg b1 'This page is about https://github.com/o/r/pull/10 among other things.' \
-  --arg b2 'This page is about https://github.com/o/r/pull/11 among other things.' \
-  --arg b3 'This page is about https://github.com/o/r/issues/12 among other things.' \
-  '[{number:1,url:"https://github.com/o/r/issues/1",body:$b1},
-    {number:2,url:"https://github.com/o/r/issues/2",body:$b2},
-    {number:3,url:"https://github.com/o/r/issues/3",body:$b3}]')"
+# open (not outlived), one whose linked issue is closed (outlived) — split
+# across the two labels the way real pages are, an Enabler escalation never
+# carrying `pw::pager` and vice versa. Issue #3 is reachable only through the
+# `pw::pager` listing, so a reader that asks GitHub for both labels at once
+# (an intersection) sees nothing at all here.
+STUB_GH_LIST_BY_LABEL=(
+  [enabler-escalation]="$(jq -nc \
+    --arg b1 'This page is about https://github.com/o/r/pull/10 among other things.' \
+    --arg b2 'This page is about https://github.com/o/r/pull/11 among other things.' \
+    '[{number:1,url:"https://github.com/o/r/issues/1",body:$b1},
+      {number:2,url:"https://github.com/o/r/issues/2",body:$b2}]')"
+  [pw::pager]="$(jq -nc \
+    --arg b3 'This page is about https://github.com/o/r/issues/12 among other things.' \
+    '[{number:3,url:"https://github.com/o/r/issues/3",body:$b3}]')"
+)
 
 # _pager_open_page_issues reads one `gh issue list`; per-item pr/issue view
 # calls answer per the *referenced* URL, via the shared gh() stub's lookup
@@ -170,6 +199,10 @@ STUB_GH_ISSUE_STATE_MAP="https://github.com/o/r/issues/12=CLOSED"
 verdict="$(pager_eval_page_outlived_item "" "")"
 assert_eq "two of three pages' own items already concluded: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
 assert_eq "  ... evidence counts exactly two" "1" "$(grep -c '^2 page' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... one listing per label, never one comma-joined (which GitHub ANDs)" "0" \
+  "$(grep '^issue list' "$GH_CALLS_FILE" | grep -c -- '--label [^ ]*,')"
+assert_eq "  ... both labels were asked for" "2" \
+  "$(grep '^issue list' "$GH_CALLS_FILE" | grep -c -- '--label')"
 
 : > "$GH_CALLS_FILE"
 outcome="$(pager_remedy_page_outlived_item page-outlived-item "irrelevant, re-derived live")"
@@ -181,7 +214,7 @@ assert_eq "  ... issue #2 (still-open PR) was left alone" "0" \
 assert_eq "  ... issue #3 (closed issue) was closed" "1" \
   "$(grep -c '^issue close 3 ' "$GH_CALLS_FILE")"
 
-STUB_GH_LIST_OPEN="[]"
+STUB_GH_LIST_BY_LABEL=([enabler-escalation]="[]" [pw::pager]="[]")
 verdict="$(pager_eval_page_outlived_item "" "")"
 assert_eq "no open pages at all: does not fire" "false" "$(jq -r '.firing' <<<"$verdict")"
 

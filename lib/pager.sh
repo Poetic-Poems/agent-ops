@@ -196,17 +196,50 @@ _pager_webhook_notify() {
   return 0
 }
 
-# _pager_create_issue REPO ITEM LABEL TITLE BODY_FILE ASSIGNEE
+# _pager_ensure_label_role REPO ROLE
+# Ensure ROLE's label catalogue exists in REPO, on the create path only —
+# lib/enabler.sh's create_escalation_issue does exactly this, for exactly the
+# reason it states: an escalation repository "is often not one the cycle
+# otherwise touches (`crash_loop_repo` by construction is not), so its label
+# has nowhere else to be ensured". `pager_repo` falls back to
+# `crash_loop_repo`, so by that same construction nothing else would ever
+# create `pw::pager`.
+#
+# Here the label is load-bearing rather than cosmetic, which is why this is
+# not merely a nicety: both _pager_create_issue's own dedup and
+# _pager_close_issue find a page by its label, so an issue filed by the
+# retry-without-label path below would be re-filed on every later fire and
+# never auto-closed when the fact clears — the page would outlive its own
+# invariant on the owner's open list, the one outcome requirement 51 exists
+# to prevent.
+#
+# Guarded by `declare -F` and a ROLE that may be empty, so this file stays
+# sourceable on its own against a plain fixture with no lib/labels.sh and no
+# config.json (see this file's header). A caller that has not sourced
+# lib/labels.sh gets the previous behaviour exactly.
+_pager_ensure_label_role() {
+  local repo="$1" role="${2:-}"
+  [[ -n "$repo" && -n "$role" ]] || return 0
+  declare -F labels_ensure_role >/dev/null 2>&1 || return 0
+  labels_ensure_role "${CONFIG_FILE:-}" "${SCHEMA_FILE:-}" "$repo" "$role" >/dev/null 2>&1 || true
+  return 0
+}
+
+# _pager_create_issue REPO ITEM LABEL TITLE BODY_FILE ASSIGNEE [ENSURE_ROLE]
 # Prints "<number>\t<url>"; prints nothing and returns 1 on failure. ASSIGNEE
 # empty files unassigned (config-lever's tracking issue and pipeline-act's
 # both do). Dedup: an open issue carrying LABEL whose body already contains
 # ITEM is reused, on the same body-contains-item-ref convention every other
-# escalation dedup in this codebase already uses.
+# escalation dedup in this codebase already uses. ENSURE_ROLE, when given, is
+# the lib/labels.sh catalogue role that owns LABEL, ensured in REPO on the
+# create path only (see _pager_ensure_label_role); omitted, nothing is
+# ensured and the retry-without-label below is the only safety net.
 _pager_create_issue() {
-  local repo="$1" item="$2" label="$3" title="$4" body_file="$5" assignee="${6:-}"
+  local repo="$1" item="$2" label="$3" title="$4" body_file="$5" assignee="${6:-}" \
+        ensure_role="${7:-}"
   local gh existing raw url number
   gh="$(_pager_gh)"
-  existing="$("$gh" issue list -R "$repo" --label "$label" --state open --search "$item" \
+  existing="$("$gh" issue list -R "$repo" --label "$label" --state open --search "$item" --limit 200 \
                 --json number,url,body 2>/dev/null \
               | jq -r --arg it "$item" \
                   'map(select(((.body // "") | contains($it)))) | first
@@ -215,6 +248,9 @@ _pager_create_issue() {
     printf '%s' "$existing"
     return 0
   fi
+  # Only on the path that actually creates — costs nothing on the dedup path
+  # above, which is the common one.
+  _pager_ensure_label_role "$repo" "$ensure_role"
   if [[ -n "$assignee" ]]; then
     raw="$("$gh" issue create -R "$repo" --title "$title" --body-file "$body_file" \
              --assignee "$assignee" --label "$label" 2>/dev/null || true)"
@@ -243,7 +279,7 @@ _pager_create_decision_log_issue() {
   local repo="$1" item="$2" label="$3" title="$4" body_file="$5" reason_key="${6:-}"
   local gh existing raw url number
   gh="$(_pager_gh)"
-  existing="$("$gh" issue list -R "$repo" --label "$label" --state all --search "$item" \
+  existing="$("$gh" issue list -R "$repo" --label "$label" --state all --search "$item" --limit 200 \
                 --json number,url,body 2>/dev/null \
               | jq -r --arg it "$item" --arg rk "$reason_key" \
                   'map(select(((.body // "") | contains($it))
@@ -254,6 +290,14 @@ _pager_create_decision_log_issue() {
     printf '%s' "$existing"
     return 0
   fi
+  # `pw::decision` is load-bearing twice over: this function's own dedup finds
+  # a prior decision by it, and scripts/sweep-decision-vetoes.sh is what reads
+  # it across every configured repository to notice a human's reopen-as-veto
+  # (#937). Unlike _pager_create_issue there is no retry-without-label here —
+  # a decision record nobody can sweep for a veto is worse than none — so the
+  # ensure is what makes the create succeed at all in a repository that has
+  # never carried the label.
+  _pager_ensure_label_role "$repo" escalation
   raw="$("$gh" issue create -R "$repo" --title "$title" --body-file "$body_file" \
            --label "$label" 2>/dev/null || true)"
   url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
@@ -276,7 +320,7 @@ _pager_close_issue() {
   local repo="$1" label="$2" item="$3" comment="$4"
   local gh found number url
   gh="$(_pager_gh)"
-  found="$("$gh" issue list -R "$repo" --label "$label" --state open --search "$item" \
+  found="$("$gh" issue list -R "$repo" --label "$label" --state open --search "$item" --limit 200 \
              --json number,url,body,stateReason 2>/dev/null \
            | jq -r --arg it "$item" \
                'map(select(((.body // "") | contains($it)) and (.stateReason != "reopened"))) | first
@@ -297,12 +341,21 @@ _pager_close_issue() {
 # recording what it did), then logs pager-fired. A failed filing logs
 # nothing — the invariant stays "candidate" and the next window's evaluation
 # tries again, exactly as crash_loop_escalate's own dedup-then-retry does.
+#
+# PAGER_REPO empty is not a failure and must not be treated as one: it is an
+# installation that has configured no repository to file into, which
+# requirement 51 states still gets the transition on its dashboard ("nothing
+# is filed or assigned" — not "nothing happens"). This is the whole reason
+# `pager_enabled` exists as a boolean rather than reusing `pager_repo` empty
+# as the off switch the way `crash_loop_repo` does, so the transition has to
+# actually be logged: an early return here would leave the key `candidate`
+# for ever, never firing on the dashboard and never able to clear, and would
+# make that documented distinction between the two keys purely notional.
 pager_file() {
   local key="$1" remedy_class="$2" remedy_arg="$3" evidence="$4" first_seen="$5" \
         pager_repo="$6" label="$7" assignee="$8" webhook_url="$9" log_file="${10}" \
         node="${11}" cycle="${12}" nodes_json="${13:-[]}"
-  [[ -n "$pager_repo" ]] || return 0
-  local item="pager:$key" body_file remedy_note="" created number url fields
+  local item="pager:$key" body_file remedy_note="" created number="" url="" fields logged=0
   body_file="$(mktemp)"
   if [[ "$remedy_class" == "pipeline-act" && -n "$remedy_arg" ]]; then
     # Same unexported-variable handoff _pager_evaluate_one uses for EVAL_FN:
@@ -329,18 +382,29 @@ pager_file() {
   } > "$body_file"
   local file_assignee=""
   [[ "$remedy_class" == "owner-only" ]] && file_assignee="$assignee"
-  if created="$(_pager_create_issue "$pager_repo" "$item" "$label" "Pager: $key ($evidence)" \
-        "$body_file" "$file_assignee")" && [[ -n "$created" ]]; then
+  if [[ -z "$pager_repo" ]]; then
+    logged=1  # nothing to file into; the transition is still the fact
+  elif created="$(_pager_create_issue "$pager_repo" "$item" "$label" "Pager: $key ($evidence)" \
+        "$body_file" "$file_assignee" escalation)" && [[ -n "$created" ]]; then
     number="${created%%$'\t'*}"; url="${created#*$'\t'}"
-    fields="$(jq -nc --arg k "$key" --arg fs "$first_seen" --arg e "$evidence" \
-      --argjson n "$number" --arg u "$url" --arg rc "$remedy_class" --argjson nodes "$nodes_json" \
-      '{key: $k, first_seen: $fs, evidence: $e, issue_number: $n, issue_url: $u,
-        remedy_class: $rc, nodes: $nodes}')"
-    pager_log_event "$log_file" "$node" "$cycle" "pager-fired" "$fields"
+    logged=1
   else
     _pager_webhook_notify "$webhook_url" "$pager_repo" "$item" "Pager: $key" "$body_file" "$node" "$cycle"
   fi
-  if [[ "$remedy_class" == "config-lever" ]]; then
+  if (( logged )); then
+    # `issue_number`/`issue_url` are null rather than absent on the no-repo
+    # path, so the dashboard's own reader (which already defaults both) and a
+    # human reading the union log see "fired, nothing filed" rather than a
+    # record that looks truncated.
+    fields="$(jq -nc --arg k "$key" --arg fs "$first_seen" --arg e "$evidence" \
+      --arg n "$number" --arg u "$url" --arg rc "$remedy_class" --argjson nodes "$nodes_json" \
+      '{key: $k, first_seen: $fs, evidence: $e,
+        issue_number: (if $n == "" then null else ($n | tonumber) end),
+        issue_url: (if $u == "" then null else $u end),
+        remedy_class: $rc, nodes: $nodes}')"
+    pager_log_event "$log_file" "$node" "$cycle" "pager-fired" "$fields"
+  fi
+  if [[ "$remedy_class" == "config-lever" && -n "$pager_repo" ]]; then
     local dec_body dec_created
     dec_body="$(mktemp)"
     {

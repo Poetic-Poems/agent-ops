@@ -70,6 +70,14 @@ pager_remedy_verdict_unanimous() {
     printf 'This is the #1071 signature — a uniform failure across the whole fleet is almost always the *reader* (a bad rule, a bad threshold) rather than every node independently failing the same way at the same instant. Find and fix the rule the evidence above names.\n\n'
     printf -- '---\nFiled automatically by lib/pager.sh (issue #1278).\nref: %s\n' "$item"
   } > "$body_file"
+  # No ENSURE_ROLE (lib/pager.sh's 7th parameter): `pw::type:tech-debt` lives
+  # in the `target` catalogue, and ensuring that whole role here would mint a
+  # dozen unrelated pipeline labels (`refined`, `complexity:*`, `blocked`, …)
+  # in a repository that is only ever the *reader's* — often, but not
+  # necessarily, also a target repo. The retry-without-label path is the
+  # safety net instead: unlike `pw::pager`, nothing later finds this issue by
+  # its label — the tech-debt register is the human's own filter, and this
+  # function's dedup narrows on the body's `ref:` line regardless.
   if created="$(_pager_create_issue "$repo" "$item" "pw::type:tech-debt" \
         "Pager: verdict-unanimous fired ($evidence)" "$body_file" "")" && [[ -n "$created" ]]; then
     number="${created%%$'\t'*}"
@@ -85,13 +93,31 @@ pager_remedy_verdict_unanimous() {
 # per open issue carrying PAGER_EVAL_ESCALATION_LABEL or pw::pager in
 # PAGER_EVAL_REPO. Shared by the eval and remedy functions below so both walk
 # the identical listing rather than risking two reads disagreeing.
+#
+# One listing per label, merged and deduped on the issue number, because the
+# relation wanted here is a union and `gh issue list`'s own is an
+# intersection: `--label "a,b"` splits on the comma and filters for issues
+# carrying *every* name given. No page ever carries both of these labels — an
+# Enabler escalation is not a pager page and vice versa — so a single
+# comma-joined listing is empty in every real case, which would leave this
+# invariant permanently `firing: false`.
+#
+# `--limit 200` rather than `gh`'s undeclared default of 30, on
+# lib/tech-debt-file.sh's own TECHDEBT_DEDUP_LIST_LIMIT reasoning: a
+# truncated listing is indistinguishable from a complete one, and the
+# listing is newest-first, so the page most likely to have outlived its item
+# is exactly the oldest one the cap would hide.
 _pager_open_page_issues() {
-  local repo="${PAGER_EVAL_REPO:-}" label="${PAGER_EVAL_ESCALATION_LABEL:-enabler-escalation}" gh
+  local repo="${PAGER_EVAL_REPO:-}" label="${PAGER_EVAL_ESCALATION_LABEL:-enabler-escalation}" gh l
   [[ -n "$repo" ]] || return 0
   gh="${PAGER_GH:-gh}"
-  "$gh" issue list -R "$repo" --label "$label,pw::pager" --state open \
-      --json number,url,body 2>/dev/null \
-    | jq -r '.[] | [.number, .url, (.body // "" | gsub("\n"; " "))] | @tsv' 2>/dev/null
+  { for l in "$label" "pw::pager"; do
+      [[ -n "$l" ]] || continue
+      "$gh" issue list -R "$repo" --label "$l" --state open --limit 200 \
+        --json number,url,body 2>/dev/null
+    done
+  } | jq -sr 'add // [] | unique_by(.number) | .[]
+              | [.number, .url, (.body // "" | gsub("\n"; " "))] | @tsv' 2>/dev/null
 }
 
 # _pager_outlived_ref BODY -> "kind\treference" (kind: pr|issue) for the
