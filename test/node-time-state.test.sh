@@ -323,6 +323,11 @@ assert_eq "a node-state event with an unparseable ts does not abort the fold" \
   "600" "$(jq -c '.window.seconds' <<<"$bad_ts_report")"
 assert_eq "  ... it is excluded from every node's timeline, counted under skipped_events" \
   "1" "$(jq -c '.skipped_events' <<<"$bad_ts_report")"
+assert_eq "  ... the two well-formed events still fold normally into totals" \
+  '{"producing":0,"overhead":600}' \
+  "$(jq -c '{producing: .totals.producing, overhead: .totals.overhead}' <<<"$bad_ts_report")"
+assert_eq "  ... and into by_node, never the fallback all-empty shape" \
+  "600" "$(jq -c '.by_node.n1.overhead' <<<"$bad_ts_report")"
 assert_eq "  ... and the invariant still balances over what remains" \
   "true" "$(jq -c '.balanced' <<<"$bad_ts_report")"
 
