@@ -59,9 +59,9 @@ Read-only. Prints the node time-state report as JSON on stdout:
     `peer-claimed`, `coordinator-declined`), plus `unspecified` for one
     whose own `cause` this fold does not recognise.
   - `by_node`: the same breakdown, per node.
-  - `skipped_events`: `node-state` events missing `node`, `ts` or `state` —
-    excluded from every count above, since none can be placed on a
-    timeline at all.
+  - `skipped_events`: `node-state` events missing `node` or `state`, or
+    whose `ts` is missing or fails `fromdateiso8601` — excluded from every
+    count above, since none can be placed on a timeline at all.
 
   --since       only count `node-state` events at or after this ISO-8601
                 timestamp (default: the whole log).
