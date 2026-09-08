@@ -46,6 +46,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/drain.sh"
 # shellcheck source=lib/mirror-integrity.sh
 . "$SCRIPT_DIR/lib/mirror-integrity.sh"
+# shellcheck source=lib/redact.sh
+. "$SCRIPT_DIR/lib/redact.sh"
 
 usage() {
   cat <<'EOF'
@@ -605,6 +607,20 @@ do_push() {
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
       compose: $compose, image: $image, switch: $switch,
       stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater}' > "$mirror/heartbeat.json"
+
+  # Redact before committing (agent-ops#966): nothing above stops a token or
+  # a home path that reaches a stage's stdout/stderr — a verbose git/curl
+  # error, a stray `set -x`, a future bug — from ending up in log.jsonl,
+  # review-log.jsonl, a cron log, or a cycle/review transcript, and unlike
+  # the dashboard's own payload (lib/redact.sh, scripts/publish-dashboard.sh)
+  # nothing was ever applied to what this push commits to the state
+  # repository, which keeps it indefinitely and is never rotated. Every
+  # ordinary file just staged by the two rsyncs above, and the heartbeat just
+  # written, gets the identical pattern set in place; `.git` is excluded
+  # because it is the mirror's own object store, not published content.
+  while IFS= read -r -d '' f; do
+    redact_file "$f"
+  done < <(find "$mirror" -mindepth 1 -type f -not -path "$mirror/.git/*" -print0)
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

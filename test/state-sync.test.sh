@@ -3,7 +3,7 @@
 # test/state-sync.test.sh — regression test for scripts/state-sync.sh under
 # the multi-active fleet model (per-node branches, no lease).
 #
-# Five things here are worth a test rather than a careful reading:
+# Six things here are worth a test rather than a careful reading:
 #
 #   what replicates   the exclude list is the difference between a fleet that
 #                     shares its memory and one that shares its locks.
@@ -21,6 +21,10 @@
 #                     from — the property that makes an unclean shutdown a
 #                     one-tick blip instead of a four-day silent outage
 #                     (#604).
+#   what never leaves  everything replicated is redacted first (lib/redact.sh,
+#   raw                agent-ops#966) — a token or a home path that reaches a
+#                     published file must not survive the commit this push
+#                     makes to a repository that is never rotated.
 #
 # No network and no GitHub: the remote is a local bare repository
 # (STATE_SYNC_REMOTE). No test framework is used (none exists elsewhere in
@@ -65,6 +69,16 @@ assert_contains() {
   fi
 }
 
+assert_lacks() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n' "$desc" "$needle"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 # --- The stand-in remote ------------------------------------------------------
 remote="$tmp_dir/remote.git"
 git init --quiet --bare --initial-branch=main "$remote"
@@ -103,9 +117,15 @@ printf '{"ts":"2026-07-20T00:00:00Z","event":"cycle-start"}\n' > "$state/log.jso
 printf '{"ts":"2026-07-20T00:00:00Z","event":"review-start"}\n' > "$state/review-log.jsonl"
 printf '{"ts":"2026-08-21T02:00:00Z","node":"active-node","event":"revert-rate","repo":"o/r"}\n' > "$state/revert-rate.jsonl"
 printf '{"reason":"testing"}\n' > "$state/disabled.json"
-printf 'cron says hello\n' > "$state/cron.log"
+# A token and a home path planted here and in the transcript below, for the
+# redaction check (agent-ops#966): state-sync.sh commits both, unrotated, to
+# the private state-mirror repository, so a token that reaches either from a
+# verbose git/curl error or a stray `set -x` must not survive the push.
+printf 'cron says hello, token ghp_1234567890abcdefXYZ1234 in /home/fixturenode/secret\n' \
+  > "$state/cron.log"
 mkdir -p "$state/cycles/20260720T010000Z-1" "$state/reviews/20260720T020000Z-1"
-printf 'transcript\n' > "$state/cycles/20260720T010000Z-1/coordinator.out"
+printf '{"result":"token ghp_1234567890abcdefXYZ1234 in /home/fixturenode/secret"}\n' \
+  > "$state/cycles/20260720T010000Z-1/coordinator.out"
 # The stage event stream beside it (requirement 4d). It is the one thing in a
 # cycle directory that must not replicate: `.out` is one JSON object, a stream
 # is every message and every tool result, and the branch is a rolling commit
@@ -242,6 +262,20 @@ assert_eq "nor does a review's" "0" \
 # cycle is still there.
 assert_eq "the record survives both exclusions" "1" \
   "$(test -f "$pushed/cycles/20260720T010000Z-1/coordinator.out" && echo 1 || echo 0)"
+
+# Redaction (agent-ops#966): the token and home path planted in cron.log and
+# the cycle transcript above must not reach the commit this push makes to
+# the state-mirror repository — the same defence-in-depth pass
+# publish-dashboard.sh already applies to its own (lower-risk) payload.
+pushed_cron="$(cat "$pushed/cron.log")"
+assert_contains "the cron log's token is redacted" "[REDACTED-TOKEN]" "$pushed_cron"
+assert_lacks "no raw token survives in the cron log" "ghp_1234567890abcdefXYZ1234" "$pushed_cron"
+assert_lacks "no home path survives in the cron log" "/home/fixturenode" "$pushed_cron"
+pushed_transcript="$(cat "$pushed/cycles/20260720T010000Z-1/coordinator.out")"
+assert_contains "a cycle transcript's token is redacted too" "[REDACTED-TOKEN]" "$pushed_transcript"
+assert_lacks "no raw token survives in the transcript" "ghp_1234567890abcdefXYZ1234" "$pushed_transcript"
+assert_eq "the redacted transcript is still valid JSON" "0" \
+  "$(jq -e . >/dev/null 2>&1 <<<"$pushed_transcript"; echo $?)"
 
 assert_contains "the commit names the node" "state: active-node" \
   "$(git -C "$pushed" log -1 --format=%s)"

@@ -3126,6 +3126,25 @@ implements.
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
 
+   **Redaction.** Before `do_push()` commits, every file just staged by the
+   two rsyncs above, plus the heartbeat just written, is passed through
+   `redact_file()` (`lib/redact.sh`, agent-ops#966) in place: `/home/<user>`
+   and `/Users/<user>` → `~`, and `ghp_/gho_/github_pat_/sk-…/Bearer …`
+   token shapes → `[REDACTED-TOKEN]`. It is the same pattern set
+   `scripts/publish-dashboard.sh` applies to its own payload
+   (`docs/DASHBOARD-SPEC.md`), shared through `lib/redact.sh` rather than
+   reimplemented — the pattern only ever touches path- and
+   token-shaped substrings, never JSON syntax, so `log.jsonl` and the other
+   JSON/JSON-Lines files above stay parseable afterwards. Nothing upstream of
+   this point stops a token or a home path that reaches a stage's own
+   stdout/stderr — a verbose `git`/`curl` error, a stray `set -x`, a future
+   bug — from landing in a transcript or a log; unlike the dashboard's
+   published payload, the state repository is private, but it retains
+   everything indefinitely (`log.jsonl` is never rotated, requirement 2.6),
+   so this pass is the only backstop it has. Out of scope: anything already
+   committed to the state repository's history before this pass existed —
+   a one-off cleanup, not a push-time behaviour this requirement covers.
+
    **Mirror integrity.** Before either mode below touches the mirror,
    `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
    trust a bare directory check used to hand it for free: a host whose disk
@@ -19047,7 +19066,11 @@ oblige anyone to edit a test.
    pruned to the newest `state_local_cycles_retained` by the same push,
    newest always kept, and `log.jsonl` is byte-for-byte untouched by that
    same local prune regardless of how many cycle/review directories it
-   removes (requirement 2.6d); a fetch materialises a peer whole
+   removes (requirement 2.6d); everything the push commits is redacted first
+   (requirement 2.5, `lib/redact.sh`) — a token- and home-path-shaped
+   fixture planted in `cron.log` and in a cycle transcript reaches the
+   branch as `[REDACTED-TOKEN]` and `~`, neither raw form survives, and the
+   redacted transcript still parses as JSON; a fetch materialises a peer whole
    under the peers directory, leaves the node's own `state_dir` alone, never
    includes the node itself, and prunes a peer whose branch is gone; the
    union read (`lib/fleet.sh`) carries both nodes' events in time order; and

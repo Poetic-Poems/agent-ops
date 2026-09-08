@@ -404,6 +404,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`state-sync.sh` now redacts tokens and home paths before pushing state**
+  (issue #966): its push committed `log.jsonl`, `review-log.jsonl`, cron
+  logs, and cycle/review transcripts to the private state-mirror
+  repository — deliberately never rotated — with no redaction pass, even
+  though `publish-dashboard.sh` already strips token-shaped strings and
+  home-directory paths from its own (lower-risk) published payload as
+  defence-in-depth. The pattern set is now shared (`lib/redact.sh`) and
+  applied to every file the push stages before it commits.
+
 - **A scheduler's memory ceiling now survives being recreated**
   (TD-PPagop-26090401, following issue #1266). `memory.high` — the soft
   ceiling that has the kernel reclaim a ratcheting cgroup instead of

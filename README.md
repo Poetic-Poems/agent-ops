@@ -1261,6 +1261,13 @@ does not grow; your own `state_dir` keeps the longer record, pruned to
 `state_local_cycles_retained` by the same push. No two nodes share a branch,
 so pushes cannot collide and nothing arbitrates them.
 
+What travels is also redacted first: every file the push commits goes through
+the same pass the dashboard applies to its own payload (`lib/redact.sh`), so
+`/home/<user>` becomes `~` and anything token-shaped becomes
+`[REDACTED-TOKEN]`. The state repository is private, but it keeps what it is
+given indefinitely — `log.jsonl` is never rotated — so this is the backstop
+for a token that reaches a stage's own output.
+
 The pipelines read the **union** of all those logs — a blocked item, a void
 verdict, a no-op fingerprint or a usage-limit hit learned by any node stands
 the rest of the fleet down (or spares it a re-check) within one fetch

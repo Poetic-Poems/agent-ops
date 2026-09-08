@@ -651,7 +651,12 @@ minutes before. The `cycles` payload is byte-identical to the unbatched build's.
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,
-applied to the whole serialised payload before writing.
+applied to the whole serialised payload before writing. The pattern set
+itself is `lib/redact.sh`, shared with `scripts/state-sync.sh`, which
+applies the identical pass to what it pushes to the private state-mirror
+repository (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.5,
+agent-ops#966) — one place to add a pattern for a new secret shape, rather
+than two.
 
 The `DASHBOARD_DATA` shape (the contract the page renders):
 
