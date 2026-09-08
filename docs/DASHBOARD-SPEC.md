@@ -694,10 +694,13 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                      //   #593, D21) are joined onto `cycle`
                                      //   from the same fleet-wide event
                                      //   union `cycles[]` renders from —
-                                     //   bounded by log_retained_bytes, not
-                                     //   by cycles[]'s own MAX_CYCLES cap —
-                                     //   and populated only when
-                                     //   `attributed` is true: a
+                                     //   never rotated (requirement 2.6),
+                                     //   retained per
+                                     //   `analytics_retained_days` rather
+                                     //   than by cycles[]'s own MAX_CYCLES
+                                     //   cap (requirement 2.6d) — and
+                                     //   populated only when `attributed` is
+                                     //   true: a
                                      //   coordinator/implementer/reviewer
                                      //   row whose own cycle has events in
                                      //   that union. Every other row —
@@ -707,8 +710,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                      //   project-reviewer (whose cycle id
                                      //   never reaches log.jsonl), or a
                                      //   coordinator/implementer/reviewer
-                                     //   row whose cycle has rotated out of
-                                     //   the union — carries all four as
+                                     //   row whose cycle has no events in
+                                     //   the union at all (rare, since the
+                                     //   union is never rotated) — carries
+                                     //   all four as
                                      //   null and `attributed:false`, never
                                      //   dropping the row itself. See
                                      //   docs/METERING-SCHEMA.md for the

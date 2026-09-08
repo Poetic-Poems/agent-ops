@@ -2,7 +2,9 @@
 #
 # test/item-lifecycle.test.sh — self-contained regression test for
 # lib/item-lifecycle.sh (docs/FLOW-SCHEMA.md's "Item lifecycle record",
-# requirement 49 of docs/IMPLEMENTATION-PIPELINE-SPEC.md, issue #595).
+# requirement 49 of docs/IMPLEMENTATION-PIPELINE-SPEC.md, issue #595). Also
+# covers requirement 2.6d's de-duplication property (agent-ops#598), which
+# this fold is the worked example for.
 #
 # What matters here:
 #
@@ -22,6 +24,11 @@
 #   degradation         a malformed line, a missing field, an event naming
 #                        no item, and a non-string `repo` all yield a
 #                        conforming report rather than aborting the fold.
+#   two-node dedup       two nodes each folding the union `fleet_logs` hands
+#                        them (their own log plus the other's, as a peer)
+#                        produce byte-identical `records[]`, and merging
+#                        both folds' records by `{repo, item}` still yields
+#                        exactly one record per item (requirement 2.6d).
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -38,6 +45,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/item-lifecycle.sh
 . "$SCRIPT_DIR/lib/item-lifecycle.sh"
+# shellcheck source=lib/fleet.sh
+. "$SCRIPT_DIR/lib/fleet.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -294,6 +303,64 @@ assert_eq "  ... balanced true, window null" \
   '{"balanced":true}' "$(jq -c '.totals | {balanced}' <<<"$empty_out")"
 assert_eq "  ... and an empty records/unaccounted array, never missing keys" \
   '{"records":[],"unaccounted":[]}' "$(jq -c '{records, unaccounted}' <<<"$empty_out")"
+
+# --- Two nodes folding the same union agree, and merging never double-counts
+# (requirement 2.6d, agent-ops#598) --------------------------------------------
+# Node A and node B each observe half of the same item's history — the shape
+# a claim race or a stage split across two nodes leaves — and each only has
+# the other's half through `fleet_logs`, exactly as a real fetch would
+# deliver it. Neither node's own log alone tells the whole story; the union
+# each of them computes does.
+node_a_home="$tmp_dir/dedup-node-a"
+node_b_home="$tmp_dir/dedup-node-b"
+mkdir -p "$node_a_home" "$node_b_home/peers/nodeA" "$node_a_home/peers/nodeB"
+
+cat > "$node_a_home/log.jsonl" <<'EOF'
+{"ts":"2026-02-01T00:00:00Z","node":"nodeA","cycle":"cA1","event":"first-seen","repo":"acme/widgets","item":"100"}
+{"ts":"2026-02-01T00:01:00Z","node":"nodeA","cycle":"cA1","event":"selection","repo":"acme/widgets","item":"100","source":"issues"}
+EOF
+cat > "$node_b_home/log.jsonl" <<'EOF'
+{"ts":"2026-02-01T00:02:00Z","node":"nodeB","cycle":"cB1","event":"pr-raised","repo":"acme/widgets","item":"100","pr_url":"https://github.com/acme/widgets/pull/100"}
+{"ts":"2026-02-01T00:03:00Z","node":"nodeB","cycle":"cB1","event":"merge-observed","repo":"acme/widgets","item":"100","pr_url":"https://github.com/acme/widgets/pull/100","stage":"landing"}
+EOF
+# Each node's peers directory holds the *other* node's log, exactly as a
+# fetch materialises a peer (lib/fleet.sh) — never its own.
+cp "$node_b_home/log.jsonl" "$node_a_home/peers/nodeB/log.jsonl"
+cp "$node_a_home/log.jsonl" "$node_b_home/peers/nodeA/log.jsonl"
+
+union_a="$tmp_dir/dedup-union-a.jsonl"
+union_b="$tmp_dir/dedup-union-b.jsonl"
+fleet_logs "$node_a_home" "$node_a_home/peers" > "$union_a"
+fleet_logs "$node_b_home" "$node_b_home/peers" > "$union_b"
+
+# A prerequisite fact, distinct from the record-identity property proved
+# below: the raw union itself manufactures no duplicate events. Four
+# distinct events went in (two from each node), and the union each node
+# computes carries exactly those four, never a node's own doubled by its
+# peer's copy of itself.
+raw_event_count() {  # <union-file>
+  jq -s '[.[] | {node, ts, event, repo, item}] | unique | length' "$1"
+}
+assert_eq "node A's union carries exactly the four distinct events" "4" "$(raw_event_count "$union_a")"
+assert_eq "node B's union carries the identical four, not eight" "4" "$(raw_event_count "$union_b")"
+assert_eq "the two unions are byte-identical (same events, same sort)" \
+  "$(cat "$union_a")" "$(cat "$union_b")"
+
+report_a="$(fold_of "$union_a")"
+report_b="$(fold_of "$union_b")"
+assert_eq "two nodes folding the same union produce identical records[]" \
+  "$(jq -c '.records' <<<"$report_a")" "$(jq -c '.records' <<<"$report_b")"
+assert_eq "the item resolves to its true fate from either node's fold" \
+  "landed" "$(fate_of "$report_a" acme/widgets 100)"
+
+# Merging the two folds' own record sets — the shape a future per-node
+# publication of this fold would produce — reduces to one record per item,
+# never two, by the record's own {repo, item} identity.
+merged_records="$(jq -c -n --argjson a "$(jq -c '.records' <<<"$report_a")" \
+  --argjson b "$(jq -c '.records' <<<"$report_b")" \
+  '($a + $b) | group_by([.repo, .item]) | map(.[0])')"
+assert_eq "merging both nodes' outputs still yields exactly one record for the item" \
+  "1" "$(jq 'length' <<<"$merged_records")"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"

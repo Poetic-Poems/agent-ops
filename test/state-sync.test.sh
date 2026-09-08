@@ -416,6 +416,11 @@ assert_eq "the newest local cycle survives" "1" \
   "$(test -e "$lr_state/cycles/20260201T000004Z-4" && echo 1 || echo 0)"
 assert_eq "local reviews are pruned to the cap" "3" \
   "$(find "$lr_state/reviews" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+# The analytics retention policy (requirement 2.6d): a push that prunes
+# cycles/ and reviews/ never reaches log.jsonl, which this fixture seeded
+# with content of its own above.
+assert_eq "log.jsonl is untouched by the local prune" "log" \
+  "$(cat "$lr_state/log.jsonl")"
 
 # A stale directory reappearing below the retention cut is pruned by the next
 # push.
