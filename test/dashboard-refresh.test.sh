@@ -63,11 +63,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 # --- the scenario --------------------------------------------------------
-# fp1 is refresh-base.json's own embedded `fingerprint` — what the tab's
-# *first load* actually parsed out of data.js. fp2 and fp3 are two later
-# publishes' fingerprints; only their distinctness from each other and from
-# fp1 matters, not their form.
-fp1="1111111111111111111111111111111111111111111111111111111111111111"
+# fp1 (below, only in comments) is refresh-base.json's own embedded
+# `fingerprint` — what the tab's *first load* actually parsed out of data.js.
+# fp2 and fp3 are two later publishes' fingerprints; only their distinctness
+# from each other and from fp1 matters, not their form.
 fp2="2222222222222222222222222222222222222222222222222222222222222222"
 fp3="3333333333333333333333333333333333333333333333333333333333333333"
 
