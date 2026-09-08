@@ -627,13 +627,27 @@ assert_eq "the fixed reserved names appear first, in order" \
   "blocked blocked:* obsolete complexity:* pw::type:tech-debt pw::owner-decision pw::decision open-question" \
   "$(head -n8 <<<"$reserved_names" | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "every non-empty configured label name is reserved too" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided project-review" \
   "$(tail -n +9 <<<"$reserved_names" | tr '\n' ' ' | sed 's/ $//')"
 
 config '.needs_refinement_label = ""'
 assert_eq "a configured label switched off by an empty value contributes nothing" \
-  "autonomous-agent enabler-escalation refined unvoided" \
+  "autonomous-agent enabler-escalation refined unvoided project-review" \
   "$(tail -n +9 <<<"$(labels_reserved_names "$tmp/config.json" "$SCHEMA")" | tr '\n' ' ' | sed 's/ $//')"
+
+# A repository's own project_review override is reserved alongside the
+# default: review-cycle.sh skips that repository's whole review while an open
+# pull request carries the label, so a minted one claiming the name would be
+# read to decide something.
+config '.project_review.repos[0].pr_label = "house-review"'
+assert_eq "a repository's own project_review pr_label override is reserved too" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided project-review house-review" \
+  "$(tail -n +9 <<<"$(labels_reserved_names "$tmp/config.json" "$SCHEMA")" | tr '\n' ' ' | sed 's/ $//')"
+
+config
+mapfile -t reserved_arr < <(labels_reserved_names "$tmp/config.json" "$SCHEMA")
+assert_eq "  ... and a minted name colliding with a review label is refused" "reserved" \
+  "$(labels_validate_name "Project-Review" "${reserved_arr[@]}")"
 
 # --- labels_validate_name: a stage-minted entry's own gate (issue #714) ---
 

@@ -6921,7 +6921,15 @@ implements.
    sweep target), `open-question` (the landing gate's open-scope-question
    hold, requirement 8f), and every non-empty configured label name —
    `pr_label`, `enabler_escalation_label`, `needs_refinement_label`,
-   `refined_label`, `unvoid_label`. `lib/labels.sh`'s `labels_reserved_names`
+   `refined_label`, `unvoid_label`, and every project-review pull-request
+   label in force (`project_review.defaults.pr_label` and each repository's
+   own override of it, requirement 342: `review-cycle.sh` skips a
+   repository's whole review while an open pull request carries that label,
+   so a minted one claiming the name would be read to decide something).
+   That last value is resolved per repository rather than globally, so the
+   reserved set takes the union of every value in force anywhere — a
+   superset by design, the same way `scripts/doctor.sh`'s own review-label
+   check reads them. `lib/labels.sh`'s `labels_reserved_names`
    is the one place this set is declared; every one of these names is read
    somewhere in this pipeline today to make a decision, not only the smaller
    set issue #714's own body named as illustration — the inertness invariant
@@ -21775,8 +21783,9 @@ oblige anyone to edit a test.
     `labels_reserved_names` lists the fixed set (`blocked`, `blocked:*`,
     `obsolete`, `complexity:*`, `pw::type:tech-debt`, `pw::owner-decision`,
     `pw::decision`, `open-question`) ahead of every non-empty configured
-    label name, and a name switched off by an empty configured value
-    contributes nothing; `labels_validate_name` refuses an empty name, one
+    label name — the project-review pull-request label, and a repository's
+    own override of it, among them — and a name switched off by an empty
+    configured value contributes nothing; `labels_validate_name` refuses an empty name, one
     over 50 characters, one carrying a comma, and one matching a reserved
     entry case-insensitively — by exact name or by prefix glob — while
     passing an ordinary name and one at exactly the 50-character limit;

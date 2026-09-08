@@ -514,16 +514,28 @@ labels_ensure_stamped() {
 # `needs_refinement_label`, `refined_label`, `unvoid_label` — read the same
 # way `labels_catalogue` reads them, from `config_defaults`'s merge rather
 # than CONFIG_FILE directly, so a renamed key is covered without repeating
-# its default here. A future gate that wants to read a label adds that name
-# here in the same change — this function is the one place the reserved set
-# is declared, so nothing else needs to duplicate it.
+# its default here, plus every project-review pull-request label in force:
+# `project_review.defaults.pr_label` and each repository's own override of
+# it. That last one is resolved per repository rather than globally, so
+# `labels_catalogue` deliberately takes it as an argument instead — but the
+# reserved set is a superset by design, the union of every value in force
+# anywhere (`scripts/doctor.sh`'s own review-label check reads them the same
+# way), because `review-cycle.sh` skips a repository's whole review while an
+# open pull request carries that label: a minted one claiming the name would
+# be read to decide something, which is exactly what may never happen. A
+# future gate that wants to read a label adds that name here in the same
+# change — this function is the one place the reserved set is declared, so
+# nothing else needs to duplicate it.
 labels_reserved_names() {
   local config_file="$1" schema_file="$2" defaulted
   printf '%s\n' 'blocked' 'blocked:*' 'obsolete' 'complexity:*' \
     'pw::type:tech-debt' 'pw::owner-decision' 'pw::decision' 'open-question'
   defaulted="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)" || return 0
   jq -r '[.pr_label, .enabler_escalation_label, .needs_refinement_label,
-          .refined_label, .unvoid_label] | .[] | select(. != "")' \
+          .refined_label, .unvoid_label,
+          (.project_review.defaults.pr_label // ""),
+          ((.project_review.repos // [])[] | .pr_label // "")]
+         | .[] | select(. != "")' \
     <<<"$defaulted" 2>/dev/null
 }
 
