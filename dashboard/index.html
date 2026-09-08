@@ -2232,7 +2232,7 @@
       if (!g) return;
       var box = el("div", {class:"stagebox"});
       var head = el("div", {class:"head"}, [ el("span", {class:"name", text:s}) ]);
-      function kv(k,v){ head.appendChild(el("span", {class:"kv", html: k + " <b>" + esc(v) + "</b>"})); }
+      function kv(k,v){ head.appendChild(el("span", {class:"kv"}, [k + " ", el("b", {text: esc(v)})])); }
       if (g.model) kv("model", g.model);
       if (g.cost_usd != null) kv("cost", usd(g.cost_usd));
       if (g.duration_ms != null) kv("took", fmtDur(g.duration_ms));
@@ -2514,7 +2514,7 @@
       box.appendChild(el("div", {style:"font-weight:650; margin-bottom:8px"}, [
         el("span",{class:"mono",text: slug}),
         niceBadge(slug),
-        el("span",{class:"muted", style:"font-weight:400", html:
+        el("span",{class:"muted", style:"font-weight:400", text:
           "  ·  " + [
             countText(g, "findings", secCount, "security findings"),
             countText(g, "failed_runs", g.failed_runs ? g.failed_runs.length : 0, "failing workflows"),
