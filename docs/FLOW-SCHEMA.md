@@ -765,6 +765,18 @@ document is, rather than hidden:
   Only the overlap with a *running* implementation cycle is guarded (the
   `impl_cycle_running` probe above); an overlap with a sleeping one is the
   last-writer-wins case #1248 carries.
+- **An unparseable `--since`/`--until` degrades to the all-empty report
+  rather than being rejected** (issue #1273). A `node-state` event whose own
+  `ts` fails `fromdateiso8601` is skipped and counted (above), but the
+  window bounds themselves are parsed unguarded once either becomes
+  `window.from`/`window.to`, and `scripts/node-time-state.sh` passes both
+  flags through without validating them. A date-only value, a `+00:00`
+  offset or a typo therefore aborts the fold's one jq program, and
+  `node_time_state_fold`'s fallback prints the conforming all-zero shape
+  with `balanced: true` — indistinguishable from a window in which the fleet
+  genuinely did nothing. #1273 carries the choice between rejecting the
+  bound at the CLI boundary and degrading to an absent bound inside the
+  fold.
 
 ## Stability policy
 

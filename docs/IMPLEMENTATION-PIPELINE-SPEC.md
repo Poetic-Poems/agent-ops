@@ -15830,7 +15830,11 @@ with the Reviewer's own.
     `agent-cycle.sh`'s two switch stand-downs record their `down` from a tick
     that never won the lock, so a `--disable` issued mid-cycle relabels that
     cycle's own `producing` seconds until its next transition (#1268), the
-    one ending in either script not covered by the silence rule above; and
+    one ending in either script not covered by the silence rule above; a
+    `--since`/`--until` bound that fails `fromdateiso8601` aborts the fold's
+    one jq program and falls through to the conforming all-zero report
+    rather than being rejected, unlike an event's own unparseable `ts`,
+    which is skipped and counted (#1273); and
     `balanced` is a self-check on the reduction's arithmetic — every node's
     segments tile the window by construction — never evidence that the events
     reduced described the fleet correctly, for which `skipped_events` and
