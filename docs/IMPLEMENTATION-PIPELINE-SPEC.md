@@ -15996,11 +15996,10 @@ with the Reviewer's own.
       it, over a lock file this run has just written its own pid into — and
       suppresses when either probe finds a live peer, implementation cycle or
       peer review run, owning the node; a node genuinely idle under both
-      pipelines still records its idle state from these sites. `agent-cycle.sh`'s own two
-      switch stand-downs are the one known gap in this rule and are
-      documented as such
-      (`docs/FLOW-SCHEMA.md`, "Known limitations"; issue #1268). This is
-      #597's own named pitfall
+      pipelines still records its idle state from these sites.
+      `agent-cycle.sh`'s own two switch stand-downs are the one known gap in
+      this rule and are documented as such (`docs/FLOW-SCHEMA.md`, "Known
+      limitations"; issue #1268). This is #597's own named pitfall
       ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
       holds each point's state until the next point's `ts`, and a running
       stage emits nothing between its own `stage-start` and `stage-end`, so
