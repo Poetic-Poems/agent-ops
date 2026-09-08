@@ -1082,6 +1082,12 @@ done
 
 cycles_file="$work_tmp/cycles.json"
 
+# The window's own verdict, carried into the payload as `cycle_render`. A tick
+# that rebuilt nothing is `ok` by default — the cache already holds every row,
+# which is the common case and not a failure.
+cycle_render_ok=true
+cycle_render_error=""
+
 # Only rebuild if something actually moved. On an idle node this is the whole
 # saving: no jq at all, and the window is assembled straight from the cache.
 if (( ${#todo_items[@]} > 0 )); then
@@ -1099,20 +1105,43 @@ if (( ${#todo_items[@]} > 0 )); then
     printf '(%s) as $manifest\n' "$manifest_json"
     printf '| (%s) as $order\n' "$order_json"
     printf '| ($events_raw | fromjson) as $all_events\n'
-    printf '| ($all_events | group_by(.cycle) | map({(.[0].cycle): .}) | add // {}) as $events_by_cycle\n'
+    # Cycle-less events are dropped before the group, not after: the union
+    # carries records no cycle produced — `publish-revert-rate.sh`'s
+    # post-merge-revert `rework` rows carry `cycle: null` deliberately (they
+    # run outside any cycle, and a null there is honest rather than a
+    # fabricated id), and `log-repaired` does the same. `group_by` gives them
+    # a group of their own, and `{(null): .}` is a hard jq error — "Cannot use
+    # null (null) as object key" — which kills the whole program, empties
+    # `$fresh_file`, and so renders every cycle in the window as nothing at
+    # all. The other three `group_by(.cycle)` readers in this file already
+    # filter first; this one did not, and between #941 (which began emitting
+    # those rows) and the fix, Recent cycles was empty fleet-wide.
+    printf '| ($all_events | map(select((.cycle // "") != "")) | group_by(.cycle) | map({(.[0].cycle): .}) | add // {}) as $events_by_cycle\n'
     printf '| ($manifest | INDEX(.cid + "|" + .stage)) as $manifest_idx\n'
     printf '| [ $order[] as $cid | cycle_obj($cid; ($events_by_cycle[$cid] // []); $manifest_idx; $cap) ]\n'
   } > "$detail_main"
 
   fresh_file="$work_tmp/fresh-cycles.json"
   detail_prog="$work_tmp/detail.jq"
+  detail_err="$work_tmp/detail.err"
   cat "$detail_defs" "$detail_main" > "$detail_prog"
   jq -n -f "$detail_prog" "${rawfile_args[@]}" --argjson cap "$TRANSCRIPT_CAP" \
-    > "$fresh_file" 2>/dev/null
+    > "$fresh_file" 2>"$detail_err"
   # A hard failure (a bad program, a file that vanished between the stat above
   # and jq's own open) must not take down the whole publish — fall back to an
   # empty result exactly as the per-cycle loop this replaced did when nothing
   # parsed. The cache is then left alone rather than poisoned with the failure.
+  #
+  # But it must not pass in silence either. This jq renders *every* cycle in
+  # the window in one program, so anything that kills it empties the whole
+  # panel at once — and the cache then drains to nothing as the window slides
+  # over cycles that were never rendered, which makes a transient fault look
+  # exactly like a permanent one. With the error discarded to /dev/null and
+  # the publish still reporting a successful write, the only evidence left was
+  # a page that said the fleet had done nothing; it stayed that way for ten
+  # days. The stderr goes to the publisher's own log for an operator, and the
+  # verdict rides in the payload so the page can name the failure rather than
+  # showing an empty list as though it were an empty fleet.
   if jq -e . "$fresh_file" >/dev/null 2>&1; then
     # Seed every rebuilt cycle as empty, then overwrite the ones jq rendered:
     # what is left empty is the `cycle_obj` verdict "this renders to nothing",
@@ -1130,6 +1159,13 @@ if (( ${#todo_items[@]} > 0 )); then
     for _i in "${!todo_items[@]}"; do
       printf '%s' "${todo_keys[$_i]}" > "$cycle_cache/${todo_items[$_i]}.key" 2>/dev/null || true
     done
+  else
+    cycle_render_ok=false
+    # First line only: jq reports the first fatal error and stops, and the
+    # payload this ends up in is a page, not a log.
+    cycle_render_error="$(head -n 1 "$detail_err" 2>/dev/null)"
+    [[ -n "$cycle_render_error" ]] || cycle_render_error="jq produced no parseable output"
+    echo "publish-dashboard: the cycle detail window failed to render (${#todo_items[@]} cycle(s) not rebuilt): $cycle_render_error" >&2
   fi
 fi
 
@@ -1148,6 +1184,15 @@ fi
   printf ']'
 } > "$cycles_file"
 jq -e . "$cycles_file" >/dev/null 2>&1 || printf '[]' > "$cycles_file"
+
+# `cycle_render` says whether `cycles[]` is the whole window or the wreckage of
+# a failed rebuild — the difference between "the fleet ran nothing" and "the
+# Publisher could not render what it ran", which the page has no other way to
+# tell apart. `--arg`, never string interpolation: the message is jq's own
+# text and carries quotes.
+cycle_render_json="$(jq -nc --argjson ok "$cycle_render_ok" --arg err "$cycle_render_error" \
+  '{ok: $ok, error: (if $err == "" then null else $err end)}' 2>/dev/null)"
+[[ -n "$cycle_render_json" ]] || cycle_render_json='{"ok":true,"error":null}'
 
 # Keep the cache to the window. Entries are never touched on a hit, so an
 # mtime sweep would delete exactly the cycles that are working; the window
@@ -3409,8 +3454,10 @@ data_json="$(jq -n \
   --arg max_prs "$max_open_agent_prs" \
   --argjson dropped_log "$dropped_log_lines" \
   --argjson dropped_rr "$dropped_revert_rate_lines" \
+  --argjson cycle_render "$cycle_render_json" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
-    counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
+    counts: $counts[0], cycles: $cyc[0], cycle_render: $cycle_render,
+    noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
     decisions: $decisions[0],
     revert_rate: $rr[0], github_budget: $gb[0], rework: $rw[0],
@@ -3440,8 +3487,10 @@ fresh_json="$(jq -n \
   --arg max_prs "$max_open_agent_prs" \
   --argjson dropped_log "$dropped_log_lines" \
   --argjson dropped_rr "$dropped_revert_rate_lines" \
+  --argjson cycle_render "$cycle_render_json" \
   '{generated_at: $generated_at, node: $self_node, status: $status,
-    cycles: $cyc[0], noop_ticks: $noop, github: $gh[0], log_tail: $lt[0],
+    cycles: $cyc[0], cycle_render: $cycle_render,
+    noop_ticks: $noop, github: $gh[0], log_tail: $lt[0],
     revert_rate: $rr[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
@@ -3519,8 +3568,17 @@ mv -f "$tmp" "$data_file"
 # otherwise. The two failure directions are not equal: an absent or unreadable
 # stamp costs one needless rebuild, a truncated one that happens to match costs
 # a page that stops updating.
+#
+# A failed cycle render is the same asymmetry from the other side. The stamp
+# means "this page is what that state renders to", and after a render that
+# died it is not: the next tick would find the state unmoved, skip, and leave
+# the broken window in place until something unrelated happened to change —
+# which on a quiet node can be a long time. Dropping the stamp costs one
+# rebuild and makes the retry the very next tick.
 new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
-if [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+if [[ "$cycle_render_ok" != "true" ]]; then
+  rm -f "$fingerprint_file" 2>/dev/null || true
+elif [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
   printf '%s' "$new_fingerprint" > "$fingerprint_file" 2>/dev/null || true
 else
   rm -f "$fingerprint_file" 2>/dev/null || true

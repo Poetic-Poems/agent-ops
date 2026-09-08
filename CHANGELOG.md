@@ -369,6 +369,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Recent cycles no longer reads as an idle fleet when the Publisher could
+  not render it** (the 2026-08-29 blackout). Every dashboard in the fleet
+  reported "No substantive cycles in the fleet window" for ten days while all
+  four nodes worked normally. `scripts/publish-revert-rate.sh` emits its
+  post-merge-revert `rework` rows with `cycle: null` by design (they are mined
+  outside any cycle); the detail window grouped the fleet's event union by
+  `.cycle` without filtering those out, and a null group makes jq build
+  `{(null): …}`, which is a fatal error rather than a null row. Because that
+  one program renders every cycle in the window, the first such row cost the
+  whole panel, and the per-cycle cache then drained as the window slid over
+  cycles that were never rendered. `scripts/publish-dashboard.sh` now filters
+  cycle-less events before the group, as the file's three other
+  `group_by(.cycle)` readers already did.
+
+  The ten days are the other half of the fix. That jq's stderr went to
+  `/dev/null`, the guard's only action was to leave the cache alone, and the
+  publish then reported a successful write — so a page saying the fleet had
+  done nothing was the sole evidence, and it was indistinguishable from a
+  fleet that had. A failed render now writes jq's reason to the Publisher's
+  log, carries `cycle_render: {ok, error}` in `DASHBOARD_DATA`, and withholds
+  the state fingerprint so the next tick rebuilds instead of skipping;
+  `dashboard/index.html` renders that verdict as a red banner naming the
+  Publisher's own failure, which outranks every other empty-state message.
+  The publish itself still completes — one broken panel must not cost the
+  other twenty.
+
 - **The Implementer no longer risks losing its own test evidence to the Bash
   tool's 10-minute ceiling** (issue #962, extending agent-ops#734's Reviewer-
   side fix). Requirement 24's "Verify like CI does" step runs the identical

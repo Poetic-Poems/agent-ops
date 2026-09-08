@@ -36,6 +36,15 @@
 #                         froze at once (requirement 4g)
 #   the failed assemble   whatever kills that jq, an empty payload must not be
 #                         written over a good data.js and reported as a write
+#   the cycle-less event  the union carries records no cycle produced, and
+#                         grouping them by .cycle is a fatal jq error rather
+#                         than a null row — one such record blanked Recent
+#                         cycles fleet-wide for ten days, and the page read the
+#                         empty list as an idle fleet and said so
+#   the failed render     that same window is one jq program, so a fault in it
+#                         empties every row at once; the publish must still
+#                         complete, but must say what happened rather than
+#                         serving the wreckage as a fleet that ran nothing
 #
 # No network and no GitHub: every publish runs --no-github against a
 # synthesised state dir (a throwaway HOME, since config.json's state_dir is
@@ -655,6 +664,105 @@ assert_eq "while the escalation it feeds stays in it" "1" \
   "$(jq '[.log_tail[] | select(.event == "review-gate-checks-degraded")] | length' <<<"$cdata")"
 assert_eq "first-seen is kept out of the log tail too" "0" \
   "$(jq '[.log_tail[] | select(.event == "first-seen")] | length' <<<"$cdata")"
+
+# --- A cycle-less event does not blank the window (the 2026-08-29 blackout) -------
+# Not every record in the union belongs to a cycle. `publish-revert-rate.sh`
+# writes its post-merge-revert `rework` rows with `cycle: null` on purpose —
+# they are mined outside any cycle, and a null there is honest where an invented
+# id would not be — and `log-repaired` does the same. The detail window groups
+# the union by `.cycle` to hand each cycle its own events; a null group makes
+# that grouping build `{(null): …}`, which is a hard jq error, and one such row
+# anywhere in the fleet's history therefore rendered *every* cycle as nothing.
+# It ran for ten days: the panel said "No substantive cycles in the fleet
+# window" while all four nodes were working, because an empty list and an idle
+# fleet look identical from the page. Both shapes are asserted — an explicit
+# `"cycle": null` and the field absent altogether — since only the first is what
+# the emitter writes and the second is what a hand-edit or an older node yields.
+n="$(new_home nodeNullCycle)"
+make_cycle "$n" "${today_day}T090000Z-61" 0.25 model-a
+{
+  printf '{"ts":"2026-07-26T09:00:00Z","cycle":"%sT090000Z-61","node":"nodeNC","event":"cycle-start"}\n' "$today_day"
+  printf '{"ts":"2026-07-26T09:10:00Z","cycle":"%sT090000Z-61","node":"nodeNC","event":"cycle-end","exit_code":0}\n' "$today_day"
+  printf '{"ts":"2026-07-26T09:20:00Z","cycle":null,"node":"nodeNC","event":"rework","class":"post-merge-revert","repo":"o/r","item":"1"}\n'
+  printf '{"ts":"2026-07-26T09:21:00Z","node":"nodeNC","event":"log-repaired","dropped":1}\n'
+} > "$n/.local/state/poetic-agents/log.jsonl"
+
+run_publish "$n" NODE_NAME=nodeNC
+ndata="$(data_of "$n")"
+assert_eq "a cycle-less event does not empty the cycle window" "1" \
+  "$(jq -r '.cycles | length' <<<"$ndata")"
+assert_eq "and the real cycle renders in full, not as a bare id" \
+  "${today_day}T090000Z-61" "$(jq -r '.cycles[0].id' <<<"$ndata")"
+assert_eq "  ... with its stage still attached" "true" \
+  "$(jq -r '.cycles[0].stages.coordinator != null' <<<"$ndata")"
+assert_eq "  ... and its events, which the null group must not have stolen" "true" \
+  "$(jq -r '[.cycles[0].events[]?.event] | contains(["cycle-end"])' <<<"$ndata")"
+assert_eq "the window reports itself rendered, not failed" "true" \
+  "$(jq -r '.cycle_render.ok' <<<"$ndata")"
+assert_eq "  ... with no error to report" "null" \
+  "$(jq -r '.cycle_render.error' <<<"$ndata")"
+assert_eq "and the cycle-less events stay in the log tail, where they belong" "2" \
+  "$(jq '[.log_tail[] | select(.cycle == null)] | length' <<<"$ndata")"
+
+# --- A window that failed to render says so, rather than reading as an idle fleet -
+# The whole window is one jq program, so whatever kills it empties `cycles[]`
+# outright — and the cache then drains as the window slides over cycles that
+# were never rendered, which makes a transient fault indistinguishable from a
+# permanent one. Discarding that jq's stderr and publishing the empty list as a
+# success is what turned the blackout above into ten silent days. The publish
+# still completes (a broken panel must not cost the other twenty), but it says
+# why on stderr and carries the verdict in the payload, which is the only thing
+# that lets the page tell "rendered nothing" from "ran nothing".
+# The render fails on this node's *first* publish, which is the production
+# shape: nothing is cached, so every cycle in the window is one this tick had
+# to render, and a failure leaves `cycles[]` genuinely empty rather than
+# holding yesterday's rows. (A later failure is the milder case — the cache
+# still answers for whatever it already held — and both carry the same
+# verdict, which is the point of carrying one at all.)
+nf="$(new_home nodeRenderFail)"
+make_cycle "$nf" "${today_day}T093000Z-62" 0.25 model-a
+
+# Fail the detail render and nothing else: it is the one jq call handed the
+# union as `--rawfile events_raw`. The same exported-function seam the failed
+# assemble below uses, for the same reason — the publisher hardens its own PATH.
+(
+  jq() {
+    # `_arg`, not `a`: the node homes above are held in `a`..`g`, and a loop
+    # variable of the same name inside this subshell reads to shellcheck as a
+    # modification of the outer one (SC2030/SC2031) even though `local` keeps
+    # them apart.
+    local _arg
+    for _arg in "$@"; do [[ "$_arg" == "events_raw" ]] && return 126; done
+    command jq "$@"
+  }
+  export -f jq
+  env HOME="$nf" NODE_NAME=nodeRF "$PUBLISH" --no-github >/dev/null 2>"$tmp_dir/render.err"
+)
+nfdata="$(data_of "$nf")"
+assert_contains "a window that will not render says so on stderr" \
+  "the cycle detail window failed to render" "$(cat "$tmp_dir/render.err")"
+assert_eq "and the payload carries the verdict, not a bare empty list" "false" \
+  "$(jq -r '.cycle_render.ok' <<<"$nfdata")"
+assert_eq "  ... with jq's own reason attached" "true" \
+  "$(jq -r '.cycle_render.error != null and (.cycle_render.error | length) > 0' <<<"$nfdata")"
+assert_eq "  ... over the empty window that verdict is about" "0" \
+  "$(jq -r '.cycles | length' <<<"$nfdata")"
+assert_eq "while the rest of the page still publishes" "nodeRF" \
+  "$(jq -r '.node' <<<"$nfdata")"
+
+# And it recovers on the very next tick, with nothing else having changed.
+# That is not automatic: a publish normally stamps the state it rendered from
+# and the following tick skips while that state holds (#787), which after a
+# failed render would leave the broken window standing until something
+# unrelated moved. The failed render drops that stamp instead, so this second
+# publish rebuilds rather than skipping — assert the recovery without touching
+# the state, since a test that appended an event first would pass either way.
+run_publish "$nf" NODE_NAME=nodeRF
+nfdata2="$(data_of "$nf")"
+assert_eq "the next healthy tick clears the verdict" "true" \
+  "$(jq -r '.cycle_render.ok' <<<"$nfdata2")"
+assert_eq "  ... and the window it could not render before is back" "1" \
+  "$(jq -r '.cycles | length' <<<"$nfdata2")"
 
 # --- No-op ticks are counted, not listed (issue #271) -----------------------------
 # Under the */15 cadence most firings are the stand-down short-circuit

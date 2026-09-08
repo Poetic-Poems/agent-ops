@@ -462,6 +462,35 @@ assert_not_contains "a zero aggregate renders no summary line" \
 assert_not_contains "nor does a data.js from before the field existed" \
   "no-op tick" "$(render finished.json)"
 
+# --- cycle-render-failed.json: an empty list that is not an idle fleet ----------
+# The Publisher renders the whole cycle window in one jq program, so a fault in
+# it empties `cycles[]` outright. That is indistinguishable from a quiet fleet
+# by looking at the list, and for ten days the page guessed wrong out loud —
+# "No substantive cycles in the fleet window" over a fleet working normally,
+# because the no-op aggregate was non-zero and nothing else claimed the empty
+# state. `cycle_render.ok: false` outranks every other empty-state message and
+# quotes the reason. The aggregate here is the same non-zero 87 as
+# noop-aggregate.json, so the assertion is specifically that the verdict wins
+# rather than that no other branch was eligible.
+crf="$(render cycle-render-failed.json)" || { printf 'FAIL - cycle-render-failed.json did not render:\n%s\n' "$crf"; exit 1; }
+assert_contains "a failed render names itself rather than the fleet" \
+  "the Publisher could not render the cycle window" "$crf"
+assert_contains "and quotes the reason it was given" \
+  "Cannot use null (null) as object key" "$crf"
+assert_contains "and says the cycles themselves are intact" \
+  "the cycles themselves are unaffected" "$crf"
+assert_not_contains "so the idle-fleet reading never appears over a failure" \
+  "No substantive cycles in the fleet window" "$crf"
+# The same payload with the verdict flipped: an empty list the Publisher stands
+# behind still reads as a quiet fleet, so the new branch fires on the failure
+# and on nothing else. A page written before the key existed keeps that reading
+# too — every other fixture here carries no `cycle_render` at all.
+cro="$(render cycle-render-ok.json)" || { printf 'FAIL - cycle-render-ok.json did not render:\n%s\n' "$cro"; exit 1; }
+assert_contains "an empty window the Publisher stands behind still reads as a quiet fleet" \
+  "No substantive cycles in the fleet window" "$cro"
+assert_not_contains "and claims no failure of its own" \
+  "could not render the cycle window" "$cro"
+
 # --- actor-scorecards.json: the actor/model scorecards (issue #610, D22) --------
 # One card per actor with a model choice, one row per model and tier, graded
 # on outcome — supersedes the Co-Ordinator verdict-quality panel (#319, its

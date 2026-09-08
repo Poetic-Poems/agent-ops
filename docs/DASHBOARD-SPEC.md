@@ -618,6 +618,32 @@ it is recomputed on every tick for as long as it stays in the window. The cache
 is pruned to the window on each publish: entries are never touched on a hit, so
 an mtime sweep would evict exactly the cycles still in use.
 
+That render **excludes events belonging to no cycle before it groups the union
+by `.cycle`**, and reports its own success or failure as `cycle_render`. Both
+halves are load-bearing. The union carries records no cycle produced —
+`scripts/publish-revert-rate.sh` stamps its post-merge-revert `rework` rows
+`cycle: null` deliberately, since they are mined outside any cycle and an
+invented id would be a worse answer than an honest null, and `log-repaired`
+does likewise — and grouping those into a bucket keyed `null` is a hard `jq`
+error, not a null row: it kills the program that renders *every* cycle in the
+window at once. The cache then drains as the window slides over cycles that
+were never rendered, so a fault of any duration ends in the same place, an
+empty `cycles[]`. Because that is also what an idle fleet produces, the failure
+has to be stated rather than inferred: `jq`'s first error line goes to the
+Publisher's log **and** into `cycle_render.error`, and the publish otherwise
+completes, since one broken panel must not cost the other twenty. A tick that
+rebuilt nothing — every cycle already cached — is `ok`, which is the common
+case and not a failure.
+
+A failed render also **withholds the state fingerprint** the next tick's
+no-op skip reads. That stamp asserts "this page is what that state renders
+to", which a died render makes false; leaving it would let the skip hold the
+broken window in place until some unrelated part of the state moved, which on
+a quiet node is unbounded. Dropping it costs one rebuild and puts the retry on
+the next tick, so a transient fault heals itself with nothing else changing.
+The cache sweep is *not* conditioned on the render: it prunes to the window,
+which is correct whatever the render did.
+
 Measured on `ockham-container` (35,574 union events, 1000 local cycles, three
 peers): a full build 15.8s → 11.1s, and a fast build 4.4s — which at 1:9 puts a
 cycle's progress on the page inside about 45 seconds, against two and a half
@@ -844,6 +870,14 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                        //   hand-appended record is not a cycle
                                        //   — and substantive only: no-op
                                        //   ticks aggregate below instead (#271)
+  cycle_render: { ok,                  // did the window above actually render?
+                  error },             //   false + jq's own first error line
+                                       //   when the one program that renders
+                                       //   every cycle died, which empties
+                                       //   cycles[] outright. The page has no
+                                       //   other way to tell that from an idle
+                                       //   fleet; absent in a payload written
+                                       //   before the key existed
   noop_ticks: { total, standdown, skipped,   // no-op ticks held out of cycles[],
                 last_ts },                   //   counted by kind + the newest
                                              //   timestamp — O(1) however many
@@ -1202,7 +1236,12 @@ down / lock-held skips, with how fresh the newest is — shown only when there
 are any and only while the list is unfiltered, since the aggregate is
 fleet-wide and must not sit under a single node's rows; a window that is
 *all* no-ops reads "No substantive cycles in the fleet window." over that
-line, keeping "No cycles recorded yet." for a page with genuinely nothing);
+line, keeping "No cycles recorded yet." for a page with genuinely nothing —
+except that a `cycle_render.ok` of `false` outranks both of those and every
+node-filtered variant, since the list is then empty for a reason that is not
+the fleet's: a red banner names the Publisher's own failure and quotes its
+error, because an empty list that is silently attributed to an idle fleet is
+how the 2026-08-29 blackout went ten days unnoticed);
 failures,
 blocked and void items (the void list newest first — it arrives grouped by
 repo and item, which no reader wants — and **capped twice**: the ten newest
@@ -2239,7 +2278,15 @@ number's twins elsewhere on the page.
   and `noop_ticks` counts every one of them, split by kind, carrying the
   newest tick's timestamp; a stand-down that also logged a `claim-lost`
   (issue #245's raced shape) keeps its row and stays out of the count, and so
-  does one whose `cycle-end` never came. And with `cron.log` short and a
+  does one whose `cycle-end` never came. A union carrying events that belong
+  to no cycle — one stamped `cycle: null`, as `publish-revert-rate.sh` writes
+  them, and one with no `cycle` field at all — leaves the window whole: the
+  real cycle renders with its stages and its own events, `cycle_render.ok` is
+  true, and both cycle-less events stay in the log tail. Conversely, a detail
+  render that cannot run at all still publishes the rest of the page, but says
+  so on stderr and sets `cycle_render.ok` false with `jq`'s reason attached,
+  rather than serving the empty `cycles[]` as though the fleet had been idle.
+  And with `cron.log` short and a
   `cron.log.1` beside it —
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
@@ -2724,6 +2771,33 @@ number's twins elsewhere on the page.
   about the pipeline belongs, and leaves untouched every reader that acts on
   them — the limit stand-down, the blocked and void sets — because each keys on
   the event and the item, never on the cycle.
+- **An empty panel states its own cause (the 2026-08-29 blackout).** For ten
+  days every dashboard in the fleet reported "No substantive cycles in the
+  fleet window" while all four nodes worked normally. Three things had to line
+  up. `scripts/publish-revert-rate.sh` began emitting `rework` rows with
+  `cycle: null` (#941); the detail render grouped the union by `.cycle`
+  without filtering those out, which is a fatal `jq` error rather than a null
+  row, and it renders the whole window in one program, so the error cost every
+  cycle at once; and that `jq`'s stderr went to `/dev/null` behind a guard
+  whose only action was to leave the cache alone, after which the publish
+  reported a successful write. The cache then drained to empty as the window
+  slid over cycles that were never rendered, and the page — which had no way
+  to distinguish an empty list from an idle fleet — supplied a plausible
+  explanation for it.
+  The filter is the defect fix and is deliberately the same one the file's
+  three other `group_by(.cycle)` readers already applied; it was written four
+  times and omitted once. But a filter only closes this instance. What made
+  the instance cost ten days was that the failure had no way to be seen, so
+  the render now reports its verdict twice — to the Publisher's log for
+  whoever is reading logs, and in the payload as `cycle_render` for whoever is
+  reading the page, which in practice is everyone. The rejected alternative
+  was to make the render failure fatal to the publish: it is not, because
+  every other panel on the page is still correct, and a page that stops
+  updating entirely is a worse answer than a page with one panel that says
+  what is wrong with it. Nor is the cache sweep skipped on a failed render —
+  it prunes to the window, which is right whatever the render did; it was the
+  render's silence, not the sweep's correctness, that turned a fault into a
+  blackout.
 - **A no-op tick is counted, not listed (issue #271).** `MAX_CYCLES = 40` was
   sized for an hourly cadence; the `*/15` change (#268) quadrupled the tick
   rate without touching it, and most of the new ticks are no-ops — a

@@ -2140,6 +2140,20 @@
 
   function cyclesTable(cycles) {
     if (nodeFilter) cycles = cycles.filter(function (cy) { return cy.node === nodeFilter; });
+    // An empty list has three causes and they are not interchangeable. The
+    // Publisher renders the whole window in one jq program, so a fault in it
+    // empties `cycles[]` outright — and every message below except this first
+    // one would then describe an idle fleet that is in fact working. The
+    // Publisher's `cycle_render` verdict is the only thing that tells them
+    // apart; a payload from before the key existed has no verdict and falls
+    // through to the counts, as it always did.
+    var render = D.cycle_render;
+    if (!cycles.length && render && render.ok === false)
+      return el("div", {class:"panel"}, el("div", {class:"banner red", style:"margin:12px",
+        text: "This list is empty because the Publisher could not render the cycle window, "
+            + "not because the fleet was idle: " + (render.error || "no detail reported")
+            + " — the cycles themselves are unaffected, and the Publisher's log on "
+            + (D.node || "this node") + " carries the same line."}));
     if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty",
       text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window."
           : (D.noop_ticks && D.noop_ticks.total) ? "No substantive cycles in the fleet window."
