@@ -1852,8 +1852,8 @@ alongside `.amber`/`.green`/`.red`, since a firing invariant is neither an
 ordinary warning nor a clean pass — naming every firing key and its
 evidence, each linking `issue_url` when the tracking issue exists. For each
 entry that carries a `nodes` array, every node card named in it gets a
-badge (the same `b-red` style the Stage health failing-row badge above
-uses) reading the invariant's own key, titled with its evidence — so a
+badge (`b-purple`, the same purple family as the `.banner.pager-firing`
+banner above) reading the invariant's own key, titled with its evidence — so a
 `verdict-unanimous` page naming every active node marks every one of their
 cards, while an invariant with no `nodes` (most of `page-outlived-item`'s
 own firings, which are about an issue, not a node) raises the banner alone.
