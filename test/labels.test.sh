@@ -166,6 +166,27 @@ if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
   fi
   exit 0
 fi
+# labels_mint's own apply step: `gh issue edit`/`gh pr edit ... --add-label`,
+# never `gh api` — a different call shape from every other path this stub
+# already serves, so it is logged separately ($GH_APPLY_LOG) rather than
+# folded into $GH_LOG's own generic record.
+if { [[ "$1" == "issue" ]] || [[ "$1" == "pr" ]]; } && [[ "$2" == "edit" ]]; then
+  kind="$1"; number="$3"; shift 3
+  repo=""; label=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -R) repo="$2"; shift 2 ;;
+      --add-label) label="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -n "${GH_REFUSE_APPLY:-}" ]] && grep -qxF "$label" <<<"$GH_REFUSE_APPLY"; then
+    echo "gh: HTTP 403" >&2
+    exit 1
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$kind" "$repo" "$number" "$label" >> "$GH_APPLY_LOG"
+  exit 0
+fi
 echo "stub gh: unexpected invocation: $*" >&2
 exit 64
 STUB
@@ -175,9 +196,11 @@ export LABELS_GH="$tmp/gh"
 reset_stub() {
   : > "$tmp/labels"
   : > "$tmp/log"
+  : > "$tmp/apply-log"
   rm -f "$tmp/list-empty-once.used"
-  export GH_LABELS="$tmp/labels" GH_LOG="$tmp/log"
-  unset GH_REFUSE_CREATE GH_REFUSE_UPDATE GH_REFUSE_DELETE GH_LIST_FAILS GH_LIST_EMPTY_ONCE
+  export GH_LABELS="$tmp/labels" GH_LOG="$tmp/log" GH_APPLY_LOG="$tmp/apply-log"
+  unset GH_REFUSE_CREATE GH_REFUSE_UPDATE GH_REFUSE_DELETE GH_REFUSE_APPLY \
+    GH_LIST_FAILS GH_LIST_EMPTY_ONCE
   [[ $# -eq 0 ]] || printf '%s\n' "$@" > "$tmp/labels"
 }
 
@@ -594,6 +617,162 @@ reset_stub $'pw::drift\t1d76db\told desc'
 out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
 assert_eq "label_prefix set empty in config disables reconciliation even for a pw::-named label" \
   "" "$(grep -v '^created' <<<"$out")"
+
+# --- labels_reserved_names: the complete set nothing may read a minted label
+#     as (requirement 6c, issue #714) ---
+
+config
+reserved_names="$(labels_reserved_names "$tmp/config.json" "$SCHEMA")"
+assert_eq "the fixed reserved names appear first, in order" \
+  "blocked blocked:* obsolete complexity:* pw::type:tech-debt pw::owner-decision pw::decision open-question" \
+  "$(head -n8 <<<"$reserved_names" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "every non-empty configured label name is reserved too" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided project-review" \
+  "$(tail -n +9 <<<"$reserved_names" | tr '\n' ' ' | sed 's/ $//')"
+
+config '.needs_refinement_label = ""'
+assert_eq "a configured label switched off by an empty value contributes nothing" \
+  "autonomous-agent enabler-escalation refined unvoided project-review" \
+  "$(tail -n +9 <<<"$(labels_reserved_names "$tmp/config.json" "$SCHEMA")" | tr '\n' ' ' | sed 's/ $//')"
+
+# A repository's own project_review override is reserved alongside the
+# default: review-cycle.sh skips that repository's whole review while an open
+# pull request carries the label, so a minted one claiming the name would be
+# read to decide something.
+config '.project_review.repos[0].pr_label = "house-review"'
+assert_eq "a repository's own project_review pr_label override is reserved too" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided project-review house-review" \
+  "$(tail -n +9 <<<"$(labels_reserved_names "$tmp/config.json" "$SCHEMA")" | tr '\n' ' ' | sed 's/ $//')"
+
+config
+mapfile -t reserved_arr < <(labels_reserved_names "$tmp/config.json" "$SCHEMA")
+assert_eq "  ... and a minted name colliding with a review label is refused" "reserved" \
+  "$(labels_validate_name "Project-Review" "${reserved_arr[@]}")"
+
+# --- labels_validate_name: a stage-minted entry's own gate (issue #714) ---
+
+assert_eq "an ordinary name passes, printing nothing" "" "$(labels_validate_name "good-name")"
+assert_eq "  ... and returns 0" "0" "$(labels_validate_name "good-name" >/dev/null 2>&1; echo $?)"
+assert_eq "an empty name is refused" "empty" "$(labels_validate_name "")"
+assert_eq "a name over 50 characters is refused" "too-long" \
+  "$(labels_validate_name "$(printf 'a%.0s' $(seq 1 51))")"
+assert_eq "a name at exactly 50 characters passes" "" \
+  "$(labels_validate_name "$(printf 'a%.0s' $(seq 1 50))")"
+assert_eq "a name carrying a comma is refused" "invalid-name" "$(labels_validate_name "a,b")"
+assert_eq "a name matching a reserved literal is refused, case-insensitively" "reserved" \
+  "$(labels_validate_name "Blocked" blocked)"
+assert_eq "a name matching a reserved prefix glob is refused" "reserved" \
+  "$(labels_validate_name "blocked:custom" 'blocked:*')"
+assert_eq "a name matching a reserved prefix glob is refused case-insensitively too" "reserved" \
+  "$(labels_validate_name "COMPLEXITY:HIGH" 'complexity:*')"
+assert_eq "a name unmatched by any reserved entry passes" "" \
+  "$(labels_validate_name "my-own-label" blocked 'blocked:*' obsolete 'complexity:*')"
+
+# --- labels_mint: create and apply a stage's own suggested labels
+#     (requirement 6c, issue #714) ---
+
+reset_stub
+labels_json='[{"name":"good-one","colour":"112233","description":"desc one"}]'
+out="$(labels_mint "Owner/repo" issue "42" "$labels_json" < <(printf '%s\n' blocked 'blocked:*' obsolete 'complexity:*'))"
+assert_eq "an accepted name is created" '["good-one"]' "$(jq -c '.created' <<<"$out")"
+assert_eq "  ... and applied" '["good-one"]' "$(jq -c '.applied' <<<"$out")"
+assert_eq "  ... with nothing refused" '[]' "$(jq -c '.refused' <<<"$out")"
+assert_eq "  ... created with its own colour and description" \
+  "api -X POST repos/Owner/repo/labels -f name=good-one -f color=112233 -f description=desc one" \
+  "$(grep '^api -X POST' "$tmp/log")"
+assert_eq "  ... and applied via gh issue edit --add-label" \
+  "issue	Owner/repo	42	good-one" "$(cat "$tmp/apply-log")"
+
+# An entry naming a description but no colour of its own: the description must
+# reach GitHub as the description and the colour default to the neutral grey.
+# Reading these fields with `IFS=$'\t' read` silently swaps them — tab is an
+# IFS *whitespace* character, so bash collapses the two adjacent separators
+# such an entry emits — and the description then reaches GitHub as a hex
+# colour, refusing a label whose only sin was leaving `colour` out.
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" \
+  '[{"name":"described-one","description":"a human-readable description"}]' </dev/null)"
+assert_eq "an entry with a description but no colour is still created" '["described-one"]' \
+  "$(jq -c '.created' <<<"$out")"
+assert_eq "  ... with its description intact and the neutral-grey default colour" \
+  "api -X POST repos/Owner/repo/labels -f name=described-one -f color=ededed -f description=a human-readable description" \
+  "$(grep '^api -X POST' "$tmp/log")"
+assert_eq "  ... and applied" '["described-one"]' "$(jq -c '.applied' <<<"$out")"
+
+# A stage naming a bare string where an object belongs is refused on its own,
+# without costing the well-formed entries either side of it.
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" '["bare-string",{"name":"ok-two"}]' </dev/null)"
+assert_eq "an entry that is not an object at all is refused empty" "empty" \
+  "$(jq -r '.refused[] | select(.name=="") | .reason' <<<"$out")"
+assert_eq "  ... and the well-formed entry beside it still lands" '["ok-two"]' \
+  "$(jq -c '.applied' <<<"$out")"
+
+reset_stub good-one
+out="$(labels_mint "Owner/repo" issue "42" "$labels_json" < <(printf '%s\n' blocked))"
+assert_eq "a name that already exists as a label is applied without a create" '[]' \
+  "$(jq -c '.created' <<<"$out")"
+assert_eq "  ... but is still applied" '["good-one"]' "$(jq -c '.applied' <<<"$out")"
+
+reset_stub
+labels_json='[{"name":"blocked"},{"name":"Complexity:High"},{"name":"ok-one"}]'
+out="$(labels_mint "Owner/repo" issue "42" "$labels_json" < <(printf '%s\n' blocked 'complexity:*'))"
+assert_eq "a reserved literal is refused" "reserved" \
+  "$(jq -r '.refused[] | select(.name=="blocked") | .reason' <<<"$out")"
+assert_eq "a reserved glob is refused case-insensitively" "reserved" \
+  "$(jq -r '.refused[] | select(.name=="Complexity:High") | .reason' <<<"$out")"
+assert_eq "an unreserved name in the same call still lands" '["ok-one"]' "$(jq -c '.applied' <<<"$out")"
+
+reset_stub
+labels_json='[{"name":"one"},{"name":"two"},{"name":"three"},{"name":"four"}]'
+out="$(labels_mint "Owner/repo" issue "42" "$labels_json" </dev/null)"
+assert_eq "the default per-item cap is 3: the first three land" '["one","two","three"]' \
+  "$(jq -c '.applied' <<<"$out")"
+assert_eq "  ... and the fourth is refused cap, not reserved or a gh failure" "cap" \
+  "$(jq -r '.refused[] | select(.name=="four") | .reason' <<<"$out")"
+
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" '[{"name":"one"},{"name":"two"}]' 1 </dev/null)"
+assert_eq "an explicit smaller cap is honoured" '["one"]' "$(jq -c '.applied' <<<"$out")"
+assert_eq "  ... the rest refused cap" "cap" "$(jq -r '.refused[] | select(.name=="two") | .reason' <<<"$out")"
+
+reset_stub
+export GH_REFUSE_CREATE="uncreatable"
+out="$(labels_mint "Owner/repo" issue "42" '[{"name":"uncreatable"}]' </dev/null)"
+unset GH_REFUSE_CREATE
+assert_eq "a label the token cannot create is refused create-failed" "create-failed" \
+  "$(jq -r '.refused[0].reason' <<<"$out")"
+
+reset_stub
+export GH_REFUSE_APPLY="unapplicable"
+out="$(labels_mint "Owner/repo" issue "42" '[{"name":"unapplicable"}]' </dev/null)"
+unset GH_REFUSE_APPLY
+assert_eq "a label that creates but cannot be applied is refused apply-failed" "apply-failed" \
+  "$(jq -r '.refused[0].reason' <<<"$out")"
+assert_eq "  ... neither created nor applied, though the create itself succeeded" '{"created":[],"applied":[]}' \
+  "$(jq -c '{created, applied}' <<<"$out")"
+assert_eq "  ... and the label really was created in the repo" "1" \
+  "$(grep -cxF 'unapplicable' <(cut -f1 "$tmp/labels"))"
+
+reset_stub
+out="$(labels_mint "Owner/repo" pr "99" '[{"name":"pr-one"}]' </dev/null)"
+assert_eq "kind pr applies via gh pr edit rather than gh issue edit" \
+  "pr	Owner/repo	99	pr-one" "$(cat "$tmp/apply-log")"
+
+reset_stub
+out="$(labels_mint "" issue "42" '[{"name":"x"}]' </dev/null)"
+assert_eq "an empty repo prints the all-empty object rather than erroring" \
+  '{"created":[],"applied":[],"refused":[]}' "$(jq -c . <<<"$out")"
+
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" '[]' </dev/null)"
+assert_eq "an empty LABELS_JSON prints the all-empty object" \
+  '{"created":[],"applied":[],"refused":[]}' "$(jq -c . <<<"$out")"
+
+reset_stub
+out="$(labels_mint "Owner/repo" merge-request "42" '[{"name":"x"}]' </dev/null)"
+assert_eq "an unusable KIND prints the all-empty object rather than erroring" \
+  '{"created":[],"applied":[],"refused":[]}' "$(jq -c . <<<"$out")"
 
 echo
 if (( failures == 0 )); then

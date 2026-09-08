@@ -3191,6 +3191,21 @@ if [[ -n "$impl_pr_url" ]]; then
         '{detail: ("could not check whether " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
       ;;
   esac
+
+  # Requirement 26b/6c (issue #714): the Implementer may *name* labels for its
+  # own pull request in its summary's optional `labels` field — the Script
+  # remains the only writer, exactly as it already is for `complexity:*` and
+  # every projected label. `length` guards against paying for a mint call (and
+  # an empty `labels-minted` event) on the overwhelmingly common summary that
+  # names none.
+  impl_labels_json="$(jq -c '.labels // []' <<<"$impl_status_json" 2>/dev/null || echo '[]')"
+  if [[ "$(jq 'length' <<<"$impl_labels_json" 2>/dev/null || echo 0)" -gt 0 ]]; then
+    impl_mint_report="$(labels_mint "$repo_slug" pr "${impl_pr_url##*/}" "$impl_labels_json" \
+      < <(labels_reserved_names "$CONFIG_FILE" "$SCHEMA_FILE"))"
+    log_event "labels-minted" "$(jq -nc --arg r "$repo_slug" --arg i "$selected_item" \
+      --arg by "implementer" --argjson x "$impl_mint_report" \
+      '{repo: $r, item: $i, actor: $by} + $x')"
+  fi
 fi
 
 # --- 8. Reviewer stage ---

@@ -423,6 +423,7 @@ final message is a wire format, not a report.
       "comments_posted": ["https://github.com/…/issues/125#issuecomment-…"],
       "refined_spec": "items with no thread only: the specification, as self-contained markdown",
       "priority": "issues only, optional: one of Urgent, High, Medium, Low",
+      "labels": [{"name": "optional, up to 3: a label worth applying to this item", "colour": "optional hex, no #", "description": "optional"}],
       "missing": "needs-refinement only: what a selectable version would need",
       "evidence": "needs-refinement only: what you actually read"
     }
@@ -444,6 +445,24 @@ final message is a wire format, not a report.
   "Banding".
 - `priority` is optional and belongs on an `issues`-source item only, on
   either verdict — see "Banding" for when to set it and what it means.
+- `labels` is optional, on either verdict, and independent of both `priority`
+  and the outcome: up to 3 entries, `{name, colour?, description?}`, applied
+  to the issue behind this item (not the pull request that will eventually
+  close it — you have no pull request). This is a suggestion, not a write:
+  the Script creates and applies each one it accepts, and refuses — silently
+  to you, logged for a human — a name that is empty, over 50 characters,
+  carries a comma, or collides with a name the pipeline itself reads to make
+  a decision (`blocked`, `blocked:*`, `obsolete`, `complexity:*`,
+  `pw::type:tech-debt`, `pw::owner-decision`, `pw::decision`,
+  `open-question`, or any of this installation's own configured control
+  labels). A label you name is descriptive only — nothing anywhere in this
+  pipeline ever reads one back to select, exclude, corroborate or band
+  anything — so never reach for one as a substitute for `priority`, a
+  `needs-refinement` block, or any other verdict field that actually does
+  something. Several items in one engagement share one pool of 10 such
+  labels, not 10 each, so name only what is genuinely worth surfacing to a
+  human skimming the repository's labels, never a matter of routine on every
+  item.
 - `missing` and `evidence` belong only to `needs-refinement`, on the same
   discipline as a Co-Ordinator's own `needs_refinement` report: `missing` is
   what the human (or a later Refiner, once they have acted) starts from, and an

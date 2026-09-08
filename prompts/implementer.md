@@ -927,6 +927,23 @@ see "Dependabot takeover" above.)*
    honestly in both directions: an inflated `high` spends top-tier review
    time nothing in the diff needs, and a flattering `low` sends a subtle
    change to a review pitched beneath it.
+7a. **Name any further labels worth applying to this pull request.** Beyond
+   the `complexity:*` label above, which you apply yourself, you may
+   optionally name up to 3 further descriptive labels in your final
+   message's `labels` field (below) — `{name, colour?, description?}` each.
+   This is a suggestion, not a write: the Script creates and applies each one
+   it accepts, and refuses — never failing your own summary over it — a name
+   that is empty, over 50 characters, carries a comma, or collides with a
+   name the pipeline itself reads to make a decision (`blocked`, `blocked:*`,
+   `obsolete`, `complexity:*`, `pw::type:tech-debt`, `pw::owner-decision`,
+   `pw::decision`, `open-question`, or any of this installation's own
+   configured control labels). A label you name is descriptive only — nothing
+   anywhere in this pipeline ever reads one back to select, exclude,
+   corroborate or tier anything — so never reach for one as a substitute for
+   the `complexity:*` grade above, a `Defers:`/closing-keyword line, or any
+   other mechanism that actually does something. Most pull requests need
+   none at all; reach for this only when a label would genuinely help a human
+   skimming the repository's labels, not as a matter of routine.
 
 **Never apply the `obsolete` label to any pull request, including your own.**
 It is the human-applied corroboration `lib/void-guard.sh` reads to accept a
@@ -983,13 +1000,15 @@ and hope to be woken.
 On success:
 
 ```json
-{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "complexity": "medium", "notes": "anything the Reviewer should know that isn't obvious from the diff"}
+{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "complexity": "medium", "labels": [{"name": "optional, up to 3", "colour": "optional hex, no #", "description": "optional"}], "notes": "anything the Reviewer should know that isn't obvious from the diff"}
 ```
 
 `complexity` is the grade from Procedure step 7 — the same value as the
 `complexity:*` label you left on the PR (or the value you would have left, if
 labelling failed). One of `low`, `medium` or `high`, always present on a
 `complete`.
+
+`labels` is optional — see step 7a.
 
 If the item is real work but you cannot complete it safely — it is bigger or
 riskier than scoped, a dependency has not landed, a check is red for reasons

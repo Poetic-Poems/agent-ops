@@ -584,10 +584,15 @@ done < <(cfg '.repos[]?.slug // empty')
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
 # item would leave that item permanently unselectable — a value no issue-side
-# label key may take.
+# label key may take. `blocked:*` is reserved the same way (issue #714): it is
+# the reason-label namespace requirement 38b's own `blocked:needs-refinement`
+# lives in, so a configured label claiming a name in it would be
+# indistinguishable, to anything reading labels for that reason, from the
+# Script's own projection.
 for key in enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
-  if [[ "$(cfg ".$key")" == "blocked" ]]; then
-    fail "$key is \"blocked\", which excludes an issue from the issues source — an item carrying it could never be selected again"
+  key_value="$(cfg ".$key")"
+  if [[ "${key_value,,}" == "blocked" || "${key_value,,}" == "blocked:"* ]]; then
+    fail "$key is \"$key_value\", which collides with \"blocked\" or the \"blocked:*\" reason-label namespace (requirement 38b) — an item carrying it could never be selected again, or would read as a reason the Script never gave"
   fi
 done
 

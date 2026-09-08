@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
+  per-item verdict and the Implementer's summary may each name up to 3
+  descriptive labels of their own — `{name, colour?, description?}` — for
+  the Script to create and apply, the same create-only safety
+  `labels_ensure_one` already gives the catalogue's own labels. A name is
+  refused, silently to the stage and logged as a `labels-minted` event for a
+  human, when it is empty, over 50 characters, carries a comma, or collides
+  with a name this pipeline itself reads to decide something (`blocked`,
+  `blocked:*`, `obsolete`, `complexity:*`, `pw::type:tech-debt`,
+  `pw::owner-decision`, `pw::decision`, `open-question`, or any of this
+  installation's own configured control labels) — a minted label is
+  inert by design: nothing anywhere in this pipeline ever reads one back to
+  decide anything. The Refiner's own suggestions across one engagement share
+  a further pool of 10, since only it processes more than one item per
+  engagement. `scripts/doctor.sh`'s existing reserved-name check now refuses
+  a configured label claiming the whole `blocked:*` namespace, not only the
+  exact word `blocked`.
+
 - **`doctor.sh` warns when an empty `merge_autonomy_protected_paths` disarms
   gate 4 for a routine-tier repository** (issue #963, TD-PPagop-26082403):
   a resolved `merge_autonomy_protected_paths` of `[]` — schema-valid, since

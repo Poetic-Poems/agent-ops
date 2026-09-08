@@ -492,3 +492,181 @@ labels_ensure_stamped() {
   printf '%s' "$report"
   return "$rc"
 }
+
+# labels_reserved_names CONFIG_FILE SCHEMA_FILE
+# Print, one per line, every label name — or `name*` prefix glob — a
+# stage-minted `labels` entry (requirement 6c, issue #714) may never claim,
+# case-insensitively: the complete set this pipeline itself reads to make a
+# decision. Fixed, regardless of config: `blocked` (selection exclusion,
+# requirement 16.4), `blocked:*` (the needs-refinement pair requirement 38b
+# projects alongside it), `obsolete` (void corroboration, requirement 34k),
+# `complexity:*` (Reviewer/Approver tiering, requirement 8a),
+# `pw::type:tech-debt` (D24's tech-debt trust anchor), `pw::owner-decision`
+# (the Refiner's default-first rule, requirement 39d),
+# `pw::decision` (`scripts/sweep-decision-vetoes.sh`'s own sweep target), and
+# `open-question` (the landing gate's open-scope-question hold, requirement
+# 8f) — every one of these is read somewhere in this pipeline today, not
+# only the handful the issue that added this function named as illustration,
+# because the invariant that makes minting safe ("nothing may read a minted
+# label to decide anything") has to hold against what the pipeline actually
+# reads, not against a partial list of it. Then every non-empty configured
+# label name — `pr_label`, `enabler_escalation_label`,
+# `needs_refinement_label`, `refined_label`, `unvoid_label` — read the same
+# way `labels_catalogue` reads them, from `config_defaults`'s merge rather
+# than CONFIG_FILE directly, so a renamed key is covered without repeating
+# its default here, plus every project-review pull-request label in force:
+# `project_review.defaults.pr_label` and each repository's own override of
+# it. That last one is resolved per repository rather than globally, so
+# `labels_catalogue` deliberately takes it as an argument instead — but the
+# reserved set is a superset by design, the union of every value in force
+# anywhere (`scripts/doctor.sh`'s own review-label check reads them the same
+# way), because `review-cycle.sh` skips a repository's whole review while an
+# open pull request carries that label: a minted one claiming the name would
+# be read to decide something, which is exactly what may never happen. A
+# future gate that wants to read a label adds that name here in the same
+# change — this function is the one place the reserved set is declared, so
+# nothing else needs to duplicate it.
+labels_reserved_names() {
+  local config_file="$1" schema_file="$2" defaulted
+  printf '%s\n' 'blocked' 'blocked:*' 'obsolete' 'complexity:*' \
+    'pw::type:tech-debt' 'pw::owner-decision' 'pw::decision' 'open-question'
+  defaulted="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)" || return 0
+  jq -r '[.pr_label, .enabler_escalation_label, .needs_refinement_label,
+          .refined_label, .unvoid_label,
+          (.project_review.defaults.pr_label // ""),
+          ((.project_review.repos // [])[] | .pr_label // "")]
+         | .[] | select(. != "")' \
+    <<<"$defaulted" 2>/dev/null
+}
+
+# labels_validate_name NAME [RESERVED...]
+# Check NAME against every constraint a stage-minted `labels` entry (issue
+# #714) must meet: non-empty, at most 50 characters, and matching
+# config.schema.json's own `$defs.label` pattern (no comma — `gh --add-label`
+# accepts a comma-joined list, so a name carrying one could silently apply as
+# several labels instead of the one requested). Then against each of
+# RESERVED, matched case-insensitively (GitHub's own label-name comparison);
+# an entry ending in a literal `*` (`blocked:*`, `complexity:*`) matches by
+# prefix, everything else matches exactly.
+#
+# Prints nothing and returns 0 when NAME passes every check. Otherwise prints
+# exactly one of `empty`, `too-long`, `invalid-name` or `reserved` and
+# returns 1 — the caller records this as the entry's refusal reason.
+labels_validate_name() {
+  local name="$1"
+  shift
+  if [[ -z "$name" ]]; then
+    printf 'empty'
+    return 1
+  fi
+  if (( ${#name} > 50 )); then
+    printf 'too-long'
+    return 1
+  fi
+  if [[ "$name" == *,* ]]; then
+    printf 'invalid-name'
+    return 1
+  fi
+  local reserved prefix
+  for reserved in "$@"; do
+    [[ -n "$reserved" ]] || continue
+    if [[ "$reserved" == *'*' ]]; then
+      prefix="${reserved%\*}"
+      if [[ "${name,,}" == "${prefix,,}"* ]]; then
+        printf 'reserved'
+        return 1
+      fi
+    elif [[ "${name,,}" == "${reserved,,}" ]]; then
+      printf 'reserved'
+      return 1
+    fi
+  done
+  return 0
+}
+
+# labels_mint REPO KIND NUMBER LABELS_JSON [CAP] < RESERVED_NAMES
+# Mint and apply a stage's own suggested labels (requirement 6c, issue #714)
+# — LABELS_JSON is that stage's unvalidated `[{name, colour?, description?},
+# ...]` array — onto REPO's issue or pull request NUMBER. KIND is `issue` or
+# `pr`, selecting whether `gh issue edit` or `gh pr edit` applies it.
+# RESERVED_NAMES arrives on stdin, one per line — `labels_reserved_names`'s
+# own shape, composed once by the caller so this function stays free of
+# config-file access. CAP (default 3, requirement 6c's own per-item
+# suggestion) bounds how many entries this single call may apply; checked
+# before validation, so a refusal never itself counts against it, and a
+# caller spanning several items in one engagement (the Refiner) can pass a
+# smaller CAP once its own per-engagement total is close to its own limit.
+#
+# Each accepted name is created if absent (`labels_ensure_one`, the same
+# neutral-grey default it already gives a caller with no colour of its own)
+# and then applied. Prints one JSON object:
+#   {"created": [...], "applied": [...], "refused": [{"name": ..., "reason": ...}, ...]}
+# `applied` is every name that ended up on the issue/PR; `created` is the
+# subset of those that did not already exist as a label in REPO; `refused`
+# names one of `empty`/`too-long`/`invalid-name`/`reserved` (labels_validate_
+# name's own words), `cap`, `create-failed` or `apply-failed` for everything
+# else. Never fails the caller: an unusable REPO/KIND/NUMBER, or an empty or
+# malformed LABELS_JSON, still prints the (all-empty) object rather than
+# raising an error, and an entry that is not an object at all is refused
+# `empty` on its own rather than costing the entries around it — minting is
+# advisory by design (requirement 6c), and a stage's own verdict or PR must
+# never turn on whether it succeeded.
+labels_mint() {
+  local repo="$1" kind="$2" number="$3" labels_json="${4:-[]}" cap="${5:-3}" \
+    gh_bin="${LABELS_GH:-gh}"
+  local reserved=() line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    reserved+=("$line")
+  done
+
+  local created="" applied="" refused="" applied_count=0
+  if [[ -n "$repo" && ( "$kind" == "issue" || "$kind" == "pr" ) && -n "$number" ]]; then
+    local entry name colour description reason ensure_result
+    # Split each `@tsv` line explicitly rather than with `IFS=$'\t' read -r
+    # name colour description`: tab is an IFS *whitespace* character, so bash
+    # collapses the run of two tabs an entry with a description but no colour
+    # of its own emits and reads that description as the colour — which
+    # `labels_ensure_one` would then hand GitHub as a hex code, refusing a
+    # perfectly good label whose only sin was leaving `colour` out. `@tsv`
+    # escapes any tab inside a field, so every line carries exactly the two
+    # separators this expects.
+    while IFS= read -r entry; do
+      name="${entry%%$'\t'*}"; entry="${entry#*$'\t'}"
+      colour="${entry%%$'\t'*}"; description="${entry#*$'\t'}"
+      if (( applied_count >= cap )); then
+        refused+="$name"$'\t'"cap"$'\n'
+        continue
+      fi
+      if ! reason="$(labels_validate_name "$name" ${reserved[@]+"${reserved[@]}"})"; then
+        refused+="$name"$'\t'"$reason"$'\n'
+        continue
+      fi
+      ensure_result="$(labels_ensure_one "$repo" "$name" "${colour:-ededed}" "${description:-}")"
+      case "$ensure_result" in
+        created|present)
+          if "$gh_bin" "$kind" edit "$number" -R "$repo" --add-label "$name" >/dev/null 2>&1; then
+            applied+="$name"$'\n'
+            applied_count=$(( applied_count + 1 ))
+            [[ "$ensure_result" == "created" ]] && created+="$name"$'\n'
+          else
+            refused+="$name"$'\t'"apply-failed"$'\n'
+          fi
+          ;;
+        *)
+          refused+="$name"$'\t'"create-failed"$'\n'
+          ;;
+      esac
+    done < <(jq -r '.[]? | (if type == "object" then . else {} end)
+                    | [(.name // ""), (.colour // ""), (.description // "")] | @tsv' \
+                <<<"$labels_json" 2>/dev/null)
+  fi
+
+  jq -nc --arg created "$created" --arg applied "$applied" --arg refused "$refused" '
+    {
+      created: ($created | split("\n") | map(select(length > 0))),
+      applied: ($applied | split("\n") | map(select(length > 0))),
+      refused: ($refused | split("\n") | map(select(length > 0)
+                 | split("\t") | {name: .[0], reason: .[1]}))
+    }'
+}
