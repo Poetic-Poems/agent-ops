@@ -17730,8 +17730,9 @@ What exists, and the requirements each part answers to:
     `review-cycle.sh` and `scripts/doctor.sh`; component 3h's
     `_refiner_apply_labels` calls `labels_mint`/`labels_reserved_names`
     without sourcing this file itself, so it resolves them only in a process
-    that has sourced both — `agent-cycle.sh`, which sources every `lib/*.sh`
-    into one process, is the only caller that reaches it, and
+    that has sourced both — `agent-cycle.sh`, which sources both files
+    (`agent-cycle.sh:184` and `:211`) among the libraries it loads into one
+    process, is the only caller that reaches it, and
     `test/refiner-verdicts.test.sh` sources both files itself for the same
     reason. Regression-tested against a stubbed `gh` that records every
     invocation (`test/labels.test.sh`, `test/refiner-verdicts.test.sh`,
