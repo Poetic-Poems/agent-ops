@@ -8113,9 +8113,61 @@ implements.
     down before any stage runs. Lifting it early is `--clear-limit`'s job and
     only `--clear-limit`'s.
 11. **Cleanup.** Always: delete the cycle's workspace, engage the Enabler if
-    this cycle should (requirement 35), write a `cycle-end` event, release the
-    lock. Tee each stage's stdout/stderr to `state_dir/cycles/<cycle-id>/` for
-    debugging.
+    this cycle should (requirement 35), log the schedule slots this cycle's
+    own run overlapped, if any (requirement 11a), write a `cycle-end` event,
+    release the lock. Tee each stage's stdout/stderr to
+    `state_dir/cycles/<cycle-id>/` for debugging.
+11a. **Overrun-slot skips** (agent-ops#1287). supercronic will not start a job
+    while the previous run of that job is still running: it logs the drop
+    ("not starting: job is still running since … (…elapsed)") to the
+    container log and nothing else records it, so a cycle that runs long
+    loses its fleet a whole slot — or, on a fifteen-minute node, several —
+    with no event of any kind in `log.jsonl`, reading `RUNNING` in
+    `--status` and the dashboard the whole time while delivering nothing.
+
+    Only the cycle holding the lock can ever know this happened: the process
+    supercronic would have started for one of these firings never starts at
+    all, so nothing else ever gets the chance to log it. At cleanup
+    (requirement 11), before the lock releases and only for a cycle that
+    actually acquired it, the Script computes which of its own schedule's
+    slots fell strictly inside its own run — from its own start
+    (`cycle_started_at`) and its own end, and its own already-defaulted
+    `schedule` block (`cycle_hours`, `cycle_interval_minutes`,
+    `excluded_minutes` — the same block `deploy/docker/render-crontab.sh`
+    renders into the crontab, requirement 1d) — and writes one
+    `cycle-skipped {reason: "overlap", slot_ts, held_by: <cycle id>,
+    elapsed_s}` event per slot, oldest first. `slot_ts` is the dropped
+    firing's own instant; `elapsed_s` is how long this cycle had already
+    been running at that instant — the same quantity supercronic's own log
+    line reports, computed independently here since this process never
+    reads that log. The node's own base minute is never re-derived by
+    re-hashing `NODE_NAME` the way that script's `hash_minute()` does:
+    `cycle_started_at` is, by construction, a minute the real crontab
+    already chose to fire this cycle on, so its own minute-of-hour serves
+    directly, and cannot drift from what actually fired the way an
+    independent re-hash could (`lib/schedule-slots.sh`'s
+    `schedule_overrun_slots`, `test/schedule-slots.test.sh`).
+
+    These are ordinary `cycle-skipped` events, sharing their name with
+    requirement 1's own lock-contention case, but unlike that case they
+    never call `suppress_node_state_transitions` (`docs/FLOW-SCHEMA.md`):
+    the seconds they describe already belong to this cycle's own node-state
+    timeline, finalized immediately before them at cleanup, not seconds of
+    their own to account for separately.
+
+    Two readers surface the count without this repository changing either:
+    `scripts/publish-dashboard.sh`'s `noop_ticks` gains an `overlap` field —
+    a flat count of the window's own `reason: "overlap"` events, never
+    folded into `total`, since (unlike the stand-down/lock-held pair
+    `noop_ticks` already counted) the cycle that logs one kept its own row
+    in `cycles[]` by running real stages, and this is additional
+    information about that row rather than a tick held out of the list
+    (`docs/DASHBOARD-SPEC.md`). `--status` gains an `overrun: N firing(s)
+    overrun in the last 24h` line, this node's own count
+    (`overlap_status_report`, `lib/manage.sh`) — `check-nodes.sh` (external
+    to this repository; not committed here) already prints `--status` per
+    node and so inherits it for free, on the same terms requirement 2.8's
+    `stages:` section already does.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
     order, launches no Implementer), `--once` (one verbose cycle in the
     foreground), `--repo <slug>` (restrict selection, for testing),
@@ -10853,6 +10905,12 @@ implements.
     entry per repetition, and `node-state` is requirement 50's own
     transition, one entry per node-state change, whose field-by-field
     contracts are `docs/FLOW-SCHEMA.md` rather than this list.
+    `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` is
+    requirement 11a's own overrun-slot record, one entry per schedule slot a
+    cycle's own run overlapped, documented there rather than here or in
+    `docs/FLOW-SCHEMA.md` (which is scoped to the rework, item-lifecycle and
+    node-time-state records alone); the requirement 1 lock-contention
+    `cycle-skipped` carries no `reason` at all and is unaffected.
     `classifier-escape` and `landing-audit`
     (requirement 8e, `scripts/detect-classifier-escapes.sh`) are the D18
     Stage 2 escape-audit's own two outcomes for a merged pull request the
@@ -23612,6 +23670,28 @@ oblige anyone to edit a test.
     asserted here: the suite runs inside one container and cannot stand up
     Docker networks, so per-node enforcement is `scripts/doctor.sh`'s Egress
     probes' job, on every unattended run.
+
+51. **Overrun-slot skips are computed and logged correctly (requirement 11a,
+    agent-ops#1287).** `test/schedule-slots.test.sh` passes:
+    `lib/schedule-slots.sh`'s `schedule_overrun_slots` names exactly the
+    slots that fell strictly inside a fixture `[start, end]` span for a
+    given `schedule` block, including a fixture cycle spanning two slots
+    (asserting both `slot_ts` values), a span crossing an hour boundary, a
+    span crossing midnight, an hour `cycle_hours` excludes entirely, and an
+    unparseable start printing nothing rather than failing; `agent-cycle.sh`'s
+    own cleanup-time call site, lifted verbatim out of the script (the same
+    extraction `test/finish-then-continue.test.sh` uses), logs one
+    `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` per slot
+    returned, only when `lock_acquired` is `1`; and `lib/manage.sh`'s
+    `overlap_status_report` counts only this node's own last-24h
+    `reason: "overlap"` events, ignoring the `reason`-less lock-contention
+    `cycle-skipped` shape. `test/publish-dashboard.test.sh`'s "Overrun-slot
+    skips are counted alongside, never folded into total" fixture confirms
+    `noop_ticks.overlap` counts a working cycle's own overlap events without
+    removing its row from `cycles[]` or inflating `noop_ticks.total`; and
+    `test/dashboard-render.test.sh`'s `overlap-only.json` fixture confirms
+    the page's summary line renders the overrun count even when
+    `noop_ticks.total` is `0`.
 
 ## Host provisioning (human steps)
 

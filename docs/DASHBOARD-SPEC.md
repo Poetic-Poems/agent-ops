@@ -136,6 +136,15 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   17a), a hand-appended `unvoided` sharing its id, or a kill that cost it its
   `cycle-end` all carry information a count would bury.
 
+  `noop_ticks.overlap` (implementation spec 11a, agent-ops#1287) rides in the
+  same aggregate but is not a no-op count at all: it is a flat count of this
+  window's own `cycle-skipped {reason: "overlap"}` events — schedule slots
+  supercronic silently dropped because the cycle logging them was still
+  running — and that cycle keeps its own row in `cycles[]` regardless, since
+  it ran real stages of its own. `overlap` is never added into `total`,
+  which still counts only ticks held out of the list; it travels alongside
+  because a human scanning the fleet needs both numbers from the one place.
+
   Its **`log.jsonl` is also what says whether that peer is working, and on
   what** — `fleet.nodes[].live`. A peer publishes no lock (state-sync excludes
   it: a copied lock is a lock no process holds), so the answer is derived from
@@ -879,8 +888,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                        //   fleet; absent in a payload written
                                        //   before the key existed
   noop_ticks: { total, standdown, skipped,   // no-op ticks held out of cycles[],
-                last_ts },                   //   counted by kind + the newest
+                overlap, last_ts },          //   counted by kind + the newest
                                              //   timestamp — O(1) however many
+                                             //   (overlap: 11a's own overrun-
+                                             //   slot count, not a no-op —
+                                             //   never folded into total)
   blocked: [ { repo, item, ts, detail, stage,           // from the log union,
                                                         //   blocked and not void
                kind,                                    // "" ordinarily, "needs-refinement" for a
@@ -1233,8 +1245,12 @@ node state to ask; click a row for per-stage detail with
 the parsed status, full transcript, and stderr; beneath the table, one muted
 summary line for `noop_ticks` — the count held out of the list, split stood
 down / lock-held skips, with how fresh the newest is — shown only when there
-are any and only while the list is unfiltered, since the aggregate is
-fleet-wide and must not sit under a single node's rows; a window that is
+are any, plus a second muted line naming any overrun-slot firings
+(`noop_ticks.overlap`, implementation spec 11a) — shown whenever there are
+any, independently of the first line, since these were never held out of the
+list the way a no-op tick's own are — and both only while the list is
+unfiltered, since the aggregate is fleet-wide and must not sit under a
+single node's rows; a window that is
 *all* no-ops reads "No substantive cycles in the fleet window." over that
 line, keeping "No cycles recorded yet." for a page with genuinely nothing —
 except that a `cycle_render.ok` of `false` outranks both of those and every
@@ -2405,7 +2421,12 @@ number's twins elsewhere on the page.
   one summary line — the total, the stood-down/lock-held-skip split and the
   newest tick's age — while a fixture with a zero aggregate (and one with no
   `noop_ticks` key at all, a `data.js` from before the field existed) renders
-  no such line. The
+  no such line. A fixture carrying `noop_ticks.overlap` (11a, agent-ops#1287)
+  alongside a non-zero `total` renders a second line naming the overrun
+  count, and a fixture carrying `overlap` with `total` at `0` still renders
+  that second line on its own — the old total-gated skip must not swallow it,
+  since a fleet whose every cycle does real work can still lose firings to
+  one running long. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.17` and earlier attention, one
@@ -2857,6 +2878,20 @@ number's twins elsewhere on the page.
   are active, so it is not read as "one" and renders as it always has, and
   fleet data naming two or more active nodes renders both badges exactly as
   before this distinction existed.
+- **An overrun-slot count is not a no-op tick, and must not share its gate**
+  (implementation spec 11a, agent-ops#1287). `noop_ticks.overlap` counts
+  `cycle-skipped {reason: "overlap"}` events — schedule slots supercronic
+  silently dropped because the cycle logging them was still running its own
+  stages — and that cycle keeps its ordinary row in `cycles[]` regardless: it
+  is the opposite of the stand-down/lock-held pair above, which are logged by
+  a tick that did nothing at all. Reusing the existing summary line's
+  `!agg.total` gate would have hidden the overrun count on any fleet whose
+  every cycle does real work — exactly the fleet an operator most needs to
+  see it on, since a lightly-loaded fleet with idle-tick no-ops to spare is
+  the one least likely to overrun in the first place. The line renders on its
+  own condition, `agg.overlap` alone, alongside rather than folded into the
+  no-op summary's own sentence, since these firings were never held out of
+  the list the way a no-op tick's own are.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape

@@ -74,6 +74,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/rework.sh"
 # shellcheck source=lib/node-time-state.sh
 . "$SCRIPT_DIR/lib/node-time-state.sh"
+# shellcheck source=lib/schedule-slots.sh
+. "$SCRIPT_DIR/lib/schedule-slots.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/stage-budget.sh
@@ -854,6 +856,13 @@ max_chained_cycles="$(cfg '.max_chained_cycles')"
 # fleet history, and the plain interval is the right width for that.
 cycle_interval_minutes="$(cfg '.schedule.cycle_interval_minutes')"
 [[ "$cycle_interval_minutes" =~ ^[0-9]+$ ]] || cycle_interval_minutes=15
+# The whole, already-defaulted `schedule` block (requirement 11a,
+# agent-ops#1287): `cleanup`'s `schedule_overrun_slots` call reads
+# `cycle_hours` and `excluded_minutes` from it as well, and resolving it once
+# here — well before `acquire_lock` can ever set `lock_acquired=1` — is what
+# lets that call read a plain global under this script's `set -u` rather than
+# a value it would otherwise have to guard as possibly unset.
+schedule_json="$(cfg_json '.schedule')"
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
 # beyond a whole cycle, so a draft merely being worked never qualifies.
@@ -1192,6 +1201,35 @@ cleanup() {
   # header for why logging it earlier, at the stand-down site itself, would
   # let a later Enabler engagement silently overwrite it).
   finalize_node_state_for_cycle
+  # Overrun-slot skips (requirement 11a, agent-ops#1287): schedule slots that
+  # fell inside this cycle's own run, which supercronic silently dropped
+  # because this cycle was still holding the lock at each of them. Only the
+  # lock holder can ever know this happened — the process supercronic would
+  # have started for one of these firings never starts at all, so nothing
+  # else ever gets the chance to log it — and only a cycle that actually
+  # acquired the lock can have blocked one. Before `cycle-end`, with the lock
+  # still held, on the same terms as the Enabler/Refiner engagement above, so
+  # these events belong to the cycle that produced them and travel on the
+  # same end-of-cycle state-sync push.
+  #
+  # These are ordinary `cycle-skipped` events, like requirement 1's own
+  # lock-contention case, but — unlike that case — never call
+  # suppress_node_state_transitions: the seconds they describe already
+  # belong to this cycle's own node-state timeline, finalized immediately
+  # above, not seconds of their own to account for separately.
+  if [[ "$lock_acquired" == "1" ]]; then
+    local overrun_now_iso overrun_now_epoch overrun_start_epoch overrun_slot overrun_slot_epoch
+    overrun_now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    overrun_now_epoch="$(date -u +%s)"
+    overrun_start_epoch="$(date -u -d "$cycle_started_at" +%s 2>/dev/null || echo "$overrun_now_epoch")"
+    while IFS= read -r overrun_slot; do
+      [[ -n "$overrun_slot" ]] || continue
+      overrun_slot_epoch="$(date -u -d "$overrun_slot" +%s 2>/dev/null || echo "$overrun_now_epoch")"
+      log_event "cycle-skipped" "$(jq -nc --arg r "overlap" --arg s "$overrun_slot" \
+        --arg h "$cycle_id" --argjson e "$(( overrun_slot_epoch - overrun_start_epoch ))" \
+        '{reason: $r, slot_ts: $s, held_by: $h, elapsed_s: $e}')"
+    done < <(schedule_overrun_slots "$cycle_started_at" "$overrun_now_iso" "$schedule_json")
+  fi
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"

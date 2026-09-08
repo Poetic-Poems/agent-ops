@@ -819,6 +819,34 @@ assert_eq "and the lock-held skips" "21" \
   "$(jq -r '.noop_ticks.skipped' <<<"$ndata")"
 assert_eq "carrying the newest tick's own timestamp" "2026-08-01T12:41:02Z" \
   "$(jq -r '.noop_ticks.last_ts' <<<"$ndata")"
+assert_eq "and zero overlap-dropped firings when none of these ticks carry one" "0" \
+  "$(jq -r '.noop_ticks.overlap' <<<"$ndata")"
+
+# --- Overrun-slot skips are counted alongside, never folded into total
+# (requirement 11a, agent-ops#1287) --------------------------------------------
+# Unlike the stand-down/lock-held pair above, a `cycle-skipped
+# {reason:"overlap"}` event is logged by a cycle that ran real stages of its
+# own — the opposite of a no-op tick — so it must keep its ordinary row
+# (never counted in `.noop_ticks.total`, which counts only ticks *held out*
+# of the list) while still being counted, since it is what a human scanning
+# the fleet needs to see: how many firings this node's own overlap dropped.
+no="$(new_home nodeO)"
+no_worked="${today_day}T030000Z-nodeO-1"
+{
+  printf '{"ts":"2026-08-01T03:00:00Z","cycle":"%s","node":"nodeO","event":"cycle-start"}\n' "$no_worked"
+  printf '{"ts":"2026-08-01T03:00:01Z","cycle":"%s","node":"nodeO","event":"selection","repo":"o/a","item":"1","source":"tech-debt","title":"t"}\n' "$no_worked"
+  printf '{"ts":"2026-08-01T03:40:00Z","cycle":"%s","node":"nodeO","event":"cycle-skipped","reason":"overlap","slot_ts":"2026-08-01T03:15:00Z","held_by":"%s","elapsed_s":900}\n' "$no_worked" "$no_worked"
+  printf '{"ts":"2026-08-01T03:40:01Z","cycle":"%s","node":"nodeO","event":"cycle-skipped","reason":"overlap","slot_ts":"2026-08-01T03:30:00Z","held_by":"%s","elapsed_s":1800}\n' "$no_worked" "$no_worked"
+  printf '{"ts":"2026-08-01T03:40:02Z","cycle":"%s","node":"nodeO","event":"cycle-end","exit_code":0}\n' "$no_worked"
+} > "$no/.local/state/poetic-agents/log.jsonl"
+run_publish "$no" NODE_NAME=nodeO
+nodata="$(data_of "$no")"
+assert_eq "the working cycle that logged two overlap drops keeps its own row" "1" \
+  "$(jq --arg c "$no_worked" '[.cycles[] | select(.id == $c)] | length' <<<"$nodata")"
+assert_eq "its two overlap-dropped firings are counted in the aggregate" "2" \
+  "$(jq -r '.noop_ticks.overlap' <<<"$nodata")"
+assert_eq "  ... never folded into the no-op total, which counts ticks held out of the list" "0" \
+  "$(jq -r '.noop_ticks.total' <<<"$nodata")"
 
 # --- Actor and model scorecards: the Co-Ordinator's own measure (issue #610,
 # D22; supersedes issue #319's verdict-quality aggregate) --------------------
