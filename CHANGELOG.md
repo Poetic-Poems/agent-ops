@@ -402,6 +402,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   how to tell which driver a host is on. Detection is unaffected:
   `lib/memory.sh` reads the container's own `/sys/fs/cgroup`, which is the
   same path inside the container under either driver.
+
 - **`dashboard/index.html`'s `kv()` helper no longer builds markup by
   string-concatenating into `innerHTML`** (issue #965, TD-PPagop-26082409):
   its `esc()` helper performed no HTML-entity escaping despite its name, and
