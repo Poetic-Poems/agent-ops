@@ -144,6 +144,15 @@ pager_register k1 stub_eval owner-only "changed my mind"
 assert_eq "re-registering a key replaces it rather than duplicating" "k1 k2" "$(pager_registered_keys | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "  ... and the new registration wins" "owner-only" "${PAGER_REMEDY_CLASS[k1]}"
 
+# A fifth, optional argument (agent-ops#1282) — MIN_FIRING_MINUTES_OVERRIDE,
+# `node-stale`'s own per-key filing-hysteresis override — records against the
+# key; omitted (every call above), it stays empty rather than absent, so
+# _pager_evaluate_one's own `${...:-}` lookup falls through to
+# pager_evaluate's shared parameter unchanged.
+assert_eq "an omitted override records as empty, not unset" "" "${PAGER_MIN_FIRING_MINUTES_OVERRIDE[k1]}"
+pager_register k3 stub_eval owner-only "decide this too" 180
+assert_eq "a given override records against the key" "180" "${PAGER_MIN_FIRING_MINUTES_OVERRIDE[k3]}"
+
 # --- pager_state_for / pager_last_event ---------------------------------------
 
 state_fixture="$WORKDIR/state-fixture.jsonl"
@@ -227,6 +236,27 @@ assert_eq "a candidate that clears before the hysteresis threshold logs candidat
 assert_eq "  ... and is never filed" "0" "$(count_events "$union_log" pager-fired blip)"
 assert_eq "  ... the remedy never ran" "0" "$(remedy_calls)"
 assert_eq "  ... state is clear again" "clear" "$(pager_state_for blip < "$union_log")"
+
+# --- Per-key MIN_FIRING_MINUTES override (agent-ops#1282) --------------------
+# A key registered with its own override ignores pager_evaluate's own shared
+# MIN_FIRING_MINUTES entirely: 0 would ordinarily file on the very next tick
+# (the end-to-end case above), but a key overridden to 180 stays a candidate
+# through a second tick regardless.
+
+PAGER_EVAL_FN=(); PAGER_REMEDY_CLASS=(); PAGER_REMEDY_ARG=(); PAGER_KEYS=()
+pager_register overridden stub_eval pipeline-act stub_remedy 180
+union_log="$WORKDIR/override.jsonl"; : > "$union_log"
+: > "$REMEDY_CALLS_FILE"
+STUB_FIRING="true"
+pager_evaluate "$CLAIM_STUB" "o/r" "pw::pager" "enabler-escalation" \
+  "" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "tick 1: still just a candidate" "candidate" "$(pager_state_for overridden < "$union_log")"
+pager_evaluate "$CLAIM_STUB" "o/r" "pw::pager" "enabler-escalation" \
+  "" "" 0 "$union_log" "$union_log" '[]' n1 c1
+assert_eq "tick 2: the shared MIN_FIRING_MINUTES (0) is ignored — the override wins" \
+  "0" "$(count_events "$union_log" pager-fired overridden)"
+assert_eq "  ... still just a candidate" "candidate" "$(pager_state_for overridden < "$union_log")"
+assert_eq "  ... the remedy never ran" "0" "$(remedy_calls)"
 
 # --- A lost/unreachable claim never evaluates --------------------------------
 
