@@ -8205,9 +8205,22 @@ implements.
     re-hashing `NODE_NAME` the way that script's `hash_minute()` does:
     `cycle_started_at` is, by construction, a minute the real crontab
     already chose to fire this cycle on, so its own minute-of-hour serves
-    directly, and cannot drift from what actually fired the way an
-    independent re-hash could (`lib/schedule-slots.sh`'s
-    `schedule_overrun_slots`, `test/schedule-slots.test.sh`).
+    directly, and no slot named this way can be one the crontab would not
+    have fired — which an independent re-hash, drifting from the rendered
+    schedule, could name.
+
+    What it names is the slot series running forward from *this* firing's
+    own minute, repeating at `cycle_interval_minutes` within each allowed
+    hour. That is the node's whole series only when the cycle fired on the
+    lowest kept minute of its hour; a cycle that fired on a later one
+    contributes no slot at any earlier minute-of-hour of any subsequent
+    hour, because one firing minute does not identify which of the hour's
+    kept minutes is the base (`:55` at a fifteen-minute interval is equally
+    consistent with a base of 10, 25, 40 or 55). The error is one-sided:
+    every event written names a firing that really was dropped, and the
+    count is a lower bound on the firings lost, never an overstatement
+    (agent-ops#1324) (`lib/schedule-slots.sh`'s `schedule_overrun_slots`,
+    `test/schedule-slots.test.sh`).
 
     These are ordinary `cycle-skipped` events, sharing their name with
     requirement 1's own lock-contention case, but unlike that case they
@@ -24039,8 +24052,9 @@ oblige anyone to edit a test.
 51. **Overrun-slot skips are computed and logged correctly (requirement 11a,
     agent-ops#1287).** `test/schedule-slots.test.sh` passes:
     `lib/schedule-slots.sh`'s `schedule_overrun_slots` names exactly the
-    slots that fell strictly inside a fixture `[start, end]` span for a
-    given `schedule` block, including a fixture cycle spanning two slots
+    slots of the series running forward from the span's own start minute
+    that fell strictly inside a fixture `[start, end]` span for a given
+    `schedule` block, including a fixture cycle spanning two slots
     (asserting both `slot_ts` values), a span crossing an hour boundary, a
     span crossing midnight, an hour `cycle_hours` excludes entirely, and an
     unparseable start printing nothing rather than failing; `agent-cycle.sh`'s

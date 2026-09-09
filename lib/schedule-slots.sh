@@ -18,10 +18,11 @@
 
 # schedule_overrun_slots START_ISO END_ISO SCHEDULE_JSON
 #
-# Prints one ISO-8601 UTC timestamp per line, ascending, for each schedule
-# slot strictly after START_ISO and at or before END_ISO — the firings
-# supercronic silently dropped because this cycle, which started at
-# START_ISO, was still holding the lock at each of them. SCHEDULE_JSON is
+# Prints one ISO-8601 UTC timestamp per line, ascending, for each slot of the
+# series based on START_ISO's own minute-of-hour (see below) that falls
+# strictly after START_ISO and at or before END_ISO — firings supercronic
+# silently dropped because this cycle, which started at START_ISO, was still
+# holding the lock at each of them. SCHEDULE_JSON is
 # the already-defaulted `schedule` config block ({cycle_hours,
 # cycle_interval_minutes, excluded_minutes} — `config_defaults`'s own
 # output, requirement 1b). Prints nothing (never fails) if START_ISO/END_ISO
@@ -29,12 +30,23 @@
 #
 # START_ISO is, by construction, a minute supercronic already chose to fire
 # this cycle on (the crontab `deploy/docker/render-crontab.sh` renders never
-# fires outside one), so its own minute-of-hour is this node's own base
-# minute directly — there is no need to re-derive it by re-hashing
-# NODE_NAME the way that script's own `hash_minute()` does, and doing so
-# here would risk drifting from whatever the real crontab actually fired on.
-# Every later slot simply repeats that script's own restart-at-the-base-
-# minute-each-hour pattern going forward from START_ISO's hour.
+# fires outside one), so its own minute-of-hour is taken as the series base
+# directly — there is no need to re-derive it by re-hashing NODE_NAME the way
+# that script's own `hash_minute()` does, and doing so here would risk
+# drifting from whatever the real crontab actually fired on. Every later slot
+# simply repeats that script's own restart-at-the-base-minute-each-hour
+# pattern going forward from START_ISO's hour.
+#
+# That series is the node's whole slot set only when START_ISO fell on the
+# lowest kept minute of its hour. A cycle that fired on a later kept minute
+# yields a proper subset — no slot at any earlier minute-of-hour of any
+# subsequent hour — because one firing minute does not identify which of the
+# hour's kept minutes is the base (:55 at a 15-minute interval is equally
+# consistent with a base of 10, 25, 40 or 55; recovering it needs a second
+# input this function is not given). The error is one-sided: every slot
+# printed is one the crontab really would have fired, so the caller's count
+# is a lower bound on the firings lost, never an overstatement
+# (agent-ops#1324).
 #
 # `parse_cycle_hours`/`kept_minutes` below are deliberately the same
 # grammar and shape as `lib/config-schema.sh`'s `config_defaults` (cadence_gaps,
