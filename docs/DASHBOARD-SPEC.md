@@ -3369,6 +3369,36 @@ number's twins elsewhere on the page.
   — there is no separate "cleared" state to track, since the union log is
   read fresh every publish and a Co-Ordinator success anywhere in the fleet
   ends the run the same way it already ends the escalating case.
+- **A fifth badge reads the host-facts record a node's own collector
+  writes (`scripts/collect-host-facts.sh`, agent-ops#1283,
+  `docs/HOST-FACTS-SCHEMA.md`), a fact source none of the four badges
+  above can reach: each of them reads what runs *inside* the scheduler
+  container, and the D24 fence puts this container on the far side of its
+  own host's real network path, so nothing above can tell a host's own
+  egress MTU, a container's own OOM-kill count, or a Kubernetes rollout's
+  own stall from in here.** The Publisher folds `state_dir/host-facts/
+  <node>.json` (self) and `<peers_dir>/<peer>/host-facts/<peer>.json`
+  (each peer) into that node's row as `host`, `null` when no record
+  exists for that node yet — the collector's own schedule, not this
+  page's 5-second tick, so a freshly rolled node reads `null` here for a
+  while exactly as it does for `compose`/`image` above. The card renders
+  one amber badge, **host degraded**, naming the worst of four facts it
+  checks for, in this order: an MTU mismatch between `DOCKER_MTU` and the
+  host's own measured egress MTU (`host.network.mtu_match`) — the same
+  fact `doctor.sh`'s Egress section now reads from the identical file,
+  here because a card is checked far more often than `doctor.sh` runs;
+  any container this node runs having been OOM-killed at least once
+  (`containers[].memory.oom_kill_count`); a Kubernetes Deployment stuck
+  below its desired replica count past its own progress deadline
+  (`rollouts[].stalled`); or this node's own viewer-vantage self-probe
+  failing (`viewer_probe.<this node>`, agent-ops#1286's own check, read
+  for the case where a node cannot even reach its own dashboard).
+  Everything else the record carries — per-container memory/cpu figures,
+  a per-container image digest mismatch, the updater ledger tail — stays
+  out of this badge deliberately: it is either routine, or already
+  covered by `image`/`updater` above, and is one click away in the raw
+  record for anyone who needs it. No badge (and no line at all) when the
+  record is absent or carries none of the four facts above.
 - **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
   issue #379) gets its own badge beside the role badge**, not just the
   page-top switch banner. The banner (above) is keyed to *this* node's own
