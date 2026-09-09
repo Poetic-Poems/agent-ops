@@ -594,6 +594,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   concluded the warning goes dark at that cutover and needed a manual
   stand-in — it does not, and never did.
 
+- **Both by-number callers of `landing_protected_paths_hit` now fail closed
+  on an exit code outside its documented contract** (issue #1232). That
+  classifier's contract is exits 0/1/2/3, but its two callers that branch on
+  the number defaulted the other way — toward a pass — for anything else
+  (e.g. `128+n`, the command substitution's own subshell being signal-killed
+  mid-gate). `landing_eligible` (`lib/landing.sh`) handled 0, 2 and 3
+  explicitly and then fell through to `eligible`, which is right for the
+  legitimate 1 and a silent pass for everything unrecognised; `lib/approver.sh`'s
+  protected-path-forces-Critical check enumerated `== 0 || == 2 || == 3`, so
+  an unrecognised code skipped the forced critical tier — the same fail-open
+  shape pointing at the cheaper tier. Each call site now names only the
+  legitimate exit 1 (no protected path touched) as its explicit exemption and
+  routes every other code to the fail-closed side: `landing_eligible` returns
+  `unknown:` naming the out-of-contract code, and the Approver forces the
+  critical tier. Nothing changes for the documented codes 0, 1, 2 and 3, and
+  `landing_protected_paths_hit`'s own contract is untouched; the fix is to
+  the default arm alone, on the gate `lib/landing.sh`'s own header calls the
+  deadliest landing class.
+
 - **`landing_eligible`'s `unknown:` diagnostic now names which of
   `landing_protected_paths_hit`'s two refusal causes actually fired**
   (issue #961). `landing_protected_paths_hit` (`lib/landing.sh`) returned a

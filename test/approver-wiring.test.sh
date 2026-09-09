@@ -664,6 +664,19 @@ assert_eq "an unevaluable protected-paths list (exit 3) also forces the critical
   "model-critical" "$(launches)"
 assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
 
+# agent-ops#1232: landing_protected_paths_hit's own contract is exits
+# 0/1/2/3; an exit code outside that set (e.g. 128+n from the
+# command-substitution subshell being signal-killed mid-gate) must also
+# force the critical tier — before this fix `(( protected_rc == 0 ||
+# protected_rc == 2 || protected_rc == 3 ))` silently fell to the else
+# branch for any unrecognized code, skipping the forced tier the same way
+# the legitimate exit 1 does.
+run_case agent-approves low 0 '{"verdict":"approve","reasons":["fine"]}' \
+  PROTECTED_RC=130 >/dev/null
+assert_eq "an out-of-contract exit code also forces the critical tier" \
+  "model-critical" "$(launches)"
+assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+
 # An untouched protected path (the PROTECTED_RC=1 default every case above
 # this block already relied on) leaves every tier exactly as before —
 # regression-pinned directly rather than only implied by every other case's

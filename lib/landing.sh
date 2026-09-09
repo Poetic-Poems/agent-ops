@@ -484,19 +484,24 @@ landing_routine_eligible() {
 #     facts this function is never handed; see the hit branch's own comment
 #     below.
 #
-# `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
-# or 3 — the changed-file list could not be read or was truncated (2), or the
+# `unknown` is returned for `landing_protected_paths_hit`'s own exit 2 or 3
+# — the changed-file list could not be read or was truncated (2), or the
 # configured protected-paths list could not be evaluated against a changed
-# path at all (3 — TD-PPagop-26082320) — every other refusal above is a
-# deterministic `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all
-# already in the caller's hand, nothing further to ask GitHub. Both exit
-# codes carry the same instruction to every call site: **never a pass** —
-# `unknown` is treated as `ineligible` everywhere this is read; the
-# distinction exists so the `unknown:` reason names which was true
-# (TD-PPagop-26082325) — a malformed `merge_autonomy_protected_paths` sends
-# whoever reads it to their own `config.json`, an unreadable changed-file
-# list sends them to `gh` instead, and conflating the two into one wording
-# sent every reader to the wrong place.
+# path at all (3 — TD-PPagop-26082320) — and for any exit code outside its
+# documented 0/1/2/3 contract (e.g. 128+n from the command-substitution
+# subshell being signal-killed mid-gate, agent-ops#1232), which fails closed
+# the same way rather than falling through to the legitimate 1's `eligible`
+# arm. Every other refusal above is a deterministic `ineligible`, since
+# COMPLEXITY, SOURCE and LEVEL are all already in the caller's hand, nothing
+# further to ask GitHub. All three carry the same instruction to every call
+# site: **never a pass** — `unknown` is treated as `ineligible` everywhere
+# this is read; the distinction between the two documented causes exists so
+# the `unknown:` reason names which was true (TD-PPagop-26082325) — a
+# malformed `merge_autonomy_protected_paths` sends whoever reads it to their
+# own `config.json`, an unreadable changed-file list sends them to `gh`
+# instead, and conflating the two into one wording sent every reader to the
+# wrong place; an out-of-contract exit code names neither, since it is
+# evidence of something outside both documented causes.
 landing_eligible() {
   local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
 
@@ -537,6 +542,10 @@ landing_eligible() {
       fi
       return 0
       ;;
+    1)
+      printf 'eligible'
+      return 0
+      ;;
     2)
       printf 'unknown:could not establish %s#%s'\''s changed-file list' "$slug" "$number"
       return 0
@@ -545,9 +554,11 @@ landing_eligible() {
       printf 'unknown:the protected-path list could not be evaluated against %s#%s'\''s changed files (a non-string entry in merge_autonomy_protected_paths)' "$slug" "$number"
       return 0
       ;;
+    *)
+      printf 'unknown:landing_protected_paths_hit exited %d for %s#%s, outside its documented 0/1/2/3 contract' "$hit_rc" "$slug" "$number"
+      return 0
+      ;;
   esac
-
-  printf 'eligible'
 }
 
 # landing_cool_off_effective_hours CONFIG_JSON SLUG

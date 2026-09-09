@@ -761,21 +761,28 @@ run_approver_stage() {
   # already committed to engaging (every check above has passed), so it
   # never costs a `gh` call at `merge_autonomy: human`, where the stage
   # already returned. Its own exit 2 (the changed-file list unreadable or
-  # truncated) or exit 3 (a protected-paths list it cannot evaluate against a
+  # truncated), exit 3 (a protected-paths list it cannot evaluate against a
   # path at all — TD-PPagop-26082320, its own distinct exit code since
-  # TD-PPagop-26082325) both route *to* the critical tier, not away from it —
-  # the opposite fail-closed polarity from `landing_eligible`'s own exit-2/3
-  # handling, since here fail-closed means the more expensive tier, never the
-  # cheaper one; this call site only ever needs the fail-closed direction, not
-  # which of the two caused it, so it does not distinguish them the way
-  # `landing_eligible`'s own `unknown:` reason does.
+  # TD-PPagop-26082325), and any exit code outside its documented 0/1/2/3
+  # contract (e.g. 128+n from the command-substitution subshell being
+  # signal-killed mid-gate, agent-ops#1232) all route *to* the critical
+  # tier, not away from it — the opposite fail-closed polarity from
+  # `landing_eligible`'s own exit-2/3 handling, since here fail-closed means
+  # the more expensive tier, never the cheaper one. The condition below is
+  # therefore an explicit exemption, not an enumeration: only the
+  # legitimate exit 1 (no protected path touched) skips the forced tier,
+  # so nothing outside the documented contract can silently fall through to
+  # skipping it the way an enumerated `== 0 || == 2 || == 3` would. This
+  # call site only ever needs the fail-closed direction, not which cause
+  # produced it, so it does not distinguish them the way `landing_eligible`'s
+  # own `unknown:` reason does.
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
     landing_protected_paths_hit "$DEFAULTED_CONFIG" "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?
   else
     protected_rc=2
   fi
-  if (( protected_rc == 0 || protected_rc == 2 || protected_rc == 3 )); then
+  if (( protected_rc != 1 )); then
     protected_hit=1
     tier="critical"
   fi
