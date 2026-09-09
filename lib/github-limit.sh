@@ -605,7 +605,12 @@ github_limit_primary_reset_epoch() {
 #      wrapper bypasses this, because those run the binary directly. That is
 #      correct, not a gap: `scripts/publish-dashboard.sh` deliberately puts
 #      every call under `timeout` to keep the heartbeat inside its window, and
-#      a wrapper that could add a minute to one of them would break it.
+#      a wrapper that could add a minute to one of them would break it. Since
+#      agent-ops#1021 that bypass costs only the rate-limit retry, never the
+#      identity: those wrappers still run the binary by an unqualified `gh`,
+#      which `PATH` still resolves to `lib/gh-shim.sh`'s own transport shim
+#      ahead of the real binary, so the on-demand credential seam
+#      (`gh_shim_resolve_token`) still mints there.
 #   3. stdout is captured and emitted only when the call is finished with. A
 #      retry would otherwise re-emit whatever the failed attempt had already
 #      streamed — `gh api --paginate` emits each page as it arrives, so a

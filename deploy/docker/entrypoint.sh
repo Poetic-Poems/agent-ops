@@ -66,7 +66,8 @@ if [[ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]]; then
   say "         authenticated once: docker compose exec scheduler claude"
 fi
 
-# --- gh ---
+# --- gh / git authentication (D18 decision 1, agent-ops#607; the on-demand
+#     credential seam, agent-ops#1021) ---
 # The commit identity (GIT_USER_NAME/GIT_USER_EMAIL) is deliberately not set
 # here: this entrypoint gates every container this image runs — the dashboard
 # services and every CI smoke-test invocation included — and neither touches
@@ -75,35 +76,56 @@ fi
 # review-cycle.sh require and configure it themselves, right before a cycle
 # that might actually commit — see lib/git-identity.sh.
 #
-# The credential helper needs *something* to wire up, not necessarily
-# GH_TOKEN itself: a node carrying only the forge authoring App's identity
-# (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH, D18 decision
-# 1, agent-ops#607) mints one here purely so `gh auth setup-git` has a
-# credential to configure against. This mint is never reused past this setup
-# step — every cycle mints (or reuses its own cache of) a fresh token of its
-# own via lib/forge-auth.sh, which is what every later `git`/`gh` call in a
-# cycle's own process actually authenticates with.
+# Nothing here mints a token any more. Every `git`/`gh` authoring act on this
+# node resolves its own credential on demand, per call, through the seam
+# (lib/gh-shim.sh's `gh` transport shim, installed ahead of the real binary
+# on PATH by the Dockerfile) — which is what lets a cycle outlive a forge
+# authoring App installation token's ~1 h lifetime without presenting a stale
+# one to whichever call needed it. This block's only job is to make the App
+# the *default* identity, and to wire git into the same seam gh already
+# reaches.
 # shellcheck source=lib/author-token.sh
 . "$APP_DIR/lib/author-token.sh"
-entrypoint_gh_token="${GH_TOKEN:-}"
-if [[ -z "$entrypoint_gh_token" ]] && author_token_credential_present; then
-  entrypoint_gh_token="$(author_token_get "" 2>/dev/null || true)"
-fi
-if [[ -n "$entrypoint_gh_token" ]]; then
-  # Teaches git to use this token for github.com https remotes, which is how
-  # the cycles push their branches — they clone over https into
-  # workspace_root and never see an ssh key.
-  if GH_TOKEN="$entrypoint_gh_token" gh auth setup-git 2>/dev/null; then
-    if [[ -n "${GH_TOKEN:-}" ]]; then
-      say "git credential helper configured from GH_TOKEN"
-    else
-      say "git credential helper configured for the forge authoring App"
-    fi
-  else
-    say "WARNING: gh auth setup-git failed — pushes will not authenticate"
-  fi
+if author_token_credential_present; then
+  # Stash the ambient PAT (if any) as the seam's fallback — lib/forge-auth.sh
+  # owns this variable's name — and leave GH_TOKEN explicitly empty
+  # (exported, not merely unset), so every process this entrypoint execs —
+  # cycles, cron entry points, `docker compose exec` — inherits an empty
+  # GH_TOKEN and resolves through the seam rather than a token that may be
+  # hours from expiry by the time it authenticates anything. The seam falls
+  # back to this variable when a mint fails.
+  export PW_GH_DEGRADE_TOKEN="${GH_TOKEN:-}"
+  export GH_TOKEN=""
+  say "the forge authoring App is configured — GH_TOKEN resolves per call through the credential seam"
+elif [[ -n "${GH_TOKEN:-}" ]]; then
+  say "no forge authoring App configured — GH_TOKEN authenticates every git/gh call"
 else
   say "WARNING: neither GH_TOKEN nor the forge authoring App's credentials (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) are set — this node can read nothing from GitHub and push nothing to it"
+fi
+
+if author_token_credential_present || [[ -n "${GH_TOKEN:-}" ]]; then
+  # Wired directly, never via `gh auth setup-git`: that command bakes the
+  # *absolute path* of whichever `gh` process ran it (`os.Executable()`) into
+  # the config — and reached through the shim, which execs the real binary
+  # directly by its own fixed path rather than via PATH, that path is the
+  # real binary's, /usr/bin/gh, never the shim's own. A helper configured
+  # that way would call the real binary straight, bypassing the seam above
+  # on every future credential fill. The unqualified `gh` below instead
+  # re-resolves through PATH — the shim, installed at /usr/local/bin/gh
+  # ahead of it — on every single call.
+  # `--replace-all`, not append: this runs on every container start and must
+  # not stack a new helper entry on top of the last one.
+  #
+  # Guarded, because this file runs under `set -euo pipefail` and is PID 1's
+  # entrypoint: an unwritable $HOME or a malformed ~/.gitconfig must degrade
+  # to "pushes will not authenticate", exactly as the `gh auth setup-git`
+  # call this replaced already did, never to a container that refuses to
+  # start at all.
+  if git config --global --replace-all credential.https://github.com.helper '!gh auth git-credential'; then
+    say "git credential helper wired to the credential seam"
+  else
+    say "WARNING: could not configure the git credential helper — pushes will not authenticate"
+  fi
 fi
 
 # --- State and workspace ---

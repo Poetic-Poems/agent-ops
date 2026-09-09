@@ -15,9 +15,12 @@
 # already exceeded for user ID 2049303`. Git's own transport is not
 # rate-limited, so this step cannot fail that way.
 #
-# Authentication is unchanged. `deploy/docker/entrypoint.sh` runs `gh auth
-# setup-git`, so the credential helper serves this HTTPS remote exactly as it
-# serves the push that follows.
+# Authentication is unchanged. `deploy/docker/entrypoint.sh` wires git's own
+# credential helper to `!gh auth git-credential` — an unqualified `gh`, which
+# PATH resolves to the transport shim and so to the on-demand credential seam
+# (lib/gh-shim.sh's `gh_shim_resolve_token`) — so the helper serves this HTTPS
+# remote exactly as it serves the push that follows, each with a credential
+# resolved at the moment it is asked for.
 #
 # `CLONE_GIT` substitutes a stub for tests, the same seam `CLAIM_GH`,
 # `SWEEP_GH` and `TOGGLE_GH` provide for their own callers — and it is the

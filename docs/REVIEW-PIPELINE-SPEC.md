@@ -690,8 +690,11 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       same function the implementation pipeline's requirement 6 uses: `git
       clone`, because `gh repo clone` resolves the repository through a
       GraphQL query that is billed against the API budget, and git's own
-      transport is not rate-limited. `gh auth setup-git` in
-      `deploy/docker/entrypoint.sh` authenticates the HTTPS remote, and
+      transport is not rate-limited. The git credential helper
+      `deploy/docker/entrypoint.sh` wires — `!gh auth git-credential`, an
+      unqualified `gh` that `PATH` resolves to the transport shim and so to
+      the on-demand credential seam (IMPLEMENTATION-PIPELINE-SPEC component
+      22c) — authenticates the HTTPS remote, and
       `CLONE_GIT` substitutes a stub for tests, and anything already at the
       target path is discarded rather than inspected (requirement 6). Assert
       the working

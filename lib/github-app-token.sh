@@ -33,7 +33,8 @@
 # to any other credential anywhere in this file: it references only the
 # identity values a caller passes in, so an absent App key can never silently
 # reroute a call through some other credential — that decision belongs to the
-# caller (see lib/forge-auth.sh's own degrade-to-GH_TOKEN logic, which is
+# caller (see the credential seam's own degrade-path logic — lib/forge-auth.sh
+# names it, lib/gh-shim.sh's `gh_shim_resolve_token` applies it — which is
 # deliberately not here).
 #
 # The minted token is never written to persistent storage and never logged.
