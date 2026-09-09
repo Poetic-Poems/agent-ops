@@ -125,6 +125,10 @@ chmod +x "$fakebin/gather-issues.sh"
 # pointed at the fake gatherer, printing its stdout.
 run_gather_issues() {
   (
+    # Local to this subshell; shellcheck's SC2030/SC2031 pairing conflates
+    # it with run_issues_excluded_cycle's unrelated, independent subshell
+    # below, which never sees this reassignment.
+    # shellcheck disable=SC2030
     SCRIPT_DIR="$tmp_dir/fakebin"
     GATHER_ISSUES_STUB_OUTPUT="$stub_output"
     export GATHER_ISSUES_STUB_OUTPUT
@@ -231,6 +235,10 @@ run_issues_excluded_cycle() {
     gather_issues() { printf '[]'; }
     # shellcheck disable=SC2317
     gather_issues_excluded() { printf '%s' "$excluded_arg"; }
+    # SCRIPT_DIR is unmodified here; shellcheck's SC2031 conflates this
+    # subshell with run_gather_issues's unrelated one above, which does
+    # reassign it in its own, independent subshell.
+    # shellcheck disable=SC2031
     # shellcheck source=lib/log-event.sh
     . "$SCRIPT_DIR/lib/log-event.sh"
     eval "$log_event_src"

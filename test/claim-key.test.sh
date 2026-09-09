@@ -57,11 +57,11 @@ assert_eq "every slash is replaced, not just the first" \
 
 # --- Both callers source this file rather than typing their own copy --------
 assert_eq "lib/claim.sh sources lib/claim-key.sh" "1" \
-  "$(grep -c '^\. "\$SCRIPT_DIR/lib/claim-key\.sh"$' "$SCRIPT_DIR/lib/claim.sh")"
+  "$(grep -c "^\\. \"\$SCRIPT_DIR/lib/claim-key\\.sh\"\$" "$SCRIPT_DIR/lib/claim.sh")"
 assert_eq "lib/claim.sh defines no san() of its own" "0" \
   "$(grep -c '^san()' "$SCRIPT_DIR/lib/claim.sh")"
 assert_eq "sweep-orphan-branches.sh sources lib/claim-key.sh" "1" \
-  "$(grep -c '^\. "\$SCRIPT_DIR/lib/claim-key\.sh"$' "$SCRIPT_DIR/scripts/sweep-orphan-branches.sh")"
+  "$(grep -c "^\\. \"\$SCRIPT_DIR/lib/claim-key\\.sh\"\$" "$SCRIPT_DIR/scripts/sweep-orphan-branches.sh")"
 assert_eq "sweep-orphan-branches.sh defines no san() of its own" "0" \
   "$(grep -c '^san()' "$SCRIPT_DIR/scripts/sweep-orphan-branches.sh")"
 

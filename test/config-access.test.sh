@@ -37,6 +37,7 @@ assert_eq() {
 . "$SCRIPT_DIR/lib/config-access.sh"
 
 # --- expand_home ---------------------------------------------------------------
+# shellcheck disable=SC2088  # the literal ~ is the point: expand_home, not the shell, must expand it.
 assert_eq "a ~-prefixed path expands against \$HOME" "$HOME/state" \
   "$(expand_home '~/state')"
 assert_eq "a bare ~ expands to \$HOME alone" "$HOME" "$(expand_home '~')"
@@ -56,7 +57,7 @@ assert_eq "cfg_json reads an array compactly" '["a/b","c/d"]' "$(cfg_json '.repo
 # --- Both cycles source this file rather than typing their own copy ------------
 for script in agent-cycle.sh review-cycle.sh; do
   assert_eq "$script sources lib/config-access.sh" "1" \
-    "$(grep -c '^\. "\$SCRIPT_DIR/lib/config-access\.sh"$' "$SCRIPT_DIR/$script")"
+    "$(grep -c "^\\. \"\$SCRIPT_DIR/lib/config-access\\.sh\"\$" "$SCRIPT_DIR/$script")"
   assert_eq "$script defines no expand_home() of its own" "0" \
     "$(grep -c '^expand_home()' "$SCRIPT_DIR/$script")"
   assert_eq "$script defines no cfg() of its own" "0" \
