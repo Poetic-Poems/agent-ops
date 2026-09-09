@@ -236,7 +236,14 @@ rel() { date -u -d "@$(( $(date -u +%s) + $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
 # — fires, with a two-entry duration histogram. n3: last cycle-start equally
 # ancient, but its heartbeat itself is stale — excluded regardless. n4:
 # active, but its last event is an unmatched cycle-start (still running) —
-# never fires, however old that start was.
+# never fires, however old that start was. n5: cycle-start 40 minutes ago,
+# still unmatched (a cycle genuinely still running, past 2x the 15-minute
+# interval), with two later cycle-skipped events (own, distinct cycle ids,
+# same as a real skipped attempt logs — agent-cycle.sh:1472) at -25m and
+# -10m proving the scheduler kept ticking and correctly deferred to the
+# still-running cycle — never fires, since a recent skip is itself evidence
+# the scheduler is alive (agent-ops#1312's own review of #1282: a trailing
+# skip must not invert "holds no lock" into "missed").
 fm_log="$WORKDIR/firing-missed.jsonl"
 write_log "$fm_log" \
   "$(cycle_ev "$(rel -300)" n1 c1 cycle-start)" \
@@ -247,10 +254,14 @@ write_log "$fm_log" \
   "$(cycle_ev "$(rel -7100)" n2 c2 cycle-end '{"exit_code":0}')" \
   "$(cycle_ev "$(rel -14400)" n3 c1 cycle-start)" \
   "$(cycle_ev "$(rel -14300)" n3 c1 cycle-end '{"exit_code":0}')" \
-  "$(cycle_ev "$(rel -14400)" n4 c1 cycle-start)"
+  "$(cycle_ev "$(rel -14400)" n4 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -2400)" n5 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -1500)" n5 c2 cycle-skipped)" \
+  "$(cycle_ev "$(rel -600)" n5 c3 cycle-skipped)"
 fm_nodes="$(fleet3 "$(node_row n1 false "" "" "")" "$(node_row n2 false "" "" "")" \
   "$(node_row n3 true "" "" "")")"
 fm_nodes="$(jq -c --argjson extra "$(node_row n4 false "" "" "")" '. + [$extra]' <<<"$fm_nodes")"
+fm_nodes="$(jq -c --argjson extra "$(node_row n5 false "" "" "")" '. + [$extra]' <<<"$fm_nodes")"
 
 PAGER_EVAL_CYCLE_INTERVAL_MINUTES=15
 verdict="$(pager_eval_firing_missed "$fm_nodes" "$fm_log")"
@@ -263,6 +274,8 @@ assert_eq "  ... n3 (stale heartbeat) is excluded even though equally ancient" "
   "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
 assert_eq "  ... n4 (still holds its lock) is never named, however old" "0" \
   "$(jq -r '.nodes | index("n4") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n5 (long cycle, but a recent trailing skip proves the scheduler is alive) is never named" "0" \
+  "$(jq -r '.nodes | index("n5") != null' <<<"$verdict" | grep -c true)"
 assert_eq "  ... evidence carries n2's own cycle-duration histogram" "1" \
   "$(grep -c 'cycle durations' <<<"$(jq -r '.evidence' <<<"$verdict")")"
 

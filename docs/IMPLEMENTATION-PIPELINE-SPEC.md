@@ -16283,16 +16283,28 @@ with the Reviewer's own.
     as "never fire" rather than guessing at a default.
 
     - **`firing-missed`** (owner-only). Fires when an *active* node's newest
-      `cycle-start` (the implementation union log) is older than 2×
+      evidence of its scheduler firing — a `cycle-start` or a `cycle-skipped`
+      (the implementation union log; `acquire_lock` logs `cycle-skipped` only
+      when it found the lock held by another live pid, itself proof the
+      scheduler ticked on schedule and deferred correctly) — is older than 2×
       `schedule.cycle_interval_minutes` while it holds no lock — the
       signature of supercronic dropping a firing outright (#1287 records the
       gap from the inside: no `cycle-start`, no `cycle-skipped`, nothing in
       `log.jsonl` at all), as distinct from a cycle that is simply still
-      running. `lock.json` is never published (`scripts/state-sync.sh`
+      running, or a long cycle whose scheduler keeps ticking (and skipping)
+      around it. `lock.json` is never published (`scripts/state-sync.sh`
       excludes it), so "holds no lock" is derived purely from the union log:
       a node's own newest cycle-start/cycle-end/cycle-skipped event being a
       `cycle-start` means that cycle has not yet ended, so a long
-      *legitimate* cycle is never mistaken for a missed one.
+      *legitimate* cycle is never mistaken for a missed one. Staleness itself
+      is measured from the newer of the node's last `cycle-start` and last
+      `cycle-skipped`, not from `cycle-start` alone, so a cycle that outlasts
+      2× the interval while its scheduler keeps ticking (and correctly
+      skipping, because the earlier cycle still holds the lock) never crosses
+      the age threshold either — only silence on both counts does (#1312's
+      review of #1282 caught a trailing `cycle-skipped` inverting "holds no
+      lock" into a false positive; the fixture at
+      `test/pager-invariants.test.sh`'s `n5` reproduces and covers it).
       `schedule.cycle_interval_minutes` is fleet-wide config, identical on
       every node that reads it including the evaluating one, so no peer-
       specific threshold needs to travel at all. The threshold is that bare
@@ -23987,11 +23999,14 @@ oblige anyone to edit a test.
     and its remedy closes exactly the pages found outlived, none still
     open. The same file also drives agent-ops#1282's five peer-vantage
     invariants against fixture union logs and heartbeat sets:
-    `firing-missed` fires on an active node whose newest `cycle-start` is
-    past 2× a configured interval with no lock held, but not on a node that
-    recently cycled, not on one whose heartbeat is itself stale, and not on
-    one whose own last event is an unmatched `cycle-start` (still holds its
-    lock) however old — with evidence carrying the firing node's own
+    `firing-missed` fires on an active node whose newest `cycle-start` or
+    `cycle-skipped` is past 2× a configured interval with no lock held, but
+    not on a node that recently cycled, not on one whose heartbeat is itself
+    stale, not on one whose own last event is an unmatched `cycle-start`
+    (still holds its lock) however old, and not on one whose long-running
+    cycle-start is trailed by a recent `cycle-skipped` — proof its scheduler
+    kept ticking and correctly deferred — even though that skip is not
+    itself a lock hold — with evidence carrying the firing node's own
     cycle-duration histogram; `node-stale` fires only on a row whose
     `heartbeat_age_s` exceeds 2× the configured threshold; `updater-stuck`
     fires only on an active row reporting `updater.status: "stuck"` past 2×

@@ -56,9 +56,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`lib/pager-invariants.sh`), all `owner-only` — the class where every
   signal a node emitted was one it also consumed, so only another node
   evaluating it can catch the gap. `firing-missed` (an active node's newest
-  `cycle-start` older than 2× `schedule.cycle_interval_minutes` while its
-  heartbeat is fresh and it holds no lock — caught purely from the union
-  log, since `lock.json` is never published). `node-stale` (publication age
+  `cycle-start` or `cycle-skipped` older than 2× `schedule.cycle_interval_
+  minutes` while its heartbeat is fresh and it holds no lock — caught purely
+  from the union log, since `lock.json` is never published; a long cycle
+  whose scheduler keeps ticking and skipping around it never counts as
+  missed). `node-stale` (publication age
   past 2× `node_stale_after_minutes`; files only after the new
   `pager_stale_file_after_minutes`, default 180 min — a per-key override of
   the framework's own filing hysteresis, `pager_register`'s new fifth

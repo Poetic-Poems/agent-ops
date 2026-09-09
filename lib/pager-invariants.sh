@@ -266,21 +266,31 @@ Retired automatically by lib/pager.sh (issue #1278)."
 # --- agent-ops#1282: fleet liveness from a peer's vantage --------------------
 
 # pager_eval_firing_missed FLEET_NODES_JSON UNION_LOG_FILE
-# Fires when an *active* node's (`.stale | not`) newest `cycle-start` is
-# older than 2× PAGER_EVAL_CYCLE_INTERVAL_MINUTES while it holds no lock —
-# the signature of supercronic dropping a firing outright (agent-ops#1287
-# records the gap from the inside: no `cycle-start`, no `cycle-skipped`,
-# nothing in `log.jsonl` at all) as distinct from a cycle that is simply
-# still running. `lock.json` itself is never published (scripts/state-
-# sync.sh excludes it), so "holds no lock" is derived purely from the union
-# log: a node's own newest cycle-start/cycle-end/cycle-skipped event —
-# whichever the union log's own timestamps put last — being a `cycle-start`
-# means that cycle has not yet ended, i.e. the lock is (or very recently
-# was) held, so a long *legitimate* cycle is never mistaken for a missed
-# firing. Evidence embeds each firing node's age and its own recent
-# cycle-duration histogram (up to the last 5 completed cycles, matched by
-# the `cycle` id every cycle-start/cycle-end pair shares) — "file, with the
-# node's cycle-duration histogram" (#1282's own acceptance).
+# Fires when an *active* node's (`.stale | not`) newest evidence of its
+# scheduler firing — a `cycle-start` or a `cycle-skipped` (agent-cycle.sh's
+# own `acquire_lock` logs `cycle-skipped` only when it found the lock held
+# by another live pid, which is proof the scheduler ticked on schedule and
+# deferred correctly, not proof of anything missing) — is older than 2×
+# PAGER_EVAL_CYCLE_INTERVAL_MINUTES while it holds no lock — the signature
+# of supercronic dropping a firing outright (agent-ops#1287 records the gap
+# from the inside: no `cycle-start`, no `cycle-skipped`, nothing in
+# `log.jsonl` at all) as distinct from a cycle that is simply still running,
+# or a long cycle whose scheduler keeps ticking (and skipping) around it.
+# `lock.json` itself is never published (scripts/state-sync.sh excludes
+# it), so "holds no lock" is derived purely from the union log: a node's own
+# newest cycle-start/cycle-end/cycle-skipped event — whichever the union
+# log's own timestamps put last — being a `cycle-start` means that cycle has
+# not yet ended, i.e. the lock is (or very recently was) held, so a long
+# *legitimate* cycle is never mistaken for a missed firing. Staleness itself
+# is measured from the newer of the node's last `cycle-start` and last
+# `cycle-skipped` — not from `cycle-start` alone — so a cycle that outlasts
+# 2× the interval while its scheduler keeps ticking (and correctly skipping,
+# because the earlier cycle still holds the lock) never crosses the age
+# threshold either; only silence on both counts does. Evidence embeds each
+# firing node's age and its own recent cycle-duration histogram (up to the
+# last 5 completed cycles, matched by the `cycle` id every cycle-start/
+# cycle-end pair shares) — "file, with the node's cycle-duration histogram"
+# (#1282's own acceptance).
 pager_eval_firing_missed() {
   local fleet_nodes_json="$1" union_log_file="$2"
   local interval_min="${PAGER_EVAL_CYCLE_INTERVAL_MINUTES:-}"
@@ -298,8 +308,9 @@ pager_eval_firing_missed() {
           | if ($starts | length) == 0 then empty
             else
               ($node_events | last) as $last_event
-              | ($starts | last) as $last_start
-              | ($last_start.ts | fromdateiso8601) as $start_epoch
+              | ($node_events | map(select(.event == "cycle-start" or .event == "cycle-skipped"))
+                 | last) as $last_activity
+              | ($last_activity.ts | fromdateiso8601) as $start_epoch
               | (($now - $start_epoch) / 60) as $age_min
               | ($last_event.event == "cycle-start") as $lock_held
               | if ($lock_held | not) and ($age_min > (2 * $interval)) then
@@ -316,9 +327,9 @@ pager_eval_firing_missed() {
         ] ) as $hits
     | if ($hits | length) == 0 then {firing: false}
       else {firing: true, nodes: ($hits | map(.node)),
-            evidence: ("newest cycle-start older than 2× schedule.cycle_interval_minutes ("
+            evidence: ("newest cycle-start or cycle-skipped older than 2× schedule.cycle_interval_minutes ("
               + ($interval | tostring) + "m) while the heartbeat is fresh and no lock is held, on "
-              + (($hits | map("\(.node) (\(.age_min)m since last cycle-start; recent cycle "
+              + (($hits | map("\(.node) (\(.age_min)m since last cycle-start/cycle-skipped; recent cycle "
                   + "durations in minutes: "
                   + (if (.durations | length) == 0 then "none recorded"
                      else (.durations | map(tostring) | join(", ")) end) + ")")) | join("; ")))}
