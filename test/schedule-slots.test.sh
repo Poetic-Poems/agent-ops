@@ -125,6 +125,7 @@ run_block() {
       "$(command date -u -d "$now_iso" +%s)"
     printf '  else command date "$@"\n'
     printf '  fi\n}\n'
+    # shellcheck disable=SC2016  # $1/$2 are the generated script's own positional params, not this test's
     printf 'log_event() { printf "EVENT %%s %%s\\n" "$1" "$2"; }\n'
     printf 'lock_acquired=%q\n' "$lock_acquired"
     printf 'cycle_started_at=%q\n' "$cycle_started_at"
