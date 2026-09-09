@@ -84,6 +84,8 @@ if [[ "$exclude_claimed_items_src" != *"exclude_claimed_items()"* ]]; then
 fi
 
 eval "$emit_first_seen_src"
+# shellcheck source=lib/log-event.sh
+. "$SCRIPT_DIR/lib/log-event.sh"
 eval "$log_event_src"
 eval "$exclude_claimed_items_src"
 

@@ -83,6 +83,8 @@ for pair in \
   fi
 done
 
+# shellcheck source=lib/log-event.sh
+. "$SCRIPT_DIR/lib/log-event.sh"
 eval "$log_event_src"
 eval "$guard_warn_src"
 eval "$stage_budget_overrides_src"

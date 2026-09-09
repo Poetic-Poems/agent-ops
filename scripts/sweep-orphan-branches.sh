@@ -119,6 +119,15 @@ GH="${SWEEP_GH:-gh}"
 # drift (TD-PPagop-26082310).
 # shellcheck source=lib/tech-debt-file.sh
 . "$SCRIPT_DIR/lib/tech-debt-file.sh"
+# san() (below) is lib/claim.sh's own claim-path sanitizer, sourced rather
+# than typed a second time so the two can never drift (issue #967) — the
+# same reasoning as lib/tech-debt-file.sh's own sourcing above
+# (TD-PPagop-26082310). lib/claim.sh itself stays a standalone script, never
+# sourced (#771, lib/drain.sh's own header): its own config reads and
+# dispatch have side effects a sourcing caller must not inherit, so the
+# sanitizer alone lives in this small, side-effect-free file instead.
+# shellcheck source=lib/claim-key.sh
+. "$SCRIPT_DIR/lib/claim-key.sh"
 
 slug="${1:-}"
 if [[ -z "$slug" ]]; then
@@ -146,8 +155,6 @@ state_repo="$(cfg '.state_repo')"
 # little — and a bug that suddenly minted fifty "orphans" costs fifty PRs
 # without it.
 max_actions=3
-
-san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
 # stem BRANCH — reduce a claim branch to its item ref, for comparing two
 # branches that might carry the same work: strip the leading

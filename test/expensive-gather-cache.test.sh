@@ -32,6 +32,8 @@ if [[ "$log_event_src" != *"log_event()"* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+# shellcheck source=lib/log-event.sh
+. "$SCRIPT_DIR/lib/log-event.sh"
 eval "$log_event_src"
 
 # shellcheck source=lib/expensive-gather-cache.sh

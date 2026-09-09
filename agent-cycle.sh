@@ -63,6 +63,16 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# expand_home, cfg, cfg_json — shared with review-cycle.sh so the two copies
+# can never drift (issue #967).
+# shellcheck source=lib/config-access.sh
+. "$SCRIPT_DIR/lib/config-access.sh"
+# log_event_append — the envelope logic behind this file's own log_event,
+# shared with review-cycle.sh's (issue #967); each cycle's own id field, id
+# value and log file are the one genuine difference, and stay local to each
+# script's own log_event wrapper below.
+# shellcheck source=lib/log-event.sh
+. "$SCRIPT_DIR/lib/log-event.sh"
 # shellcheck source=lib/report-directory.sh
 # REPORT_DIRECTORY_DEFAULT (the review pipeline's own ultimate report_directory
 # fallback, issue #761): lib/eligibility.sh's prefetch_refiner_sources reads it
@@ -450,11 +460,6 @@ if [[ -z "$MANAGE_ACTION" ]] && ! (( DRY_RUN || ONCE )) && ! role_is_active; the
 fi
 
 # --- Config ---
-expand_home() {
-  local p="$1"
-  [[ "$p" == "~"* ]] && p="$HOME${p:1}"
-  printf '%s\n' "$p"
-}
 # The schema gate (requirement 1b): config.schema.json is the single
 # statement of config.json's shape, validated here, before any individual key
 # is read from it — the same fail-fast position requirement 1a's model-id
@@ -475,8 +480,6 @@ fi
 # key config.schema.json declares a `default` for reads as fully populated
 # below, with no `// literal` of its own to drift from the schema's.
 DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
-cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
-cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
@@ -915,31 +918,10 @@ cycle_dir="$state_dir/cycles/$cycle_id"
 [[ -n "$MANAGE_ACTION" ]] || mkdir -p "$cycle_dir"
 
 # --- Logging ---
-# FIELDS must be a JSON object: the envelope merge below is jq's `+`, and jq
-# cannot add an object and an array — it raises a runtime error, exit 5, and
-# under `set -e` that was the whole cycle's exit. Not hypothetical: the one
-# call site that passed an array (`enabler-stale-refs-skipped`, a guard that
-# had never fired) took every node down in a pre-selection crash loop the
-# first time it did (issue #361). So the logger holds the contract itself
-# rather than trusting 168 call sites to: a non-object payload is recorded
-# wrapped under `fields` — the event still lands, readable, rather than
-# vanishing — and the append is `|| true` because recording an event is never
-# worth a cycle. stderr stays unredirected on the final jq for the same
-# reason the wrap exists: if this still fails somehow, cron.log should show
-# it, not swallow it.
-log_event() {
-  local event="$1" fields="${2:-{\}}"
-  local ts
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
-    local wrapped
-    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)" || true
-    [[ -n "$wrapped" ]] || wrapped="$(jq -nc --arg f "$fields" '{fields: $f}')"
-    fields="$wrapped"
-  fi
-  jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
-}
+# The envelope logic (the FIELDS contract, issue #361/#458) lives in
+# lib/log-event.sh's log_event_append, shared with review-cycle.sh; `cycle`
+# is this pipeline's own id field.
+log_event() { log_event_append "$log_file" cycle "$cycle_id" "$node_name" "$@"; }
 
 # void_obsolete_ctx_json REPO_SLUG [FLAGS_JSON]
 # What every `void_guard_reason` call site (the Co-Ordinator, the Enabler, the

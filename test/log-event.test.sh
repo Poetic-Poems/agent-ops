@@ -28,10 +28,11 @@
 #   - log_event returns 0 in every one of those cases, because a caller
 #     running under `set -e` must never lose a cycle to an event record.
 #
-# Both copies of the function are exercised — agent-cycle.sh's (the cycle
-# envelope) and review-cycle.sh's (the review envelope) — each lifted whole
-# out of its script rather than reimplemented, so a change to the real
-# function is what this suite tests.
+# Both wrappers are exercised — agent-cycle.sh's log_event (the cycle
+# envelope) and review-cycle.sh's log_event (the review envelope) — each
+# lifted whole out of its script and run against the real
+# lib/log-event.sh's log_event_append (issue #967), so a change to either
+# the wrapper or the shared envelope logic is what this suite tests.
 #
 # No network, no GitHub, no state beyond a temporary log file. Run directly:
 #
@@ -72,24 +73,27 @@ extract_log_event() {  # extract_log_event <script-path>
 cycle_log_event_src="$(extract_log_event "$SCRIPT_DIR/agent-cycle.sh")"
 review_log_event_src="$(extract_log_event "$SCRIPT_DIR/review-cycle.sh")"
 
-if [[ "$cycle_log_event_src" != *'--argjson fields'* ]]; then
+if [[ "$cycle_log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
-if [[ "$review_log_event_src" != *'--argjson fields'* ]]; then
+if [[ "$review_log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from review-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
 
-# run_log_event <which> <event> [fields] — invoke the real function inside a
-# `set -e` subshell (the caller's actual regime) against a fresh log file, then
-# print "<rc>\t<lines-appended>\t<last-line-json>" for the assertions below.
+# run_log_event <which> <event> [fields] — invoke the real wrapper, against
+# the real lib/log-event.sh, inside a `set -e` subshell (the caller's actual
+# regime) against a fresh log file, then print
+# "<rc>\t<lines-appended>\t<last-line-json>" for the assertions below.
 run_log_event() {
   local which="$1" event="$2"
   local log="$tmp_dir/$which-$RANDOM.jsonl"
   shift 2
   (
     set -euo pipefail
+    # shellcheck source=lib/log-event.sh
+    . "$SCRIPT_DIR/lib/log-event.sh"
     # shellcheck disable=SC2034  # read by the eval'd function bodies below.
     cycle_id="test-cycle" node_name="test-node" log_file="$log"
     # shellcheck disable=SC2034

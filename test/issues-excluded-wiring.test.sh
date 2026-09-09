@@ -86,7 +86,7 @@ log_event_src="$(awk '
   index($0, "log_event() {") == 1 { on = 1 }
   on { print; if ($0 == "}") exit }
 ' "$SCRIPT_DIR/agent-cycle.sh")"
-if [[ "$log_event_src" != *'--argjson fields'* ]]; then
+if [[ "$log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
@@ -231,6 +231,8 @@ run_issues_excluded_cycle() {
     gather_issues() { printf '[]'; }
     # shellcheck disable=SC2317
     gather_issues_excluded() { printf '%s' "$excluded_arg"; }
+    # shellcheck source=lib/log-event.sh
+    . "$SCRIPT_DIR/lib/log-event.sh"
     eval "$log_event_src"
     eval "$issues_block_src"
     printf '%s' "$latest_issues_excluded_json" > "$map_file_path"
