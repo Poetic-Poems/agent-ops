@@ -850,6 +850,8 @@ and the schema must carry every one of them.
 | `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
 | `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
+| `pager_stale_file_after_minutes` | 180 min | `node-stale`'s own per-key override of requirement 51's `pager_min_firing_minutes` hysteresis (agent-ops#1282): the fact this invariant evaluates is already slow-forming (a publication age past `2 × node_stale_after_minutes`), so filing waits far longer than the framework's own blip-sized default. |
+| `pager_dashboard_fetch_seconds` | 30 s | `dashboard-unreadable`'s own tolerance (agent-ops#1282) for how long a viewer's fetch of a node's `data.js` (agent-ops#1283's own viewer-vantage probe) may take before this invariant fires; a failed parse fires regardless of the elapsed time. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -16307,6 +16309,134 @@ with the Reviewer's own.
       `approver_escalation_retire` from the single adjudication page to
       every page this framework or the Enabler files.
 
+    Issue #1282 (part 3c of #1126's own findings) adds five more —
+    **fleet liveness from a peer's vantage**, the class where every signal a
+    node emitted was one it also consumed, so only another node evaluating
+    it can catch the gap. All five are `owner-only`: none has a fix a
+    pipeline could perform on its own behalf, unlike `verdict-unanimous`'s
+    tech-debt filing. `pager_register` gains a fifth, optional argument,
+    `MIN_FIRING_MINUTES_OVERRIDE` — when non-empty, `_pager_evaluate_one`
+    uses it instead of `pager_evaluate`'s own `MIN_FIRING_MINUTES` for that
+    key alone (`lib/pager.sh`'s `PAGER_MIN_FIRING_MINUTES_OVERRIDE`), and an
+    omitted one (every call site before #1282) falls through unchanged.
+    `pager_evaluate` also gains five trailing, optional parameters —
+    `CYCLE_INTERVAL_MINUTES`, `NODE_STALE_AFTER_MINUTES`,
+    `UPDATER_STUCK_AFTER_MINUTES`, `DASHBOARD_FETCH_SECONDS`,
+    `REVIEW_UNION_LOG_FILE` — which `_pager_evaluate_one` sets as
+    `PAGER_EVAL_CYCLE_INTERVAL_MINUTES` and four siblings, the identical
+    plain-variable exception `PAGER_EVAL_REPO` already established: none of
+    these thresholds (or, for `review-pipeline-failing`, the review-log
+    union path) is a fact either of EVAL_FN's own two arguments carries, an
+    omitted one is empty, and every EVAL_FN below treats an empty threshold
+    as "never fire" rather than guessing at a default.
+
+    - **`firing-missed`** (owner-only). Fires when an *active* node's newest
+      evidence of its scheduler firing — a `cycle-start` or a `cycle-skipped`
+      (the implementation union log; `acquire_lock` logs `cycle-skipped` only
+      when it found the lock held by another live pid, itself proof the
+      scheduler ticked on schedule and deferred correctly) — is older than 2×
+      `schedule.cycle_interval_minutes` while it holds no lock — the
+      signature of supercronic dropping a firing outright (#1287 records the
+      gap from the inside: no `cycle-start`, no `cycle-skipped`, nothing in
+      `log.jsonl` at all), as distinct from a cycle that is simply still
+      running, or a long cycle whose scheduler keeps ticking (and skipping)
+      around it. `lock.json` is never published (`scripts/state-sync.sh`
+      excludes it), so "holds no lock" is derived purely from the union log:
+      a node's own newest cycle-start/cycle-end/cycle-skipped event being a
+      `cycle-start` means that cycle has not yet ended, so a long
+      *legitimate* cycle is never mistaken for a missed one. Staleness itself
+      is measured from the newer of the node's last `cycle-start` and last
+      `cycle-skipped`, not from `cycle-start` alone, so a cycle that outlasts
+      2× the interval while its scheduler keeps ticking (and correctly
+      skipping, because the earlier cycle still holds the lock) never crosses
+      the age threshold either — only silence on both counts does (#1312's
+      review of #1282 caught a trailing `cycle-skipped` inverting "holds no
+      lock" into a false positive; the fixture at
+      `test/pager-invariants.test.sh`'s `n5` reproduces and covers it).
+      `schedule.cycle_interval_minutes` is fleet-wide config, identical on
+      every node that reads it including the evaluating one, so no peer-
+      specific threshold needs to travel at all. The threshold is that bare
+      interval, **not** requirement 1d's worst-case gap: an installation
+      that restricts `schedule.cycle_hours` or `schedule.excluded_minutes`
+      goes longer between firings than twice the interval by design, and
+      this invariant would read the quiet stretch as a dropped firing. The
+      shipped configuration restricts neither, where the two quantities
+      coincide; #1314 carries the derivation, which needs `cadence_gaps`
+      (requirement 1b) to surface a gap it currently only consumes.
+      Evidence carries each
+      firing node's own recent cycle-duration histogram (up to five
+      completed cycles, matched by the `cycle` id every start/end pair
+      shares) — the acceptance's own "file, with the node's cycle-duration
+      histogram".
+    - **`node-stale`** (owner-only). Fires when a node's `heartbeat_age_s`
+      (`fleet_publication_status`, requirement 2.5, carried by every row
+      including this node's own) exceeds 2× `node_stale_after_minutes` —
+      past the dashboard's own `.stale` badge (1×) and into the 2026-08-08
+      both-laptop-nodes signature, four days nobody was looking at a page
+      nobody had. Files only after `pager_stale_file_after_minutes`
+      (default 180 min), its own `MIN_FIRING_MINUTES_OVERRIDE`: the
+      underlying fact is already slow-forming, so filing waits far longer
+      than the framework's blip-sized default. Once #1279's notification
+      channel lands, this class of page reaches it automatically
+      (`notify_events`' own default already names `pager`) — today it is
+      filed only.
+    - **`updater-stuck`** (owner-only). Fires when any active node's
+      `updater.status == "stuck"` for over 2× `updater_stuck_after_minutes`.
+      `.updater.seconds` (`lib/updater-health.sh`'s `updater_status`) already
+      carries the streak's own elapsed time, recomputed fresh on every
+      heartbeat write, so this reads it directly rather than re-deriving an
+      age from the union log the way `firing-missed` has to for a fact that
+      is never published at all.
+    - **`review-pipeline-failing`** (owner-only). Fires when any node's
+      streak of failed review *runs* (`review-log.jsonl`, fleet-replicated
+      like `log.jsonl` — `scripts/state-sync.sh` does not exclude it)
+      reaches 3 with no completed review between. A run — grouped by the
+      `review` id `review-cycle.sh`'s own `log_event` stamps on every line —
+      rather than a bare event, because `review-end` is written by that
+      script's `cleanup()` EXIT trap on *every* run whatever happened, and
+      both of its ordinary `review-attempt-failed` sites return success, so
+      a run that just failed still reports `review-end` with `exit_code: 0`;
+      a reader resetting on that would reset on the very run it was counting
+      and could never reach 3 at one repository per run. So, per run: any
+      `review-attempt-failed` increments; none, plus a `review-stage-end`,
+      resets; neither — a stand-down, a skip, nothing due — leaves the streak
+      untouched, since such a run carries no information about the pipeline's
+      health in either direction. That last case is the indistinguishability
+      #996 names, refused here rather than resolved. 3 is not schema-backed,
+      mirroring `lib/stage-health.sh`'s own un-schema-backed `THRESHOLD`
+      default for the identical reason it states: this class has not yet
+      seen a real incident to tune the number against. (`stage_health_
+      verdicts` itself counts non-zero `stage-end` events and never counts
+      `attempt-failed` toward its streak — the threshold is shared, the
+      reduction is this invariant's own, because the two pipelines record
+      a failed attempt differently.) **This invariant is the interim reader: #996 stays the
+      proper fix, a verdict folded directly into the heartbeat the way
+      `stage_health`/`updater`/`doctor` already are** — without it, a
+      review pipeline stalled or failing on every attempt looks identical,
+      from `--status`, the dashboard, and every heartbeat, to one that
+      simply has no repository due; this invariant closes that gap only
+      from a peer's own union-log vantage, not by adding the verdict itself.
+    - **`dashboard-unreadable`** (owner-only). Fires when a row's
+      `dashboard_fetch: {seconds, parsed}` field — a fact no node can
+      observe about itself — names a fetch slower than
+      `pager_dashboard_fetch_seconds` (default 30 s) or one that failed to
+      parse. This field is the contract #1283's own viewer-vantage probe is
+      expected to fold into `fleet_nodes_json` the same way `doctor` was
+      folded in for `verdict-unanimous` (#1278); until #1283 lands and
+      populates it, every row's `dashboard_fetch` is absent and this
+      invariant never fires — the same null-until-populated convention
+      `doctor`/`updater`/`stage_health` already use for a peer row built
+      from a heartbeat that predates the check, never a false negative from
+      a producer that does not exist yet.
+
+    Configuration for the five: `pager_stale_file_after_minutes` (default
+    180 min, `node-stale`'s own filing-hysteresis override) and
+    `pager_dashboard_fetch_seconds` (default 30 s, `dashboard-unreadable`'s
+    fetch-time tolerance) are new; `firing-missed`, `updater-stuck` and
+    `review-pipeline-failing` reuse `schedule.cycle_interval_minutes`,
+    `updater_stuck_after_minutes` and a fixed, un-schema-backed 3
+    respectively, needing no key of their own.
+
     `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
     evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
     page-rendering section documents the `pager-firing` banner and node-card
@@ -23970,8 +24100,37 @@ oblige anyone to edit a test.
     unanimity; `page-outlived-item` fires when a stubbed `gh issue
     list`/`gh pr view` shows an open page's own linked PR merged or closed,
     and its remedy closes exactly the pages found outlived, none still
-    open. `scripts/lint-shell.sh` is clean on every file this requirement
-    touches.
+    open. The same file also drives agent-ops#1282's five peer-vantage
+    invariants against fixture union logs and heartbeat sets:
+    `firing-missed` fires on an active node whose newest `cycle-start` or
+    `cycle-skipped` is past 2× a configured interval with no lock held, but
+    not on a node that recently cycled, not on one whose heartbeat is itself
+    stale, not on one whose own last event is an unmatched `cycle-start`
+    (still holds its lock) however old, and not on one whose long-running
+    cycle-start is trailed by a recent `cycle-skipped` — proof its scheduler
+    kept ticking and correctly deferred — even though that skip is not
+    itself a lock hold — with evidence carrying the firing node's own
+    cycle-duration histogram; `node-stale` fires only on a row whose
+    `heartbeat_age_s` exceeds 2× the configured threshold; `updater-stuck`
+    fires only on an active row reporting `updater.status: "stuck"` past 2×
+    the configured threshold, never a stale row's; `review-pipeline-failing`
+    fires on a per-node streak of 3 or more failed review runs *each of
+    which ends in a `review-end` reporting `exit_code: 0`* — the shape
+    `review-cycle.sh` actually writes, and the one a reader reducing over
+    raw events would silence itself on — resets on a run that completed a
+    review, is left untouched by a stood-down run between two failures, and
+    its evidence names #996 and counts runs rather than events;
+    `dashboard-unreadable` fires
+    on a row whose `dashboard_fetch` names a slow fetch or a failed parse,
+    never on a row carrying no probe result at all. Each of the five also
+    proves it never fires with its own threshold unconfigured (an empty
+    `PAGER_EVAL_*` variable). `test/pager.test.sh` additionally proves
+    `pager_register`'s new, optional fifth argument records against the key
+    (empty when omitted) and that a key registered with an override ignores
+    `pager_evaluate`'s own shared `MIN_FIRING_MINUTES` entirely. `scripts/
+    render-config-table.sh --check` passes with `pager_stale_file_after_
+    minutes`/`pager_dashboard_fetch_seconds` added. `scripts/lint-shell.sh`
+    is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

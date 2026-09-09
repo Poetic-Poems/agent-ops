@@ -51,6 +51,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tick regardless. With unchanged data a tick now costs bytes, not
   megabytes.
 
+- **The pager: fleet liveness from a peer's vantage** (issue #1282, part 3c
+  of #1126's findings, requirement 51): five more built-in invariants
+  (`lib/pager-invariants.sh`), all `owner-only` — the class where every
+  signal a node emitted was one it also consumed, so only another node
+  evaluating it can catch the gap. `firing-missed` (an active node's newest
+  `cycle-start` or `cycle-skipped` older than 2× `schedule.cycle_interval_
+  minutes` while its heartbeat is fresh and it holds no lock — caught purely
+  from the union log, since `lock.json` is never published; a long cycle
+  whose scheduler keeps ticking and skipping around it never counts as
+  missed). `node-stale` (publication age
+  past 2× `node_stale_after_minutes`; files only after the new
+  `pager_stale_file_after_minutes`, default 180 min — a per-key override of
+  the framework's own filing hysteresis, `pager_register`'s new fifth
+  argument). `updater-stuck` (`updater.status == "stuck"` for over 2×
+  `updater_stuck_after_minutes`, reading `.updater.seconds`' own elapsed
+  time directly). `review-pipeline-failing` (`review-log.jsonl`'s streak of
+  failed review *runs* at 3 or more with no completed review between —
+  runs, not events, because `review-cycle.sh` writes `review-end` on every
+  run whatever happened, so a failed run's own `review-end` still reports
+  `exit_code: 0`; the interim reader pending #996's own heartbeat
+  verdict). `dashboard-unreadable` (a node's `data.js` slower than the new
+  `pager_dashboard_fetch_seconds`, default 30 s, or unparseable, from a
+  viewer's vantage — reads the `dashboard_fetch` field #1283's own
+  viewer-vantage probe is expected to fold into `fleet_nodes_json`; never
+  fires until that lands). New config: `pager_stale_file_after_minutes`
+  (default 180), `pager_dashboard_fetch_seconds` (default 30).
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for

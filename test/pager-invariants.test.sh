@@ -218,6 +218,201 @@ STUB_GH_LIST_BY_LABEL=([enabler-escalation]="[]" [pw::pager]="[]")
 verdict="$(pager_eval_page_outlived_item "" "")"
 assert_eq "no open pages at all: does not fire" "false" "$(jq -r '.firing' <<<"$verdict")"
 
+# --- firing-missed (agent-ops#1282) ---------------------------------------------
+
+cycle_ev() {  # cycle_ev TS NODE CYCLE EVENT [EXTRA_JSON]
+  jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" --arg e "$4" --argjson extra "${5:-{\}}" \
+    '{ts: $ts, node: $n, cycle: $c, event: $e} + $extra'
+}
+write_log() { local path="$1"; shift; printf '%s\n' "$@" > "$path"; }
+# rel SECONDS_OFFSET -> an ISO-8601 timestamp that many seconds from *now*
+# (negative = in the past). The EVAL_FN reads the real clock (`date -u
+# +%s`), so every fixture below is anchored to whenever this file actually
+# runs, not to a fixed calendar date.
+rel() { date -u -d "@$(( $(date -u +%s) + $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+
+# n1: last cycle completed 3 minutes ago — well within the interval, never
+# fires. n2: last cycle-start 4 hours ago, cleanly completed (no lock held)
+# — fires, with a two-entry duration histogram. n3: last cycle-start equally
+# ancient, but its heartbeat itself is stale — excluded regardless. n4:
+# active, but its last event is an unmatched cycle-start (still running) —
+# never fires, however old that start was. n5: cycle-start 40 minutes ago,
+# still unmatched (a cycle genuinely still running, past 2x the 15-minute
+# interval), with two later cycle-skipped events (own, distinct cycle ids,
+# same as a real skipped attempt logs — agent-cycle.sh:1472) at -25m and
+# -10m proving the scheduler kept ticking and correctly deferred to the
+# still-running cycle — never fires, since a recent skip is itself evidence
+# the scheduler is alive (agent-ops#1312's own review of #1282: a trailing
+# skip must not invert "holds no lock" into "missed").
+fm_log="$WORKDIR/firing-missed.jsonl"
+write_log "$fm_log" \
+  "$(cycle_ev "$(rel -300)" n1 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -180)" n1 c1 cycle-end '{"exit_code":0}')" \
+  "$(cycle_ev "$(rel -14400)" n2 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -14300)" n2 c1 cycle-end '{"exit_code":0}')" \
+  "$(cycle_ev "$(rel -7200)" n2 c2 cycle-start)" \
+  "$(cycle_ev "$(rel -7100)" n2 c2 cycle-end '{"exit_code":0}')" \
+  "$(cycle_ev "$(rel -14400)" n3 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -14300)" n3 c1 cycle-end '{"exit_code":0}')" \
+  "$(cycle_ev "$(rel -14400)" n4 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -2400)" n5 c1 cycle-start)" \
+  "$(cycle_ev "$(rel -1500)" n5 c2 cycle-skipped)" \
+  "$(cycle_ev "$(rel -600)" n5 c3 cycle-skipped)"
+fm_nodes="$(fleet3 "$(node_row n1 false "" "" "")" "$(node_row n2 false "" "" "")" \
+  "$(node_row n3 true "" "" "")")"
+fm_nodes="$(jq -c --argjson extra "$(node_row n4 false "" "" "")" '. + [$extra]' <<<"$fm_nodes")"
+fm_nodes="$(jq -c --argjson extra "$(node_row n5 false "" "" "")" '. + [$extra]' <<<"$fm_nodes")"
+
+PAGER_EVAL_CYCLE_INTERVAL_MINUTES=15
+verdict="$(pager_eval_firing_missed "$fm_nodes" "$fm_log")"
+assert_eq "an active node past 2x the interval, no lock held: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... n1 (recently cycled) is not named" "0" \
+  "$(jq -r '.nodes | index("n1") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n2 (stale cycle-start, no lock held) is named" "1" \
+  "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n3 (stale heartbeat) is excluded even though equally ancient" "0" \
+  "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n4 (still holds its lock) is never named, however old" "0" \
+  "$(jq -r '.nodes | index("n4") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n5 (long cycle, but a recent trailing skip proves the scheduler is alive) is never named" "0" \
+  "$(jq -r '.nodes | index("n5") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... evidence carries n2's own cycle-duration histogram" "1" \
+  "$(grep -c 'cycle durations' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+PAGER_EVAL_CYCLE_INTERVAL_MINUTES=""
+assert_eq "no configured interval: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_firing_missed "$fm_nodes" "$fm_log")")"
+PAGER_EVAL_CYCLE_INTERVAL_MINUTES=15
+
+# --- node-stale (agent-ops#1282) -------------------------------------------------
+
+ns_row() { jq -nc --arg n "$1" --argjson age "$2" '{node: $n, heartbeat_age_s: $age}'; }
+ns_nodes="$(printf '%s\n%s\n' "$(ns_row n1 100)" "$(ns_row n2 10000)" | jq -sc '.')"
+PAGER_EVAL_NODE_STALE_AFTER_MINUTES=30
+verdict="$(pager_eval_node_stale "$ns_nodes" /dev/null)"
+assert_eq "only the node past 2x node_stale_after_minutes fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names exactly that node" "n2" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+
+ns_nodes_fresh="$(printf '%s\n' "$(ns_row n1 100)" | jq -sc '.')"
+assert_eq "every node under threshold: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_node_stale "$ns_nodes_fresh" /dev/null)")"
+
+PAGER_EVAL_NODE_STALE_AFTER_MINUTES=""
+assert_eq "no configured threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_node_stale "$ns_nodes" /dev/null)")"
+PAGER_EVAL_NODE_STALE_AFTER_MINUTES=30
+
+# --- updater-stuck (agent-ops#1282) ----------------------------------------------
+
+us_row() {  # us_row NAME STALE STATUS SECONDS
+  jq -nc --arg n "$1" --argjson stale "$2" --arg st "$3" --argjson sec "$4" \
+    '{node: $n, stale: $stale, updater: {status: $st, seconds: $sec}}'
+}
+us_nodes="$(printf '%s\n%s\n%s\n' "$(us_row n1 false stuck 100)" "$(us_row n2 false stuck 10000)" \
+  "$(us_row n3 true stuck 10000)" | jq -sc '.')"
+PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES=20
+verdict="$(pager_eval_updater_stuck "$us_nodes" /dev/null)"
+assert_eq "only the active node stuck past 2x updater_stuck_after_minutes fires" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names exactly that node" "n2" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+assert_eq "  ... a stale node's stuck streak is not trusted" "0" \
+  "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
+
+PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES=""
+assert_eq "no configured threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_updater_stuck "$us_nodes" /dev/null)")"
+PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES=20
+
+# --- review-pipeline-failing (agent-ops#1282) ------------------------------------
+# Every fixture run below carries the shape review-cycle.sh actually writes:
+# its `cleanup()` EXIT trap logs `review-end` on *every* run whatever
+# happened, and both ordinary `review-attempt-failed` sites `return 0`, so a
+# failed run's own `review-end` still reports `exit_code: 0`. A reader that
+# reduced over raw events and reset on that would reset on the very run that
+# just failed; these fixtures are what prove it does not.
+
+review_ev() {  # review_ev TS NODE REVIEW EVENT [EXTRA_JSON]
+  jq -nc --arg ts "$1" --arg n "$2" --arg r "$3" --arg e "$4" --argjson extra "${5:-{\}}" \
+    '{ts: $ts, node: $n, review: $r, event: $e} + $extra'
+}
+rv_log="$WORKDIR/review-log.jsonl"
+write_log "$rv_log" \
+  "$(review_ev 2026-09-09T09:00:00Z n1 r1 review-stage-end '{"rc":1}')" \
+  "$(review_ev 2026-09-09T09:01:00Z n1 r1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n1 r1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:10:00Z n1 r2 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:12:00Z n1 r2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:20:00Z n1 r3 review-stage-end '{"rc":124}')" \
+  "$(review_ev 2026-09-09T09:21:00Z n1 r3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:22:00Z n1 r3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T08:00:00Z n2 s1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T08:02:00Z n2 s1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T08:30:00Z n2 s2 review-stage-end '{"rc":0}')" \
+  "$(review_ev 2026-09-09T08:32:00Z n2 s2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:00:00Z n2 s3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n2 s3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:30:00Z n2 s4 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:32:00Z n2 s4 review-end '{"exit_code":0}')"
+PAGER_EVAL_REVIEW_UNION_LOG_FILE="$rv_log"
+verdict="$(pager_eval_review_pipeline_failing "" "")"
+assert_eq "three failed runs, each ending review-end exit_code 0, still fire" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names exactly the node with the streak" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+assert_eq "  ... the evidence counts runs, not the events within them" "1" \
+  "$(grep -c 'n1 (3 runs)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... a run that completed a review resets: n2's own 2-run tail does not fire" "0" \
+  "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... notes #996 as the interim's own proper fix" "1" "$(grep -c '#996' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+# A run that stood down, was skipped, or had no repository due writes neither
+# a `review-attempt-failed` nor a `review-stage-end`: it says nothing about
+# whether the pipeline works, so it must neither raise the streak nor silence
+# it — the very indistinguishability #996 names, refused rather than guessed.
+rv_log_idle="$WORKDIR/review-log-idle.jsonl"
+write_log "$rv_log_idle" \
+  "$(review_ev 2026-09-09T09:00:00Z n1 r1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n1 r1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:10:00Z n1 r2 review-stand-down '{"cause":"peer-pipeline-busy"}')" \
+  "$(review_ev 2026-09-09T09:12:00Z n1 r2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:20:00Z n1 r3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:22:00Z n1 r3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:30:00Z n1 r4 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:32:00Z n1 r4 review-end '{"exit_code":0}')"
+PAGER_EVAL_REVIEW_UNION_LOG_FILE="$rv_log_idle"
+assert_eq "a stood-down run between failures neither resets nor counts" "true" \
+  "$(jq -r '.firing' <<<"$(pager_eval_review_pipeline_failing "" "")")"
+
+PAGER_EVAL_REVIEW_UNION_LOG_FILE=""
+assert_eq "no review union log configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_review_pipeline_failing "" "")")"
+PAGER_EVAL_REVIEW_UNION_LOG_FILE="$rv_log"
+
+# --- dashboard-unreadable (agent-ops#1282) ---------------------------------------
+
+df_row() {  # df_row NAME SECONDS_OR_EMPTY PARSED_OR_EMPTY
+  jq -nc --arg n "$1" --arg sec "$2" --arg p "$3" \
+    '{node: $n,
+      dashboard_fetch: (if $sec == "" and $p == "" then null
+                         else {seconds: ($sec | if . == "" then null else tonumber end),
+                               parsed: ($p | if . == "" then true elif . == "true" then true else false end)}
+                         end)}'
+}
+df_nodes="$(printf '%s\n%s\n%s\n' "$(df_row n1 "" "")" "$(df_row n2 45 "")" "$(df_row n3 5 false)" | jq -sc '.')"
+PAGER_EVAL_DASHBOARD_FETCH_SECONDS=30
+verdict="$(pager_eval_dashboard_unreadable "$df_nodes" /dev/null)"
+assert_eq "a slow fetch and a failed parse both fire" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names both, never the node with no probe result at all" "n2,n3" \
+  "$(jq -r '.nodes | sort | join(",")' <<<"$verdict")"
+
+df_nodes_ok="$(printf '%s\n' "$(df_row n1 5 true)" | jq -sc '.')"
+assert_eq "a fast, parsed fetch does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_dashboard_unreadable "$df_nodes_ok" /dev/null)")"
+
+PAGER_EVAL_DASHBOARD_FETCH_SECONDS=""
+assert_eq "no configured threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_dashboard_unreadable "$df_nodes" /dev/null)")"
+PAGER_EVAL_DASHBOARD_FETCH_SECONDS=30
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"
