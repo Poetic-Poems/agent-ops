@@ -2024,8 +2024,19 @@ assert_contains "0 turns the memory warning off entirely, regardless of real ava
 # that it says a particular one, which would make the test depend on whether
 # it happens to be run inside a container, and if so which of the seven
 # verdicts (lib/memory.sh's memory_cgroup_verdict) that container is in.
+#
+# Each alternative below is the opening of one verdict's own describe text, so
+# it has to be spelled from the start of that text rather than from a phrase
+# somewhere inside it: `livelocked` and `unconfirmed` both open "this
+# container's parent cgroup has ...", and matching them on their distinguishing
+# phrases alone ("memory.high set to", "memory.max cannot be read") anchored
+# straight after "container memory: " matches neither — which is how a node
+# genuinely in the `unconfirmed` band (a real parent memory.high with no
+# memory.max window mounted, i.e. one not yet re-run through
+# cgroup-parent-setup.sh) failed this assertion while doctor.sh was emitting
+# exactly the right warning.
 assert_eq "the container-memory line always reports one of its verdicts" \
-  "yes" "$(if grep -qE 'container memory: (memory\.high is set|no cgroup ceiling|no cgroup v2 memory files|this container holds|memory\.high set to|memory\.max cannot be read)' <<<"$out"; then echo yes; else echo no; fi)"
+  "yes" "$(if grep -qE "container memory: (memory\.high is set|no cgroup ceiling|no cgroup v2 memory files|this container holds|this container's parent cgroup has memory\.high set to|this container's parent cgroup has a memory\.high ceiling, but its memory\.max cannot be read)" <<<"$out"; then echo yes; else echo no; fi)"
 
 # --- Memory: a rising memory.events high delta on the parent (agent-ops#1305) -
 #
