@@ -82,9 +82,15 @@ if [[ "$sidecar_fns_src" != *'issues_excluded_sidecar_path'* \
 fi
 
 # log_event: one top-level function, same extraction test/log-event.test.sh uses.
+# The one-liner case (`log_event() { log_event_append …; }`, issue #967) closes
+# on its own opening line; a multi-line body closes on a `}` back at column 0.
 log_event_src="$(awk '
-  index($0, "log_event() {") == 1 { on = 1 }
-  on { print; if ($0 == "}") exit }
+  index($0, "log_event() {") == 1 { on = 1; opener = 1 }
+  on {
+    print
+    if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+    opener = 0
+  }
 ' "$SCRIPT_DIR/agent-cycle.sh")"
 if [[ "$log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'

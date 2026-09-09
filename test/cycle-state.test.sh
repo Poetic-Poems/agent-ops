@@ -1074,10 +1074,15 @@ assert_eq "  ... with no stage/cycle/event/unblock_condition surviving" \
 # change in `log_event` would otherwise silently degrade on-change logging to
 # always-log without any test here noticing.
 
+# The one-liner case (`log_event() { log_event_append …; }`, issue #967) closes
+# on its own opening line; a multi-line body closes on a `}` back at column 0.
 cycle_log_event_src="$(awk '
-  /^log_event\(\) \{/ { on = 1 }
-  on                  { print }
-  on && /^}$/         { exit }
+  /^log_event\(\) \{/ { on = 1; opener = 1 }
+  on {
+    print
+    if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+    opener = 0
+  }
 ' "$SCRIPT_DIR/agent-cycle.sh")"
 if [[ "$cycle_log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'

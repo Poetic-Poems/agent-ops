@@ -22,9 +22,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #     own warning-on-corrupt-cache call has something real to write to.
 extract_function() {  # extract_function <name> <file>
   awk -v fn="$1" '
-    $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
-    on                          { print }
-    on && /^}$/                 { exit }
+    $0 ~ ("^" fn "\\(\\) \\{") { on = 1; opener = 1 }
+    on {
+      print
+      # Two shapes close a function here. A multi-line one closes on a `}`
+      # back at column 0; a one-line one -- `fn() { ...; }`, which is what
+      # both cycles own log_event wrapper became in issue #967 -- closes on
+      # its own opening line. Without that second case the walk runs past
+      # the end of the function and captures whatever follows it.
+      if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+      opener = 0
+    }
   ' "$2"
 }
 log_event_src="$(extract_function log_event "$SCRIPT_DIR/agent-cycle.sh")"

@@ -61,12 +61,19 @@ assert_eq() {
 
 # --- Lift log_event whole out of each script ----------------------------------
 # The same extraction shape test/pr-claim-exclusion.test.sh uses: the function
-# is delimited by its `log_event() {` line and a `}` back at column 0.
+# is delimited by its `log_event() {` line and, for a multi-line body, a `}`
+# back at column 0. Since issue #967 both wrappers are one-liners
+# (`log_event() { log_event_append …; }`), which close on the opening line
+# itself — without that case the walk runs on past the function and lifts
+# whatever follows it into the eval below.
 extract_log_event() {  # extract_log_event <script-path>
   awk '
-    /^log_event\(\) \{/ { on = 1 }
-    on                  { print }
-    on && /^}$/         { exit }
+    /^log_event\(\) \{/ { on = 1; opener = 1 }
+    on {
+      print
+      if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+      opener = 0
+    }
   ' "$1"
 }
 
