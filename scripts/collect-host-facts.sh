@@ -70,7 +70,13 @@ while (( $# > 0 )); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --print) print_only=1; shift ;;
-    --driver) driver="${2:-}"; shift 2 ;;
+    # `shift 2` on a lone `--driver` shifts nothing and returns non-zero, and
+    # this loop has no `set -e` to stop it — so the missing value is refused
+    # here rather than spinning the loop forever on an argument list that
+    # never shrinks.
+    --driver)
+      [[ $# -ge 2 ]] || { echo "collect-host-facts: --driver needs a value" >&2; usage; exit 2; }
+      driver="$2"; shift 2 ;;
     *) echo "collect-host-facts: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done

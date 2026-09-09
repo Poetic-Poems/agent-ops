@@ -34,11 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Egress section now surfaces an MTU mismatch this node's own container
   could never detect on its own, and the dashboard's node card gains a
   `host` line folding in this node's own record and each peer's. Requirement
-  36a's "The owner-only boundary" is narrowed to match: an `escalate` under
+  36a's "The owner-only boundary" is narrowed to match, and
+  `prompts/enabler.md`'s own `escalate` verdict with it: an `escalate` under
   condition 7 (an external account) or condition 8 (information only in
   someone's head) is refused when this record already answers the fact
   being asked for — everything else the boundary reserves still escalates
-  exactly as before.
+  exactly as before. The `collector` service joins the host's docker group
+  (`DOCKER_GID` in `.env`, defaulting to 999) so it can actually open the
+  read-only socket it mounts, and carries the workspaces volume so the
+  viewer-vantage probe can enumerate this node's peers.
 
 - **Overrun-slot skips** (issue #1287, requirement 11a): supercronic drops a
   firing silently when the previous cycle's job is still running, logging

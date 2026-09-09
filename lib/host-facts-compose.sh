@@ -219,7 +219,7 @@ host_facts_compose_docker_get() {
   "$curl_cmd" -fsS --max-time 5 --unix-socket "$socket" "http://localhost$path" 2>/dev/null
 }
 
-# host_facts_compose_section STATE_DIR — the whole compose-driver section:
+# host_facts_compose_section [CURL-CMD] — the whole compose-driver section:
 # `{"containers":[...]}`, plus `updater` (this driver's own way of getting
 # at watchtower's log — through the same socket, since nothing else on this
 # node can). ROOT is the host cgroup mount (`HOST_FACTS_CGROUP_ROOT`,
@@ -232,6 +232,17 @@ host_facts_compose_section() {
 
   local list="" inspects="[]" id="" one=""
   list="$(host_facts_compose_docker_get '/containers/json?all=true' "$curl_cmd")"
+  # The one degradation worth a word on stderr rather than a silent `[]`: an
+  # engine that answers nothing at all is almost always this container
+  # lacking permission to *open* the socket it mounts (uid 1000 against a
+  # `root:docker` socket — see `group_add` in deploy/docker/compose.yaml),
+  # and that is indistinguishable, in the record, from a host genuinely
+  # running no containers. Everything below still degrades exactly as
+  # documented; this only makes the cause findable in the collector's own
+  # container log.
+  if [[ -z "$list" ]]; then
+    echo "host-facts: the Docker Engine API returned nothing for /containers/json — the socket is unreachable or unreadable (see DOCKER_GID in deploy/docker/.env.example); containers[] will be empty" >&2
+  fi
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     one="$(host_facts_compose_docker_get "/containers/$id/json" "$curl_cmd")"

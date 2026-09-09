@@ -32,7 +32,7 @@ host_facts_k8s_pods_json() {
           [(.status.containerStatuses // [])[].state.waiting.reason // empty] | first // null
         )
       }
-    ]' <<<"${1:-\{\}}" 2>/dev/null || printf '[]'
+    ]' <<<"${1:-{\}}" 2>/dev/null || printf '[]'
 }
 
 # host_facts_k8s_rollouts_json DEPLOYMENTS-LIST-JSON [NOW-EPOCH] — the
@@ -62,13 +62,17 @@ host_facts_k8s_rollouts_json() {
           )
         )
       }
-    ]' <<<"${1:-\{\}}" 2>/dev/null || printf '[]'
+    ]' <<<"${1:-{\}}" 2>/dev/null || printf '[]'
 }
 
 # host_facts_k8s_cronjobs_json CRONJOBS-LIST-JSON [NOW-EPOCH] —
-# `cronjobs[]`. `stopped_scheduling` is true when `lastScheduleTime` is
-# older than twice five minutes (300s), floored — a CronJob that has simply
-# stopped being scheduled at all, not one merely between ticks.
+# `cronjobs[]`. `stopped_scheduling` is true when `lastScheduleTime` is older
+# than a fixed 600 seconds — two ticks of the five-minute schedule
+# deploy/kubernetes/collector-cronjob.yaml itself runs on, so a CronJob on
+# that cadence reads `false` between ticks and `true` only once it has
+# genuinely stopped. `.spec.schedule` is carried in the record but not parsed
+# here: a CronJob on a slower cadence than every ten minutes therefore reads
+# `true` routinely, which agent-ops#1331 tracks.
 host_facts_k8s_cronjobs_json() {
   local now="${2:-$(date +%s)}"
   jq -c --argjson now "$now" '
@@ -83,7 +87,7 @@ host_facts_k8s_cronjobs_json() {
           end
         )
       }
-    ]' <<<"${1:-\{\}}" 2>/dev/null || printf '[]'
+    ]' <<<"${1:-{\}}" 2>/dev/null || printf '[]'
 }
 
 # host_facts_k8s_node_conditions_json NODES-LIST-JSON — `node_conditions[]`:
@@ -96,7 +100,7 @@ host_facts_k8s_node_conditions_json() {
       | select(.type as $t | ["MemoryPressure","DiskPressure","PIDPressure"] | index($t))
       | select(.status != "False")
       | {node: ($n.metadata.name // "unknown"), type: .type, status: .status}
-    ]' <<<"${1:-\{\}}" 2>/dev/null || printf '[]'
+    ]' <<<"${1:-{\}}" 2>/dev/null || printf '[]'
 }
 
 # host_facts_k8s_pvcs_json PVCS-LIST-JSON — `pvcs[]`. `used_percent` is
@@ -111,7 +115,7 @@ host_facts_k8s_pvcs_json() {
         namespace: (.metadata.namespace // "default"),
         used_percent: null
       }
-    ]' <<<"${1:-\{\}}" 2>/dev/null || printf '[]'
+    ]' <<<"${1:-{\}}" 2>/dev/null || printf '[]'
 }
 
 # _host_facts_k8s_token / _host_facts_k8s_cacert / _host_facts_k8s_namespace

@@ -571,6 +571,18 @@ services:
       # (host-facts/<node>.json), and it also reads updater-ledger/ for the
       # compose driver's watchtower-ledger section.
       - state:/home/agent/.local/state/poetic-agents
+      # The workspaces volume, for two facts that live under `workspace_root`
+      # and nowhere else: the peer directory the viewer-vantage probe
+      # enumerates its targets from (`fleet_peers_dir`, which is
+      # `<workspace_root>/.agent-ops-peers`), and the filesystem
+      # `host.disk.workspace_root` reports on. Without it, `entrypoint.sh`
+      # creates an empty `workspace_root` in this container's own writable
+      # layer and both facts come out wrong-but-plausible: a probe that only
+      # ever reaches this node itself, and a disk figure measuring the
+      # container overlay. Read-write, not `:ro`, because `entrypoint.sh`'s
+      # `require_writable "$workspace_root"` refuses to start a container
+      # that cannot write it; the collector itself only reads.
+      - workspaces:/home/agent/.cache/poetic-agents/workspaces
       # The first *read-only* Docker-socket mount in this file — watchtower's
       # own mount below is read-write, because it recreates containers; this
       # collector only ever inspects one, so it does not need the write half
@@ -586,6 +598,26 @@ services:
       # those three are exactly what the compose driver's per-container
       # memory section needs (lib/host-facts-compose.sh).
       - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+    # The one thing a read-only socket mount does *not* grant: permission to
+    # open it. This image runs as `agent` (uid/gid 1000 — see the Dockerfile's
+    # own `USER agent`), and a host's `/var/run/docker.sock` is ordinarily
+    # `srw-rw---- root:docker`, so without a supplementary group this
+    # container reads `Permission denied` on every Engine-API call — and
+    # because lib/host-facts-compose.sh degrades rather than fails, the
+    # symptom is a record that publishes `containers: []` forever rather than
+    # anything that looks like an error. `DOCKER_MTU`'s neighbour in .env:
+    # set `DOCKER_GID` on each node to that host's own docker group id
+    # (`getent group docker | cut -d: -f3`). The 999 fallback is Debian and
+    # Ubuntu's usual value and nothing more — a wrong number here degrades to
+    # exactly the empty record above, never to broader access, because an
+    # unmatched gid grants nothing.
+    #
+    # Deliberately not `user: root`, which would also solve the socket: this
+    # container shares the `state` volume with the scheduler (uid 1000), and a
+    # root-written host-facts/<node>.json is a file the scheduler could not
+    # replace on the next roll.
+    group_add:
+      - "${DOCKER_GID:-999}"
     # Small and bursty — a handful of curl+jq calls per tick, no `claude`,
     # no clone. Ceilings reuse the shared sidecar-sized vars every other
     # small helper in this file already uses.

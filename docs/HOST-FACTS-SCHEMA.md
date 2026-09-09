@@ -56,7 +56,7 @@ its top level:
 | `host` | object | Facts about the node's own host — disk, memory, load, network. Present on both drivers; a Kubernetes collector populates whatever its own pod's vantage can read and fills the rest `null` (see "Degradation" below) rather than omitting the section. |
 | `updater` | object \| null | The watchtower ledger tail and last session result — `null` where no updater runs on this node (a cluster with no watchtower-equivalent). |
 
-Three further fields are driver-specific and present only under their own
+Six further fields are driver-specific and present only under their own
 driver — `containers` (`compose`), and `pods`/`rollouts`/`cronjobs`/
 `node_conditions`/`pvcs` (`kubernetes`) — and one, `viewer_probe`, is present
 on both.
@@ -120,7 +120,7 @@ exposes, and is not itself a fault.
 | | `stalled` | boolean | `ready_replicas < desired_replicas` **and** a `Progressing` condition's own `lastUpdateTime` is older than `progress_deadline_seconds` — a rollout that is merely still rolling reads `false`. |
 | `cronjobs[]` | `name`, `namespace`, `schedule` | string | The CronJob's own identity and cron expression. |
 | | `last_schedule_time` | string \| null | `status.lastScheduleTime`. |
-| | `stopped_scheduling` | boolean | `true` when `last_schedule_time` is older than twice the schedule's own shortest plausible interval (five minutes, floored) — a CronJob that has simply stopped being scheduled at all. |
+| | `stopped_scheduling` | boolean | `true` when `last_schedule_time` is older than a fixed 600 seconds — two ticks of the five-minute cadence `deploy/kubernetes/collector-cronjob.yaml` itself runs on. `schedule` is carried in the entry but not parsed, so a CronJob on a slower cadence than every ten minutes reads `true` routinely rather than only once it has genuinely stopped; agent-ops#1331 tracks deriving the threshold from the entry's own `schedule`. |
 | `node_conditions[]` | `node`, `type`, `status` | string | One entry per condition on `status.conditions` whose own `type` names a pressure kind (`MemoryPressure`, `DiskPressure`, `PIDPressure`) and whose `status` is not `"False"` — a healthy node contributes no entries at all. |
 | `pvcs[]` | `name`, `namespace` | string | The PersistentVolumeClaim's own identity. |
 | | `used_percent` | number \| null | Usage against capacity from the metrics API, `null` where that API is unavailable — this array is never populated by guessing from `spec.resources.requests.storage` alone. |
@@ -141,8 +141,8 @@ materialised, plus itself:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `viewer_probe.<node>.ok` | boolean | Whether the fetch of that node's own dashboard `data.js` succeeded and parsed as JSON. |
-| `viewer_probe.<node>.bytes` | integer \| null | The response body's size, `null` on a failed fetch. |
-| `viewer_probe.<node>.seconds` | number \| null | Wall time the fetch took, `null` on a failed fetch. |
+| `viewer_probe.<node>.bytes` | integer \| null | The response body's size, `null` when nothing was fetched at all. A body that arrived but would not parse reads its own size here alongside `ok: false` — the size is a real measurement either way, and "it answered, with 40 KB of the wrong thing" is a different fault from "it did not answer". |
+| `viewer_probe.<node>.seconds` | number \| null | Wall time the fetch took, `null` on any `ok: false` — a timing for a fetch that did not deliver usable JSON would read like a healthy latency figure in any consumer that averaged it. |
 | `viewer_probe.<node>.reason` | string \| null | Why `ok` is `false` — a timeout, a non-200 status, a body that did not parse — `null` when `ok` is `true`. |
 
 This is the check agent-ops#1286 exists for: it answers "does `data.js`
@@ -187,8 +187,8 @@ driver-specific sections). Written to `state_dir/host-facts/<node>.json`
 atomically (temp file, then `mv`), on the collector's own schedule — the
 compose service's own loop, or the Kubernetes CronJob's own tick — and
 carried to the rest of the fleet by the next ordinary `state-sync.sh push`
-and `fetch`, the same as every other file under `state_dir` requirement 2.6d
-does not name in `EXCLUDES`.
+and `fetch`, the same as every other file under `state_dir` requirement 2.5's
+own "What replicates" does not name in `EXCLUDES`.
 
 **Consumed:**
 
@@ -201,8 +201,9 @@ does not name in `EXCLUDES`.
   and `<peers_dir>/<peer>/host-facts/<peer>.json` (each peer) into that
   node's row, `host: null` when no record exists for that node yet.
 - The Enabler's own 36a text (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`,
-  "The owner-only boundary"): conditions 7 and 8 are refused when this
-  record already answers the fact being asked for.
+  "The owner-only boundary"), and `prompts/enabler.md`'s `escalate` verdict
+  which implements it: conditions 7 and 8 are refused when this record
+  already answers the fact being asked for.
 
 ## Verifying conformance
 
