@@ -1217,7 +1217,24 @@ cleanup() {
   # suppress_node_state_transitions: the seconds they describe already
   # belong to this cycle's own node-state timeline, finalized immediately
   # above, not seconds of their own to account for separately.
-  if [[ "$lock_acquired" == "1" ]]; then
+  #
+  # Holding the lock is necessary but not sufficient: this must also be the
+  # cron-fired original, because only that cycle *is* supercronic's running
+  # job. A chained continuation (requirement 39) is spawned detached and
+  # disowned below and the cron-fired parent then exits, so supercronic's job
+  # has already ended by the time the chained cycle runs: its slots are not
+  # dropped at all — they fire, contend for the lock, and are already recorded
+  # by the contending tick as requirement 1's own `reason`-less
+  # `cycle-skipped`. Logging them again here would double-count them, and at a
+  # fabricated `slot_ts` besides: a chained cycle starts whenever its
+  # predecessor happened to finish, an arbitrary minute-of-hour, which
+  # `schedule_overrun_slots` would take as the node's base minute (see its
+  # header). `--once` and `--dry-run` runs have exactly that shape too — the
+  # manual run is not supercronic's job, so its firings land and contend as
+  # normal. The one case left ungated is a human running this script with
+  # neither flag; distinguishing that from the cron firing needs machinery
+  # this is not worth (agent-ops#1301).
+  if [[ "$lock_acquired" == "1" ]] && (( chain_count == 1 )) && ! (( ONCE || DRY_RUN )); then
     local overrun_now_iso overrun_now_epoch overrun_start_epoch overrun_slot overrun_slot_epoch
     overrun_now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     overrun_now_epoch="$(date -u +%s)"

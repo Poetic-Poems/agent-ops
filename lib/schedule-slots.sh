@@ -28,14 +28,21 @@
 # output, requirement 1b). Prints nothing (never fails) if START_ISO/END_ISO
 # do not parse, or if the span holds no further slot.
 #
-# START_ISO is, by construction, a minute supercronic already chose to fire
-# this cycle on (the crontab `deploy/docker/render-crontab.sh` renders never
-# fires outside one), so its own minute-of-hour is taken as the series base
-# directly — there is no need to re-derive it by re-hashing NODE_NAME the way
-# that script's own `hash_minute()` does, and doing so here would risk
-# drifting from whatever the real crontab actually fired on. Every later slot
-# simply repeats that script's own restart-at-the-base-minute-each-hour
-# pattern going forward from START_ISO's hour.
+# START_ISO's own minute-of-hour is taken as the series base directly — there
+# is no need to re-derive it by re-hashing NODE_NAME the way
+# `deploy/docker/render-crontab.sh`'s own `hash_minute()` does, and doing so
+# here would risk drifting from whatever the real crontab actually fired on.
+# Every later slot simply repeats that script's own
+# restart-at-the-base-minute-each-hour pattern going forward from START_ISO's
+# hour.
+#
+# That base is only as good as START_ISO, and this function has no way to
+# check it: it is meaningful precisely when START_ISO is a minute supercronic
+# already chose to fire on (the crontab that script renders never fires
+# outside one). The caller owns that precondition — `cleanup()` gates its call
+# on the cycle being the cron-fired original (requirement 11a), since a
+# chained continuation or a `--once`/`--dry-run` run starts at an arbitrary
+# minute-of-hour and would make every slot named here a fabrication.
 #
 # That series is the node's whole slot set only when START_ISO fell on the
 # lowest kept minute of its hour. A cycle that fired on a later kept minute

@@ -20,6 +20,10 @@
 #     slot_ts, held_by, elapsed_s}` per slot `schedule_overrun_slots`
 #     returns, only when `lock_acquired` is `1`, and nothing at all when it
 #     is `0` (a stood-down or lock-contention cycle never blocked a firing)?
+#     And does it log nothing for a cycle that held the lock but is not the
+#     cron-fired original — a chained continuation, a `--once` run, a
+#     `--dry-run` run — whose start minute is arbitrary and whose slots
+#     supercronic fired for real, the contending tick recording them?
 #
 #   lib/manage.sh's `overlap_status_report` — the `--status` line
 #     `check-nodes.sh` (external to this repository) already prints
@@ -105,7 +109,8 @@ if [[ -z "$block" ]]; then
   failures=$(( failures + 1 ))
 fi
 
-# run_block LOCK_ACQUIRED CYCLE_STARTED_AT NOW_ISO SCHEDULE_JSON
+# run_block LOCK_ACQUIRED CYCLE_STARTED_AT NOW_ISO SCHEDULE_JSON \
+#           [CHAIN_COUNT] [ONCE] [DRY_RUN]
 # Assembles and runs a standalone script around the extracted block: a `date`
 # override so "now" is the fixture's NOW_ISO/its epoch rather than the real
 # wall clock (the block calls plain `date -u +%Y-%m-%dT...`/`+%s` for "now",
@@ -114,8 +119,12 @@ fi
 # real, via `command date`, so it exercises the same parsing the real
 # cleanup() does), and a recording `log_event`. Prints one
 # "EVENT <name> <fields-json>" line per call.
+#
+# CHAIN_COUNT/ONCE/DRY_RUN default to the cron-fired original's own values
+# (1/0/0) so the cases that are not about the gate need not restate them.
 run_block() {
   local lock_acquired="$1" cycle_started_at="$2" now_iso="$3" schedule_json="$4"
+  local chain_count="${5:-1}" once="${6:-0}" dry_run="${7:-0}"
   local script="$tmp_dir/run-$$-$RANDOM.sh"
   {
     printf '#!/usr/bin/env bash\nset -uo pipefail\n'
@@ -128,6 +137,9 @@ run_block() {
     # shellcheck disable=SC2016  # $1/$2 are the generated script's own positional params, not this test's
     printf 'log_event() { printf "EVENT %%s %%s\\n" "$1" "$2"; }\n'
     printf 'lock_acquired=%q\n' "$lock_acquired"
+    printf 'chain_count=%q\n' "$chain_count"
+    printf 'ONCE=%q\n' "$once"
+    printf 'DRY_RUN=%q\n' "$dry_run"
     printf 'cycle_started_at=%q\n' "$cycle_started_at"
     printf 'cycle_id=%q\n' "test-cycle-fixture"
     printf 'schedule_json=%q\n' "$schedule_json"
@@ -156,6 +168,24 @@ out="$(run_block 0 "2026-09-08T10:05:00Z" "2026-09-08T10:37:00Z" \
   '{"cycle_hours":"*","cycle_interval_minutes":15,"excluded_minutes":[0]}')"
 assert_eq "a cycle that never acquired the lock logs nothing, however long it stood down for" \
   "" "$out"
+
+# Only the cron-fired original is supercronic's running job, so only it can
+# have blocked a firing. The three spans below are the same two-slot span the
+# first case asserted two events for — the gate, not the arithmetic, is what
+# makes each of them silent.
+out="$(run_block 1 "2026-09-08T10:05:00Z" "2026-09-08T10:37:00Z" \
+  '{"cycle_hours":"*","cycle_interval_minutes":15,"excluded_minutes":[0]}' 2 0 0)"
+assert_eq "a chained continuation logs nothing — its parent already ended supercronic's job, so those firings really fired and the contending tick recorded them" \
+  "" "$out"
+
+out="$(run_block 1 "2026-09-08T10:05:00Z" "2026-09-08T10:37:00Z" \
+  '{"cycle_hours":"*","cycle_interval_minutes":15,"excluded_minutes":[0]}' 1 1 0)"
+assert_eq "a --once run logs nothing — it is not supercronic's job and its start minute is arbitrary" \
+  "" "$out"
+
+out="$(run_block 1 "2026-09-08T10:05:00Z" "2026-09-08T10:37:00Z" \
+  '{"cycle_hours":"*","cycle_interval_minutes":15,"excluded_minutes":[0]}' 1 0 1)"
+assert_eq "a --dry-run run logs nothing, for the same reason" "" "$out"
 
 # --- lib/manage.sh's overlap_status_report -------------------------------------
 

@@ -15,7 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a `--status`/dashboard reading of plain `RUNNING` the whole time. At
   cleanup, before the lock releases, `agent-cycle.sh` now computes which of
   its own schedule's slots fell strictly inside its own run and logs one
-  `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` per slot.
+  `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` per slot
+  — for the cron-fired original alone, since a chained continuation or a
+  `--once`/`--dry-run` run is not supercronic's running job, so its slots
+  really did fire and the contending tick already recorded them.
   `scripts/publish-dashboard.sh`'s `noop_ticks` gains an `overlap` count
   (never folded into `total`, since the cycle logging one kept its own row
   by running real stages), and `--status` gains an `overrun: N firing(s)

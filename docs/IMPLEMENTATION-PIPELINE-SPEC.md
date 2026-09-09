@@ -8240,7 +8240,9 @@ implements.
     supercronic would have started for one of these firings never starts at
     all, so nothing else ever gets the chance to log it. At cleanup
     (requirement 11), before the lock releases and only for a cycle that
-    actually acquired it, the Script computes which of its own schedule's
+    actually acquired the lock *and* is the cron-fired original — its chain
+    depth is 1 (requirement 39) and neither `--once` nor `--dry-run` was
+    given — the Script computes which of its own schedule's
     slots fell strictly inside its own run — from its own start
     (`cycle_started_at`) and its own end, and its own already-defaulted
     `schedule` block (`cycle_hours`, `cycle_interval_minutes`,
@@ -8253,11 +8255,29 @@ implements.
     line reports, computed independently here since this process never
     reads that log. The node's own base minute is never re-derived by
     re-hashing `NODE_NAME` the way that script's `hash_minute()` does:
-    `cycle_started_at` is, by construction, a minute the real crontab
-    already chose to fire this cycle on, so its own minute-of-hour serves
-    directly, and no slot named this way can be one the crontab would not
-    have fired — which an independent re-hash, drifting from the rendered
-    schedule, could name.
+    for the cron-fired original the gate above admits, `cycle_started_at` is
+    a minute the real crontab already chose to fire this cycle on, so its own
+    minute-of-hour serves directly, and no slot named this way can be one the
+    crontab would not have fired — which an independent re-hash, drifting
+    from the rendered schedule, could name.
+
+    That gate is what makes the base minute trustworthy, and holding the lock
+    alone would not: only the cron-fired original *is* supercronic's running
+    job. A chained continuation (requirement 39) is spawned detached and
+    disowned and its cron-fired parent then exits, ending supercronic's job,
+    so the slots inside a chained cycle's run are not dropped at all — they
+    fire, contend for the lock, and are already recorded by the contending
+    tick as requirement 1's own `reason`-less `cycle-skipped`. Logging them
+    here as well would double-count them, and at a fabricated `slot_ts`
+    besides, since a chained cycle starts whenever its predecessor happened
+    to finish — an arbitrary minute-of-hour, which the derivation above would
+    take as the node's base. `--once` and `--dry-run` runs have the same
+    shape: supercronic's job is untouched by them, so their firings land and
+    contend as normal. Nothing is lost by the narrowing, because every slot
+    it declines to name is one the contending tick recorded. A human running
+    the script with neither flag is the one case left ungated, a known bound
+    rather than an oversight: distinguishing it from the cron firing needs
+    machinery this does not carry.
 
     What it names is the slot series running forward from *this* firing's
     own minute, repeating at `cycle_interval_minutes` within each allowed
@@ -24323,7 +24343,10 @@ oblige anyone to edit a test.
     own cleanup-time call site, lifted verbatim out of the script (the same
     extraction `test/finish-then-continue.test.sh` uses), logs one
     `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` per slot
-    returned, only when `lock_acquired` is `1`; and `lib/manage.sh`'s
+    returned, only when `lock_acquired` is `1` and the cycle is the cron-fired
+    original — logging nothing for a chained cycle (`chain_count` above 1) or
+    for a `--once` or `--dry-run` run, whose slots the contending tick already
+    records; and `lib/manage.sh`'s
     `overlap_status_report` counts only this node's own last-24h
     `reason: "overlap"` events, ignoring the `reason`-less lock-contention
     `cycle-skipped` shape. `test/publish-dashboard.test.sh`'s "Overrun-slot
