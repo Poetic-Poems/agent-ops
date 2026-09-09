@@ -492,7 +492,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ceiling its own container-only budget reading never saw. On such a node
   `agent-cycle.sh`, `scripts/publish-dashboard.sh` and `scripts/doctor.sh`
   are now skipped rather than linted, which is the announced trade: CI has
-  the memory and still checks all three in full. `scripts/publish-dashboard-launcher.sh`'s pacing backoff is now
+  the memory and still checks all three in full.
+  `scripts/publish-dashboard-launcher.sh`'s pacing backoff is now
   clamped to what its window has left, so a tick costing minutes rather than
   seconds — this incident's own symptom of the wedge — cannot compute or log
   a backoff of hours.
