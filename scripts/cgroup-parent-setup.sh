@@ -119,6 +119,14 @@
 
 set -uo pipefail
 
+# CGROUP_PARENT_SYS_ROOT and CGROUP_PARENT_UNIT_DIR are the sysfs mount and
+# the systemd unit directory this script writes under. Overridable so tests
+# can point them at a fixture rather than the live host, the same way
+# MEMORY_CGROUP_ROOT (lib/memory.sh) lets a test stand in for a container's
+# own real cgroup.
+: "${CGROUP_PARENT_SYS_ROOT:=/sys/fs/cgroup}"
+: "${CGROUP_PARENT_UNIT_DIR:=/etc/systemd/system}"
+
 name=""
 limit="768m"
 max="1536m"
@@ -208,16 +216,16 @@ systemd_slice_path() {
 case "$driver" in
   systemd)
     slice="$name.slice"
-    unit="/etc/systemd/system/$slice"
+    unit="$CGROUP_PARENT_UNIT_DIR/$slice"
     rel="$(systemd_slice_path "$name")"
     # Where systemd says it is, when it is running, beats where the rule says
     # it should be — the rule is how this works with the slice stopped.
     live="$(systemctl show -p ControlGroup --value "$slice" 2>/dev/null)"
     [[ -n "$live" ]] && rel="$live"
-    parent_dir="/sys/fs/cgroup$rel"
+    parent_dir="$CGROUP_PARENT_SYS_ROOT$rel"
     ;;
   cgroupfs)
-    parent_dir="/sys/fs/cgroup/$name"
+    parent_dir="$CGROUP_PARENT_SYS_ROOT/$name"
     unit=""
     ;;
   *)
@@ -302,7 +310,7 @@ UNIT
     # Re-derive: creating the unit may have made the slice resolvable.
     live="$(systemctl show -p ControlGroup --value "$name.slice" 2>/dev/null)"
     if [[ -n "$live" ]]; then
-      parent_dir="/sys/fs/cgroup$live"
+      parent_dir="$CGROUP_PARENT_SYS_ROOT$live"
       high_file="$parent_dir/memory.high"
       max_file="$parent_dir/memory.max"
       swap_file="$parent_dir/memory.swap.max"
