@@ -1032,6 +1032,40 @@
         }
       }
     },
+    "pager_enabled": {
+      "description": "Whether lib/pager.sh evaluates its fleet-level invariants at all, on the Publisher's own GitHub tick (agent-ops#1278). The first boolean-typed key in this schema — every other on/off switch here is an empty-string or zero sentinel on the key that would otherwise need one (`crash_loop_repo`, `crash_loop_after`), which does not fit here: an invariant still evaluates and its fired/cleared transitions still reach the dashboard with `pager_repo` empty (there is simply nothing to file), so `pager_repo` empty cannot double as this framework's own off switch the way it does for crash-loop escalation.",
+      "type": "boolean",
+      "default": true,
+      "x-docs": {
+        "readme": "Whether the pager framework evaluates its fleet-level invariants at all. `true` by default — the dashboard's own fired/cleared history and banner are worth having even on an installation with no `pager_repo` configured to file into.",
+        "spec": "Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own.",
+        "value": "`true`"
+      }
+    },
+    "pager_repo": {
+      "description": "Where lib/pager.sh files its `pw::pager` tracking issues, as `owner/name` (agent-ops#1278). Empty falls back to `crash_loop_repo` at read time — both name \"the pipeline's own repository\", and an installation that has already set the one for crash-loop escalations wants the same repository for pager pages absent a reason to split them. Empty with `crash_loop_repo` also empty disables filing outright: invariants still evaluate and their fired/cleared transitions still reach the dashboard, but nothing is filed on GitHub and nothing is assigned to anyone.",
+      "type": "string",
+      "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+      "default": "",
+      "x-docs": {
+        "readme": "Where the pager framework's own `pw::pager` issues are filed. Empty (this installation's own choice, left unset) falls back to `crash_loop_repo` at read time — which for this installation already resolves to `Pullwright/agent-ops` — rather than repeating that value here for two config keys to keep in step.",
+        "spec": "Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it.",
+        "value": "*(unset)*"
+      }
+    },
+    "pager_min_firing_minutes": {
+      "description": "Minutes an invariant must evaluate as firing, continuously, before lib/pager.sh files anything — hysteresis against a fact that clears on its own within one heartbeat interval or two (agent-ops#1278). 0 files on the very first firing evaluation.",
+      "type": "number",
+      "minimum": 0,
+      "default": 15,
+      "x-docs": {
+        "readme": "Minutes. How long a fleet-level invariant must stay firing before the pager framework files anything — hysteresis against a blip that clears on its own. `0` files on the first firing evaluation.",
+        "spec": "Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation.",
+        "value": {
+          "spec": "15 min"
+        }
+      }
+    },
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
@@ -1413,13 +1447,13 @@
       }
     },
     "dashboard_refresh_seconds": {
-      "description": "How often an open dashboard tab reloads to pick up freshly-written data. Match it to the heartbeat cadence.",
+      "description": "How often an open dashboard tab polls for freshly-written data, fetching the full payload only when a small stamp says it changed. Match it to the heartbeat cadence.",
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 5,
       "x-docs": {
-        "readme": "Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading.",
-        "spec": "How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on."
+        "readme": "Seconds. How often an open dashboard tab polls for freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence — it fetches a small stamp every tick and the full payload only when the stamp says it changed. Untick the page's *auto-refresh* box to pause it while reading.",
+        "spec": "How often an open dashboard tab polls for freshly-written data (`docs/DASHBOARD-SPEC.md`) — a small stamp every tick, the full `data.js` payload only when the stamp's fingerprint changed. Match it to the heartbeat cadence: a shorter interval polls a stamp nothing has rewritten, a longer one shows a cycle that has already moved on."
       }
     },
     "schedule": {

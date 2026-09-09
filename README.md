@@ -444,6 +444,9 @@ Keys:
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository, i.e. whichever repository you run this pipeline from. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. The value shown is this installation's own repository, not a generic default — every installation names its own. |
 | `escalation_webhook_url` | *(unset)* | A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the...[continued below](#extended-notes-escalation_webhook_url) |
+| `pager_enabled` | `true` | Whether the pager framework evaluates its fleet-level invariants at all. `true` by default — the dashboard's own fired/cleared history and banner are worth having even on an installation with no `pager_repo` configured to file into. |
+| `pager_repo` | *(unset)* | Where the pager framework's own `pw::pager` issues are filed. Empty (this installation's own choice, left unset) falls back to `crash_loop_repo` at read time — which for this installation already resolves to `Pullwright/agent-ops` — rather than repeating that value here for two config keys to keep in step. |
+| `pager_min_firing_minutes` | `15` | Minutes. How long a fleet-level invariant must stay firing before the pager framework files anything — hysteresis against a blip that clears on its own. `0` files on the first firing evaluation. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
@@ -470,7 +473,7 @@ Keys:
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
 | `updater_stuck_after_minutes` | `20` | Minutes a container may still be the one that was told to roll before the dashboard's **updater stuck** badge turns amber (`deploy/docker/watchtower-pre-update.sh`, `lib/updater-health.sh`). Comfortably beyond one watchtower poll (`WATCHTOWER_POLL_INTERVAL`, 300s) plus an image pull, so an ordinary roll never trips it. |
 | `node_stale_after_minutes` | `30` | Minutes a node's last confirmed publication into the shared state may age before the dashboard's fleet strip (and `scripts/doctor.sh`) call it stale, applied identically to a peer's row and to a node's own. Roughly three missed heartbeat/fetch cycles at the shipped cadence. |
-| `dashboard_refresh_seconds` | `5` | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
+| `dashboard_refresh_seconds` | `5` | Seconds. How often an open dashboard tab polls for freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence — it fetches a small stamp every tick and the full payload only when the stamp says it changed. Untick the page's *auto-refresh* box to pause it while reading. |
 | `schedule.cycle_hours` | `*` | The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour. |
 | `schedule.cycle_interval_minutes` | `15` | Minutes between implementation-cycle firings within an allowed hour (the no-op short-circuit keeps an idle firing cheap); `60` fires once per hour, as every release before this key existed. |
 | `schedule.excluded_minutes` | `[0]` | Minutes the per-node `CYCLE_MINUTE` (env or hash) may never land on. This repo's own config excludes `0` because poetic's hourly sync workflow owns the top of the hour; a fresh install with no such conflict should ship `[]`. |
@@ -1261,6 +1264,13 @@ does not grow; your own `state_dir` keeps the longer record, pruned to
 `state_local_cycles_retained` by the same push. No two nodes share a branch,
 so pushes cannot collide and nothing arbitrates them.
 
+What travels is also redacted first: every file the push commits goes through
+the same pass the dashboard applies to its own payload (`lib/redact.sh`), so
+`/home/<user>` becomes `~` and anything token-shaped becomes
+`[REDACTED-TOKEN]`. The state repository is private, but it keeps what it is
+given indefinitely — `log.jsonl` is never rotated — so this is the backstop
+for a token that reaches a stage's own output.
+
 The pipelines read the **union** of all those logs — a blocked item, a void
 verdict, a no-op fingerprint or a usage-limit hit learned by any node stands
 the rest of the fleet down (or spares it a re-check) within one fetch
@@ -1904,7 +1914,13 @@ consecutive, last success 8h ago)` and the like — with a page-top banner and
 a fleet-strip badge naming which stage: the reading a plain `cycle:
 RUNNING`/idle state cannot give, since that state stays green while a
 stage's own attempts keep failing and the cycle process itself keeps
-completing), how often the Script rejects a Co-Ordinator verdict — by day
+completing), any fleet-level invariant currently firing (a **pager-firing**
+banner naming the invariant and its evidence, with a badge on every node
+card the evidence names — the same failing verdict on every node at once is
+almost always the reader being wrong, not every node failing alike; the
+Publisher files one deduped `pw::pager`-labelled issue per firing invariant
+in `pager_repo`, closing it with a one-line comment the moment the fact
+clears), how often the Script rejects a Co-Ordinator verdict — by day
 and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by

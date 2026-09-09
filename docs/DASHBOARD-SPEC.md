@@ -49,6 +49,7 @@ pipeline state (this machine)            GitHub (public repos, via gh)
                      ▼
         scripts/publish-dashboard.sh   (the Publisher)
           → <state_dir>/dashboard/data.js   (redacted JSON, generated)
+          → <state_dir>/dashboard/stamp.js  ({generated_at, fingerprint})
           → <state_dir>/dashboard/index.html (copied from repo)
                      │
                      ▼
@@ -59,9 +60,9 @@ Refresh triggers:  end-of-cycle hook in agent-cycle.sh
 ```
 
 The page (`dashboard/index.html`, the source of truth, committed) loads its
-sibling `data.js` with a plain `<script src>` tag — which works from a
-`file://` URL with no server. The Publisher rewrites `data.js` and copies the
-page next to it each run. Opening the page needs nothing else.
+siblings `data.js` and `stamp.js` with plain `<script src>` tags — which work
+from a `file://` URL with no server. The Publisher rewrites both and copies
+the page next to them each run. Opening the page needs nothing else.
 
 ## State it reads (verified 2026-07-14)
 
@@ -488,10 +489,27 @@ treating its absence as "reset known".
 
 ## The Publisher (`scripts/publish-dashboard.sh`)
 
-Reads the state above, assembles one JSON object, redacts it, and writes it
-as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`).
-It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
-ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
+Reads the state above, assembles one JSON object, embeds this tick's own
+`fingerprint` in it (below), redacts the whole thing, and writes it as
+`window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`),
+then writes `window.DASHBOARD_STAMP = {generated_at, fingerprint}` the same
+way to a `stamp.js` sibling, carrying that identical fingerprint value — the
+no-op skip's own (below), so client and skip logic never disagree about what
+"changed" means. Falls back to `$now_iso`, unique to this tick, whenever
+`local_state_fingerprint` could not produce a whole hash, or whenever this
+tick's own cycle render failed: either failure would otherwise read as
+"unchanged" to every open tab forever. Both writes happen back to back, with
+nothing state-changing between them, so the two files' own content can never
+disagree about which publish they came from — but a *reader* fetching them as
+two separate HTTP requests is not part of that atomicity, and can still
+observe them from two different publishes (a publish landing between the
+requests). That only matters for the plain `<script src>` pair `index.html`
+loads on first open, not for the SPA refresh tick, which always re-fetches
+`data.js` itself once its fingerprint has moved — see "the client" below for
+how the first load avoids the same wedge by reading its starting fingerprint
+back out of `data.js` rather than out of `stamp.js`. It is `set -uo pipefail`
+(not `-e`) because most reads are best-effort, and ends `exit 0`. It sets its
+own `PATH` for cron and is `shellcheck`-clean.
 Several measures keep a *rebuild* proportional to the window rather than to
 the whole history: the
 transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
@@ -660,7 +678,12 @@ minutes before. The `cycles` payload is byte-identical to the unbatched build's.
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,
-applied to the whole serialised payload before writing.
+applied to the whole serialised payload before writing. The pattern set
+itself is `lib/redact.sh`, shared with `scripts/state-sync.sh`, which
+applies the identical pass to what it pushes to the private state-mirror
+repository (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.5,
+agent-ops#966) — one place to add a pattern for a new secret shape, rather
+than two.
 
 The `DASHBOARD_DATA` shape (the contract the page renders):
 
@@ -1092,6 +1115,38 @@ it and one per claim.) Every node renders the same fleet, so any node's URL
 answers "what is the operation doing" — `node` (header: "· <name>") is what
 tells two otherwise identical tabs apart.
 
+### Fleet-level invariants (the pager)
+
+`lib/pager.sh`'s registry of fleet-level invariants (implementation spec
+requirement 51) is evaluated from inside this script's own `WITH_GITHUB`
+block — gated on `WITH_GITHUB` specifically, not merely `FULL`: firing or
+clearing an invariant may create or close a GitHub issue, which a
+`--no-github` tick (the test suite, or a local-only refresh) must never do.
+By the time that block runs, this node's own union log
+(`events_jsonl`) and every peer's heartbeat (`fleet_nodes_json`) have
+already been assembled earlier in this same run, so `pager_evaluate` reads
+both without a second fetch of either. `pager_enabled` (default `true`)
+gates the whole call; `false` skips it outright, the same as `--no-github`
+does structurally.
+
+Because `pager_evaluate` may itself append `pager-*` transition events to
+this node's own `log.jsonl`, the payload's own `pager` array is read from a
+*fresh* re-union of the fleet log — `fleet_logs` run again, after
+`pager_evaluate` returns — rather than the `events_jsonl` snapshot taken
+before it: that snapshot cannot see what this tick itself just wrote. This
+is the one place in the script that reads the union log twice in a single
+run, and deliberately so.
+
+The `pager` key of the payload (present on a `FULL` build, carried forward
+by a fast one on the same terms every other `FULL`-only key already is) is
+an array of the invariants currently in the `fired` state:
+`{key, first_seen, evidence, nodes, issue_number, issue_url}` — `nodes`,
+when the invariant supplied one, is which fleet nodes the evidence names,
+for the node-card badge below; `issue_number`/`issue_url` are `null` for a
+filing that failed and fell back to `escalation_webhook_notify`'s own
+webhook-only path, so a page can still be firing on the dashboard with
+nothing to click through to.
+
 ## The Site (`dashboard/index.html`)
 
 One self-contained file: inline CSS + vanilla JS, no framework, no build step,
@@ -1100,17 +1155,45 @@ no external network requests (works fully offline). Renders from
 Theme-aware (light/dark via `prefers-color-scheme`); wide tables scroll
 inside their own container. Refreshes in place rather than reloading: on a
 configurable interval (`config.json`'s `dashboard_refresh_seconds`, default
-5s) it re-fetches `data.js` by injecting a cache-busted `<script>` — not
-`fetch()`, so it keeps working from a `file://` URL with no server or CORS —
-and re-renders the body **only when the data actually changed** (a signature
-compare that ignores the always-moving `generated_at`). Expanded cycle rows,
-opened void rows and a void list showing past its cap, open transcript panels
-and scroll position survive the re-render — both the page's own scroll
-position and, independently, the position scrolled to within any transcript
-box (a stage's status/result/stderr, or the cron.log tail): each such box
-carries a stable key across rebuilds so a reader mid-scroll through a long
-transcript is not dropped back to its top by the next refresh; the header's
-staleness clock ticks every interval and warns if the heartbeat looks stopped.
+5s) it injects a cache-busted `<script>` — not `fetch()`, so it keeps working
+from a `file://` URL with no server or CORS — fetching `stamp.js` (a few dozen
+bytes: `{generated_at, fingerprint}`) first, and `data.js` itself only when
+`stamp.js`'s `fingerprint` no longer matches the one the page last loaded
+(issue #1288: every open tab was re-downloading the multi-megabyte `data.js`
+on every tick, unconditionally, regardless of whether the underlying data had
+moved). A refresh tick's own `data.js` fetch failing (a lost connection: the
+injected `<script>`'s `onerror` fires) leaves the page's last-loaded
+fingerprint unmoved, so the very next tick sees its stamp still disagree and
+retries — advancing it regardless, on a fetch that never actually landed,
+would wedge the tab on stale data indefinitely, since every later tick would
+then find its own fresher stamp "agree" with a fingerprint the tab never
+actually applied. It re-renders the body **only when the data actually
+changed** (a signature compare that ignores the always-moving `generated_at`);
+the header's own staleness clock still ticks every refresh, from `stamp.js`'s
+own `generated_at`, whether or not `data.js` was worth re-fetching. Expanded
+cycle rows, opened void rows and a void list showing past its cap, open
+transcript panels and scroll position survive the re-render — both the page's
+own scroll position and, independently, the position scrolled to within any
+transcript box (a stage's status/result/stderr, or the cron.log tail): each
+such box carries a stable key across rebuilds so a reader mid-scroll through a
+long transcript is not dropped back to its top by the next refresh; the
+header's staleness clock ticks every interval and warns if the heartbeat looks
+stopped.
+
+The page's very first load — a plain `<script src>` pair in `<head>`, not the
+refresh tick's cache-busted injection — fetches `data.js` and `stamp.js` as
+two separate, uncoordinated HTTP requests, so a publish landing between them
+can pair a *newer* stamp with the `data.js` the tab actually has (the
+Publisher's own back-to-back writes only make the two files agree with each
+other, not with what a reader fetches when — see the Publisher section
+above). `index.html` sidesteps this rather than relying on that window being
+narrow: `data.js` carries the Publisher's fingerprint embedded in its own
+JSON, and the page's starting comparison value is read from there, not from
+`stamp.js`, so it is always exactly the fingerprint of the data the tab
+actually parsed on load, however stale that publish might already be by the
+time `stamp.js` answers. Only the initial load needs this — every later tick
+already re-fetches `data.js` itself the moment its fingerprint moves, so it
+can never fall behind its own stamp.
 
 The header carries **two** clocks, because the page has two ages: `data <age>`
 from `generated_at`, which moves every few seconds, and `· GitHub <age>` from
@@ -1803,10 +1886,14 @@ the dashboard half of the warning the 2026-08-22 fleet-wide outage
 out, and every node lost GitHub at once, misdiagnosed as an outage, before an
 operator noticed hours later.
 
-Local to this node only: unlike the compose/image/switch verdicts the fleet heartbeat carries,
-nothing here replicates a peer's `status.doctor` to this page — a repository's
-configuration and this node's own GitHub access are this node's alone to
-report.
+This panel itself renders only this node's own `status.doctor` — a
+repository's configuration and this node's own GitHub access are this
+node's alone to report, so a peer's doctor pass has nothing to add here.
+`doctor`'s own *verdict* (never the fail/warn/skip detail) does now travel
+in `fleet.nodes[].doctor`, the same way `compose`/`image`/`switch` already
+did — but that is for `lib/pager.sh`'s own `verdict-unanimous` invariant
+(implementation spec requirement 51) to read fleet-wide, not for this
+panel, which stays node-local by design.
 
 The **Stage health** panel (agent-ops#662) renders `status.stage_health`: the
 most recent per-stage verdict computed on *this* node, read from
@@ -1825,6 +1912,18 @@ this is the reading that was missing entirely during the 2026-08-21
 incident (issue #662): `cycle: RUNNING` and a clean Doctor pass both stayed
 true while every stage failed for 10.5 hours, because neither reads a
 stage's own `exit_code`.
+
+A non-empty `pager` array (implementation spec requirement 51) raises its
+own page-top banner, `.banner.pager-firing` — a fourth colour modifier
+alongside `.amber`/`.green`/`.red`, since a firing invariant is neither an
+ordinary warning nor a clean pass — naming every firing key and its
+evidence, each linking `issue_url` when the tracking issue exists. For each
+entry that carries a `nodes` array, every node card named in it gets a
+badge (`b-purple`, the same purple family as the `.banner.pager-firing`
+banner above) reading the invariant's own key, titled with its evidence — so a
+`verdict-unanimous` page naming every active node marks every one of their
+cards, while an invariant with no `nodes` (most of `page-outlived-item`'s
+own firings, which are about an issue, not a node) raises the banner alone.
 
 Unlike `status.doctor`, this verdict is not local to the node that computed
 it: `scripts/state-sync.sh`'s heartbeat carries it as `stage_health`, on the
@@ -2160,7 +2259,10 @@ number's twins elsewhere on the page.
   writes `<state_dir>/.doctor-status.json`
   (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
   that file verbatim into `status.doctor`; `null` until the first hourly
-  pass has run. Local to this node only — nothing replicates it to peers.
+  pass has run. The raw file itself stays local — nothing replicates it to
+  peers — but its own `verdict` now does, folded into the heartbeat's
+  `doctor` field (agent-ops#1278) the same way `stage_health`'s does below,
+  for `lib/pager.sh`'s `verdict-unanimous` invariant to read fleet-wide.
 - `lib/stage-health.sh` (agent-ops#662,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.8) — not read live by
   this Publisher either, on `doctor.sh --unattended`'s own precedent just
@@ -2178,6 +2280,15 @@ number's twins elsewhere on the page.
   raw file itself is excluded from `scripts/state-sync.sh`'s general
   replication, since a peer's copy of the raw file would answer for a
   computation nobody there ran.
+- `lib/pager.sh` and `lib/pager-invariants.sh` (agent-ops#1278,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 51) — unlike every
+  component above, not a read: `pager_evaluate`, called from this
+  Publisher's own `WITH_GITHUB` block, is the one place this script writes —
+  a `pager-*` transition event to this node's own `log.jsonl`, and possibly a
+  created or closed GitHub issue. `PAGER_GH`/`CLAIM_GH` are set to
+  `DASHBOARD_GH_CMD` before the call, so the test suite's `gh` stub covers
+  pager's own GitHub calls on the same terms as every other one this script
+  makes.
 - `scripts/publish-revert-rate.sh` (D18 issue #579,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6b) — not read live by
   this Publisher either, on the identical reasoning as `doctor.sh
@@ -2222,8 +2333,8 @@ number's twins elsewhere on the page.
   `.github/workflows/build-image.yml` that supplies them (with a check that the
   built image reads its own stamp back — the failure mode is otherwise silent).
 - The cleanup hook in `agent-cycle.sh`; `.gitignore` and `.dockerignore`
-  entries for `dashboard/data.js` and `build-info.json`; the README
-  "Monitoring" section's "Dashboard" subsection.
+  entries for `dashboard/data.js`, `dashboard/stamp.js` and `build-info.json`;
+  the README "Monitoring" section's "Dashboard" subsection.
 
 ## Verifying a change
 
@@ -2547,6 +2658,21 @@ number's twins elsewhere on the page.
   pull request rather than every ready one, and that the narrowing itself
   never reaches a `CHANGES_REQUESTED` pull request, which the pipeline owes a
   change at every level.
+- `test/dashboard-refresh.test.sh` drives the SPA refresh tick itself (issue
+  #1288), under a second, narrower stub (`test/dashboard-refresh-harness.js`)
+  that fires the page's own `#refreshbtn` click listener — the one external
+  hook onto `tick()` — against a scripted, synchronous sequence of simulated
+  `stamp.js`/`data.js` fetch outcomes; unlike `test/dashboard-render.test.sh`
+  it asserts nothing about the DOM, only which files get fetched. A page load
+  seeded with `data.js`'s own embedded fingerprint disagreeing from
+  `stamp.js`'s (the two-request race a publish landing between the page's
+  initial `<script src>` pair can produce) still fetches `data.js` on the
+  first tick rather than reading the disagreement as "unchanged". A `data.js`
+  fetch that fails leaves the tab's own comparison fingerprint unmoved, so
+  the very next tick — polled with the *same* fingerprint the failed fetch
+  never got to apply — retries rather than skipping; only a fetch that
+  actually lands may advance it, confirmed by a further tick then correctly
+  reading that fingerprint as unchanged.
 - `test/rework-panel.test.sh` drives `lib/rework-panel.sh`'s own fold
   directly, on `test/item-lifecycle.test.sh`'s own precedent: the three
   questions computed correctly over one hand-traceable fixture (tokens'/
@@ -3385,6 +3511,28 @@ number's twins elsewhere on the page.
   consequence of only-on-change: the relative "3m ago" cells stop advancing
   while the pipeline is idle and catch up the moment new data lands — the
   header's own staleness clock keeps ticking, so freshness is never in doubt.
+- **`data.js` itself is only fetched when it might have changed** (issue
+  #1288). "Cheap and non-disruptive" above was still true only *after*
+  paying to download `data.js` on every tick — 2.7–2.9 MB measured on real
+  nodes, continuously, whether or not the underlying state had moved: about
+  45 GB/day per tab left open, and over a slow enough path (agent-ops#1286)
+  a single tick took longer than the interval it was fired at, so the tab
+  never caught up at all. The fix keeps the cache-busted `<script>`
+  injection (a tab still needs no server) but adds a second, few-dozen-byte
+  sibling, `stamp.js`, carrying `{generated_at, fingerprint}` — the
+  Publisher's own no-op-skip fingerprint (below), which by construction
+  changes exactly when `data.js`'s content might have. Every tick fetches
+  `stamp.js`; `data.js` follows only when its `fingerprint` differs from the
+  one the tab last loaded. `generated_at` still ticks the header clock on
+  every tick regardless, so the staleness display is exactly as live as
+  before — only the multi-megabyte fetch became conditional. Two follow-up
+  correctness fixes to the first version of this: a `data.js` fetch that
+  failed used to advance the tab's fingerprint anyway, permanently wedging it
+  on stale data with no retry; and the page's first load — a plain
+  `<script src>` pair, not the refresh tick's cache-busted one — used to seed
+  that fingerprint from `stamp.js`, which a publish landing between the two
+  requests could answer for a newer publish than the `data.js` the tab
+  actually got. See "the client" above for both.
 - **The dequeued warning is the Publisher's own memory, not GitHub's timeline**
   (agent-ops#375, D17). The obvious first design reads `merge_queue_probe`'s
   `dequeued_at`/`dequeue_reason` straight through — the same fields

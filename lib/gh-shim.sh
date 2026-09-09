@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
 # lib/gh-shim.sh — the logic behind `scripts/gh-shim.sh`, the `gh` transport
-# seam installed on `PATH` ahead of the real binary (agent-ops#1084).
+# seam installed on `PATH` ahead of the real binary (agent-ops#1084), and,
+# since agent-ops#1021, the front door for the forge authoring App's
+# on-demand credential seam as well (D18 decision 1 as amended): every `gh`
+# call reaches `gh_shim_resolve_token` (below) before this file's
+# classification and transport logic ever runs, and `git`'s own credential
+# helper (`!gh auth git-credential`, `deploy/docker/entrypoint.sh`) resolves
+# through `PATH` to this same shim, so both front doors mint through the one
+# resolver. See `gh_shim_resolve_token`'s own header for the mechanics.
 #
 # ## Why a `PATH` shim, not another library wrapper
 #
@@ -152,12 +159,57 @@
 #                                 served under a refusal. Default 3600.
 #   PW_GH_STALE_EXIT_CODE         the exit code a served last-known-good
 #                                 answer returns. Default 0.
+#   PW_GH_DEGRADE_TOKEN           the credential seam's fallback (owned and
+#                                 documented in lib/forge-auth.sh):
+#                                 deploy/docker/entrypoint.sh stashes the
+#                                 node's ambient PAT here when the forge
+#                                 authoring App is configured. Read only when
+#                                 GH_TOKEN is empty and no App token could be
+#                                 minted.
+#   PW_GH_NOW_EPOCH               test seam only: the clock
+#                                 gh_shim_resolve_token mints against, in
+#                                 place of the real one, so a test can
+#                                 advance past a minted token's expiry
+#                                 without waiting on it.
 
 # Computed inline, not kept in a variable: this file is sourced, and a
 # top-level `SCRIPT_DIR="..."` here would clobber whatever the sourcing
 # script (or a test) already keeps under that same common name.
 # shellcheck source=lib/github-limit.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/github-limit.sh"
+# shellcheck source=lib/author-token.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/author-token.sh"
+
+# gh_shim_resolve_token
+# "Explicit wins; empty resolves" (D18 decision 1 as amended, agent-ops#1021):
+# mints a forge authoring App installation token into GH_TOKEN when — and
+# only when — the caller's own environment leaves it empty. A non-empty
+# GH_TOKEN (a human's own export, or lib/approver.sh's own
+# `GH_TOKEN="$(approver_token_get)" gh …`) is never touched, which is what
+# keeps the Approver's calls posting under its own identity rather than
+# being re-minted as the author.
+#
+# A cache hit (lib/github-app-token.sh's own refresh_buffer=300) costs
+# nothing, so this runs unconditionally, ahead of classification, on every
+# single invocation — the one place that guarantees every `git`/`gh`
+# authoring act this node makes, however long the cycle or the stage
+# running it has been alive, starts with at least five minutes of token
+# life left. Falls back to PW_GH_DEGRADE_TOKEN (lib/forge-auth.sh owns the
+# name) when no App is configured, or a mint attempt fails; leaves GH_TOKEN
+# empty when neither is available, exactly the pre-existing "nothing
+# configured" case. Never fails its caller.
+gh_shim_resolve_token() {
+  [[ -z "${GH_TOKEN:-}" ]] || return 0
+  local now token
+  now="${PW_GH_NOW_EPOCH:-$(date +%s)}"
+  if author_token_credential_present \
+      && token="$(author_token_get "$now" 2>/dev/null)" && [[ -n "$token" ]]; then
+    export GH_TOKEN="$token"
+    return 0
+  fi
+  [[ -n "${PW_GH_DEGRADE_TOKEN:-}" ]] && export GH_TOKEN="$PW_GH_DEGRADE_TOKEN"
+  return 0
+}
 
 # gh_shim_real_bin
 # The real `gh` binary this shim calls through to. Never resolved via `gh` or
@@ -183,11 +235,13 @@ gh_shim_state_dir() {
 # A stable, short tag for whichever credential this process authenticates
 # with — the App and the PAT can legitimately see different data for the same
 # path, so their cache entries and budget readings must never collide.
+# Read after gh_shim_resolve_token has already run, so a token that function
+# just minted is the one hashed here, not the empty value it was handed.
 # "no-token" when neither GH_TOKEN nor GITHUB_TOKEN is set (gh's own
 # keyring/`gh auth login` session, or no credential at all) — rare in this
-# fleet (lib/forge-auth.sh always sets GH_TOKEN when anything is configured)
-# and safe to lump together since there is exactly one such identity per
-# process either way.
+# fleet, since gh_shim_resolve_token above leaves GH_TOKEN empty only when
+# neither an App nor PW_GH_DEGRADE_TOKEN is configured — and safe to lump
+# together since there is exactly one such identity per process either way.
 gh_shim_identity() {
   local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   if [[ -z "$token" ]]; then
@@ -727,6 +781,7 @@ gh_shim_run_bypass() {
 # PW_GH_NO_CACHE=1 forces every call through gh_shim_run_bypass regardless of
 # classification — still ledgered, never cached or conditioned.
 gh_shim_main() {
+  gh_shim_resolve_token
   local state_dir identity
   state_dir="$(gh_shim_state_dir)"
   identity="$(gh_shim_identity)"

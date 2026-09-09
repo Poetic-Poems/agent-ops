@@ -522,12 +522,20 @@ switch stand-downs, both `project_review.defaults.not_before` stand-downs,
 the tier-two every-repository-held one (requirement 342) and the usage-limit
 cooldown all `exit 0` before it is reached, and each records a terminal state
 of its own. Each therefore calls `suppress_node_state_if_peer_owns_node`
-beside its `set_node_state_terminal`, which runs `review-cycle.sh`'s own
-`impl_cycle_running` — the same `lock.json` pid probe the check below it uses,
-with no staleness test, so a lock naming a pid that is gone reads as
-not-running — and suppresses the terminal transition only when a live
-implementation cycle owns the node. A node genuinely idle under both
-pipelines still records its idle state from these sites, unchanged.
+beside its `set_node_state_terminal`, which runs two probes of the same
+shape, each with no staleness test so a lock naming a pid that is gone reads
+as not-running: `review-cycle.sh`'s own `impl_cycle_running` — the same
+`lock.json` pid probe the check below it uses — and `review_cycle_running`,
+the equivalent probe of `review-lock.json`. That second probe ignores a lock
+naming this process's own pid, which is what makes it peer detection rather
+than "is this lock held at all": five of the six sites run before this
+process's own lock acquisition ever writes `review-lock.json`, where any live
+pid is a peer by construction, but the usage-limit cooldown runs *after* it,
+over a lock file this run has just written its own pid into. The terminal
+transition is suppressed when either probe finds a live peer — a live
+implementation cycle or a live peer review run — owning the node; a node
+genuinely idle under both pipelines still records its idle state from these
+sites, unchanged.
 
 Silence is not tidiness here. The fold holds each point's state until the
 next point's `ts`, and a running stage emits nothing between its own

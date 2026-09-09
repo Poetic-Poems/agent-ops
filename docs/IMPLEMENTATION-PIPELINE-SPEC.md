@@ -135,14 +135,26 @@ a node updates by pulling a new image rather than by pulling a branch.
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
-  model/effort defaults only — no plugins and no local marketplaces), runs
-  `gh auth setup-git` so https pushes authenticate — whenever `GH_TOKEN` is
-  present, or, since D25/agent-ops#607, whenever the forge authoring App's
-  credential is (component 14g's `author_token_credential_present`), minting
-  one token here purely so the call has something to configure the
-  credential helper against; every cycle mints its own fresh token later
-  (component 14h) — creates `state_dir` and `workspace_root`, and then execs
-  the service it was given. It refuses to start if `state_dir` is not writable, rather than
+  model/effort defaults only — no plugins and no local marketplaces); wires
+  authentication — since agent-ops#1021, no token is minted here at all. When
+  the forge authoring App's credential is present (component 14g's
+  `author_token_credential_present`), it moves whatever ambient `GH_TOKEN` a
+  PAT-carrying node already held into `PW_GH_DEGRADE_TOKEN` (component 14h
+  owns the name) and leaves `GH_TOKEN` explicitly empty — exported, not
+  merely unset — so every process this entrypoint execs inherits an empty
+  `GH_TOKEN` and resolves its own credential through the on-demand seam
+  (component 22c) rather than a token that may be hours from expiry by the
+  time it authenticates anything; either way (App configured or not) it then
+  configures `git`'s own credential helper directly —
+  `git config --global --replace-all credential.https://github.com.helper
+  '!gh auth git-credential'` — rather than through `gh auth setup-git`, whose
+  own behaviour would bake the *absolute path* of the real `gh` binary into
+  the config (`os.Executable()`, read inside the process the shim execs
+  through to) and so bypass the shim, and therefore the seam, on every future
+  credential fill; the unqualified `gh` re-resolves through `PATH` — the
+  shim, ahead of the real binary — on every call — creates `state_dir` and
+  `workspace_root`, and then execs the service it was given. It refuses to
+  start if `state_dir` is not writable, rather than
   letting a mis-owned volume become a silent failure to record anything. It
   does *not* set the git identity: every container this image runs — including
   the dashboard services and every command a `docker run` might be given —
@@ -825,6 +837,9 @@ and the schema must carry every one of them.
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy. |
 | `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
+| `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
+| `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
+| `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -851,7 +866,7 @@ and the schema must carry every one of them.
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `updater_stuck_after_minutes` | 20 min | The dashboard badge's tolerance for a container that was allowed to roll (`lib/updater-health.sh`'s `updater_status`, requirement 2.5, #603) before it turns amber: past this, the container the hook told to go ahead is still running, which a healthy roll never takes this long to resolve on its own — unlike `image_behind_grace_hours`, this is not an ordinary mid-roll wait. |
 | `node_stale_after_minutes` | 30 min | The dashboard fleet strip's (and `scripts/doctor.sh`'s) tolerance for a node's last confirmed publication into the shared state (`lib/fleet.sh`'s `fleet_publication_status`, requirement 2.5, #602) before it turns stale: three missed heartbeat/fetch cycles at the shipped cadence, not clock jitter — applied identically to a peer's row and to a node's own, so the two implementations that used to compute this (a hardcoded literal for peers, a hardcoded `false` for self) can no longer disagree. |
-| `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
+| `dashboard_refresh_seconds` | `5` | How often an open dashboard tab polls for freshly-written data (`docs/DASHBOARD-SPEC.md`) — a small stamp every tick, the full `data.js` payload only when the stamp's fingerprint changed. Match it to the heartbeat cadence: a shorter interval polls a stamp nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
 | `schedule.cycle_interval_minutes` | `15` | How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried. |
 | `schedule.excluded_minutes` | `[0]` | Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on. |
@@ -1774,18 +1789,30 @@ implements.
    the log is written to.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
 
-   Before check 0 below, and before every other check in this list: the
-   effective GitHub credential for this cycle is resolved once
-   (`forge_auth_effective_gh_token`, component 14h, D25/agent-ops#607) and
-   exported as `GH_TOKEN` for the rest of the process — the forge authoring
-   App's own minted installation token when it is configured and a mint (or
-   a cache hit) succeeds, the node's own ambient `GH_TOKEN` in every other
-   case. This has no number of its own in the list below because it never
-   itself stands the cycle down — it only decides *which* credential 0b's
-   probe two steps later, and everything after it, actually authenticates
-   with. Unnumbered rather than "0aa" or similar, since renumbering 0a–0c
-   would touch every cross-reference those letters already have elsewhere in
-   this document, and this step changes no stand-down behaviour of its own.
+   Before check 0 below, and before every other check in this list: which
+   GitHub credential this cycle *would* currently use is logged
+   (`forge_auth_effective_gh_token`, component 14h, D25/agent-ops#607 as
+   amended by agent-ops#1021) — but, since agent-ops#1021, nothing here
+   resolves or exports one. A forge authoring App installation token carries
+   GitHub's ~1 h lifetime, and a cycle routinely outlives that, so no single
+   point in the process can resolve a credential once for its whole life
+   without risking a stale one reaching whichever call comes after expiry.
+   The credential is instead resolved on demand, per call, by the on-demand
+   seam (component 22c): every `gh` invocation reaches `lib/gh-shim.sh`'s `gh`
+   transport shim, installed ahead of the real binary on `PATH`, before
+   dispatch, and plain `git` reaches the same shim through its own
+   credential helper (`deploy/docker/entrypoint.sh`, component 7). Both mint
+   only when `GH_TOKEN` is already
+   empty — an explicit `GH_TOKEN` always passes through untouched, which is
+   what keeps `lib/approver.sh`'s own
+   `GH_TOKEN="$(approver_token_get)" gh …` posting as the Approver rather
+   than being re-minted as the author. This step has no number of its own in
+   the list below because it never itself stands the cycle down and changes
+   nothing any check after it reads — it only logs which path 0b's probe two
+   steps later, and every later call in the process, would resolve through
+   the seam. Unnumbered rather than "0aa" or similar, since renumbering
+   0a–0c would touch every cross-reference those letters already have
+   elsewhere in this document.
    0. *GitHub API budget*: before any other check, read the meter — the
       `x-ratelimit-*` headers of one metered `GET /meta` for `core`, and the
       GraphQL `rateLimit` object for `graphql`, assembled into one snapshot by
@@ -3125,6 +3152,25 @@ implements.
    do replicate — they are what makes a spare node warm rather than merely
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
+
+   **Redaction.** Before `do_push()` commits, every file just staged by the
+   two rsyncs above, plus the heartbeat just written, is passed through
+   `redact_file()` (`lib/redact.sh`, agent-ops#966) in place: `/home/<user>`
+   and `/Users/<user>` → `~`, and `ghp_/gho_/github_pat_/sk-…/Bearer …`
+   token shapes → `[REDACTED-TOKEN]`. It is the same pattern set
+   `scripts/publish-dashboard.sh` applies to its own payload
+   (`docs/DASHBOARD-SPEC.md`), shared through `lib/redact.sh` rather than
+   reimplemented — the pattern only ever touches path- and
+   token-shaped substrings, never JSON syntax, so `log.jsonl` and the other
+   JSON/JSON-Lines files above stay parseable afterwards. Nothing upstream of
+   this point stops a token or a home path that reaches a stage's own
+   stdout/stderr — a verbose `git`/`curl` error, a stray `set -x`, a future
+   bug — from landing in a transcript or a log; unlike the dashboard's
+   published payload, the state repository is private, but it retains
+   everything indefinitely (`log.jsonl` is never rotated, requirement 2.6),
+   so this pass is the only backstop it has. Out of scope: anything already
+   committed to the state repository's history before this pass existed —
+   a one-off cleanup, not a push-time behaviour this requirement covers.
 
    **Mirror integrity.** Before either mode below touches the mirror,
    `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
@@ -6710,8 +6756,11 @@ implements.
    died: `GraphQL: API rate limit already exceeded`, having spent everything
    and produced nothing. Git's own transport is not rate-limited, so this step
    cannot fail that way. Authentication is unchanged —
-   `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the credential
-   helper serves this HTTPS remote exactly as it serves the push that follows.
+   `deploy/docker/entrypoint.sh` wires git's own credential helper to
+   `!gh auth git-credential` (component 7), an unqualified `gh` that `PATH`
+   resolves to the transport shim and so to the on-demand credential seam
+   (component 22c), so the helper serves this HTTPS remote exactly as it
+   serves the push that follows.
    `review-cycle.sh` clones through the same function, so the two cannot
    diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
    its own right, because a test that wants the clone to fail can no longer get
@@ -7103,13 +7152,19 @@ implements.
    Script asks `landing_protected_paths_hit` (`lib/landing.sh`, the one
    protected-path classifier requirement 8d's gate 2 already reads) whether
    this pull request's diff touches a protected path. A hit — or that
-   classifier's own exit 2 (an unreadable or truncated changed-file list) or
+   classifier's own exit 2 (an unreadable or truncated changed-file list),
    exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
-   against a path at all, TD-PPagop-26082320/TD-PPagop-26082325), either of
-   which routes *to* Critical rather than away from it, the opposite
-   fail-closed polarity from gate 2's own exit-2/3 handling — this call site
-   does not distinguish the two the way gate 2's own `unknown:` reason does,
-   since either cause forces the same tier here —
+   against a path at all, TD-PPagop-26082320/TD-PPagop-26082325), or any
+   exit code outside its documented 0/1/2/3 contract (e.g. 128+n from the
+   command-substitution subshell being signal-killed mid-gate,
+   agent-ops#1232) — every one of which routes *to* Critical rather than
+   away from it, the opposite fail-closed polarity from gate 2's own
+   exit-2/3 handling — this call site does not distinguish any of them the
+   way gate 2's own `unknown:` reason does, since every cause forces the
+   same tier here: the condition guarding the forced tier names only the
+   legitimate exit 1 (no protected path touched) as an exemption, rather
+   than enumerating the fail-closed codes, so nothing outside the
+   documented contract can silently skip the forced tier —
    routes to Critical regardless of `complexity`, including
    `complexity:low`, which alone would have short-circuited to the
    deterministic Trivial approval with no model call at all: a one-line
@@ -7373,8 +7428,14 @@ implements.
       (2 for the changed-file list, 3 for the protected-paths list) and
       `landing_eligible` names which one fired in its own `unknown:` reason
       text, rather than blaming the changed-file list regardless of cause
-      (TD-PPagop-26082325). `unknown` is treated as `ineligible` at this and
-      every other call site; an empty or unrecognised `source` or
+      (TD-PPagop-26082325). Any exit code outside `landing_protected_paths_hit`'s
+      documented 0/1/2/3 contract (e.g. 128+n from the command-substitution
+      subshell being signal-killed mid-gate, agent-ops#1232) is `unknown` too
+      — `landing_eligible`'s own `hit_rc` case names the legitimate exit 1
+      explicitly and fails every other unrecognised code closed, rather than
+      falling through to the same `eligible` arm exit 1 reaches. `unknown` is
+      treated as `ineligible` at this and every other call site; an empty or
+      unrecognised `source` or
       `complexity` is `ineligible`, never eligible by omission. Widening
       `merge_autonomy_routine_complexity` to admit `high` interacts with
       requirement 26a, which already forces that grade onto anything
@@ -16046,13 +16107,18 @@ with the Reviewer's own.
       stand-downs, the tier-two every-repository-held one and the usage-limit
       cooldown each call `suppress_node_state_if_peer_owns_node` beside their
       own `set_node_state_terminal`. That helper runs `impl_cycle_running`,
-      the same `lock.json` pid probe the check below it uses, and suppresses
-      only when a live implementation cycle owns the node — a node genuinely
-      idle under both pipelines still records its idle state from these
-      sites. `agent-cycle.sh`'s own two switch stand-downs are the one known
-      gap in this rule and are documented as such
-      (`docs/FLOW-SCHEMA.md`, "Known limitations"; issue #1268). This is
-      #597's own named pitfall
+      the same `lock.json` pid probe the check below it uses, and
+      `review_cycle_running`, the equivalent probe of `review-lock.json`,
+      which ignores a lock naming this process's own pid — five of the six
+      sites run ahead of this process's own lock acquisition, where any live
+      pid is a peer by construction, but the usage-limit cooldown runs after
+      it, over a lock file this run has just written its own pid into — and
+      suppresses when either probe finds a live peer, implementation cycle or
+      peer review run, owning the node; a node genuinely idle under both
+      pipelines still records its idle state from these sites.
+      `agent-cycle.sh`'s own two switch stand-downs are the one known gap in
+      this rule and are documented as such (`docs/FLOW-SCHEMA.md`, "Known
+      limitations"; issue #1268). This is #597's own named pitfall
       ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
       holds each point's state until the next point's `ts`, and a running
       stage emits nothing between its own `stage-start` and `stage-end`, so
@@ -16090,6 +16156,171 @@ with the Reviewer's own.
     segments tile the window by construction — never evidence that the events
     reduced described the fleet correctly, for which `skipped_events` and
     `unaccounted` are the honest measures.
+
+51. **Fleet-level invariants (the pager).** Issue #1126's own four-week
+    incident table named fourteen fleet-wide failures, none surfaced by a
+    pipeline-filed ticket: the silent ones sat four days to a month while
+    the repair loop that does escalate closes what it catches at a 2.0 h
+    median. Ten of the fourteen turned out to be one-line invariants once
+    named, and every one of those ten is a fact already readable from what
+    every node replicates — the union fleet log, every peer's heartbeat, this
+    node's own doctor verdict. `lib/pager.sh` is where that reading happens.
+
+    `pager_register KEY EVAL_FN REMEDY_CLASS REMEDY_ARG` builds a registry —
+    `PAGER_KEYS`/`PAGER_EVAL_FN`/`PAGER_REMEDY_CLASS`/`PAGER_REMEDY_ARG`, four
+    associative structures rather than a config file, so a repository's own
+    `scripts/publish-dashboard.sh` decides at source time which invariants
+    exist. EVAL_FN is a pure function, `EVAL_FN FLEET_NODES_JSON
+    UNION_LOG_FILE`, printing one line — `{firing, evidence}`, plus an
+    optional `nodes` array the dashboard's own node-card badge reads — with
+    one documented exception (`page-outlived-item`, below) that reads GitHub
+    directly rather than a replicated fact, since an issue's own terminal
+    state is not something any heartbeat carries. REMEDY_CLASS is one of
+    `pipeline-act` (REMEDY_ARG names a shell function, `REMEDY_ARG KEY
+    EVIDENCE`, run before filing — it performs the fix directly, never
+    asking, and its one-line return value is recorded in the issue body),
+    `config-lever` (REMEDY_ARG is prose; the tracking issue is filed
+    alongside a second, separate `pw::decision` record through the same
+    filed-closed-immediately convention `create_decision_log_issue`
+    (requirement 36a) uses, so a config-lever remedy inherits #937's veto
+    window — reopen the decision record to veto), or `owner-only` (REMEDY_ARG
+    is prose naming what the owner must decide; the tracking issue is
+    assigned to `enabler_assignee`, the load-bearing half that excludes it
+    from the `issues` source, requirement 16.4, exactly as an ordinary
+    Enabler escalation).
+
+    `pager_evaluate` runs every registered invariant once, from
+    `scripts/publish-dashboard.sh`'s own `WITH_GITHUB` tick of the Publisher
+    (`docs/DASHBOARD-SPEC.md`'s "The Publisher" section) — the point where
+    this node's own union log and every peer's heartbeat have already
+    converged for this tick, and the one tick allowed to touch GitHub at all.
+    Exactly one node evaluates a given invariant in a given five-minute
+    window: a claim on `<key>__<window>` (`window` the epoch second divided
+    by 300) through `lib/claim.sh`'s `claim file pager <key>__<window>` — the
+    same pseudo-slug pattern the Enabler's own `claims/enabler/` claims use
+    (requirement 35c) — so a claim lost or unreachable skips this node's own
+    evaluation for the window rather than risk two nodes filing the same
+    invariant twice.
+
+    An invariant's lifecycle is event-sourced over the union log,
+    transition-only on the same terms requirement 2.7's crash-loop escalation
+    and #937's decision log already settled — a firing invariant
+    re-evaluated every five minutes writes nothing new — via four event
+    names: `pager-candidate {key, first_seen}` the first evaluation seen
+    firing; `pager-candidate-cleared {key}` a candidate that stopped firing
+    before `pager_min_firing_minutes` elapsed, never having been filed, so
+    nothing to retract, only a reset; `pager-fired {key, first_seen,
+    evidence, issue_number, issue_url, remedy_class, nodes}` once the
+    hysteresis threshold is reached and the tracking issue is filed;
+    `pager-cleared {key, cleared_at, evidence}` once a fired invariant
+    evaluates clear and its issue is closed. `pager_state_for`/
+    `pager_last_event` derive the current state (`clear`/`candidate`/`fired`)
+    purely from the latest of these four for a key, on the same no-state-file
+    terms `token_expiry_escalated_for` (requirement 2m) already uses for a
+    single-shot escalation — any node, in any window, agrees with every
+    other about what has already happened.
+
+    `pager_file`/`pager_close` are the filing and auto-close primitives.
+    Every firing invariant that reaches the hysteresis threshold gets one
+    issue per key, in `pager_repo` (empty falls back to `crash_loop_repo`;
+    both empty disables filing — invariants still evaluate and `pager_file`
+    still logs `pager-fired`, with `issue_number`/`issue_url` null, so the
+    transition still reaches the dashboard and the key can still return to
+    `clear` later; nothing is filed on GitHub and nothing is assigned),
+    carrying the fixed `pw::pager` label (`lib/labels.sh`'s `escalation` role
+    catalogue, fixed for the identical reason `pw::decision` is: a renamed
+    label would silently stop being found by this framework's own dedup and
+    auto-close search), deduped on the item reference `pager:<key>` exactly
+    as `create_escalation_issue` dedupes — a body-contains-item-ref search,
+    never a second index.
+
+    The label is *ensured* in `pager_repo` on the create path, and only
+    there, exactly as `create_escalation_issue` does it (requirement 6a's
+    `labels_ensure_role`, the `escalation` role) and for the reason that
+    function states: an escalation repository is by construction not one any
+    cycle otherwise touches, so its labels have nowhere else to be created.
+    Here the label is load-bearing rather than cosmetic — both the dedup
+    above and the auto-close below find a page *by* it — so a page filed
+    through the retry-without-label fallback would be re-filed on every later
+    fire and never auto-closed, leaving on the owner's open list precisely
+    the stale page this requirement exists to prevent. Both dedup searches
+    and the auto-close search state `--limit 200` rather than inheriting
+    `gh`'s undeclared default of 30, on `lib/tech-debt-file.sh`'s own
+    `TECHDEBT_DEDUP_LIST_LIMIT` reasoning: a truncated listing is
+    indistinguishable from a complete one, and the direction of harm is a
+    duplicate filed against an issue the dedup could not see.
+
+    `pager_close` closes it with a one-line comment
+    naming that the fact cleared, on `approver_escalation_retire`'s own
+    established pattern (requirement 8f's #1215 retirement), and logs
+    `pager-cleared` regardless of whether an open issue was actually found to
+    close — a human who already closed it by hand, or a webhook-only filing
+    that never became a real issue, must still let the key return to
+    `clear`. Deliberately independent of `lib/enabler.sh`: its
+    `create_escalation_issue`/`create_decision_log_issue` read cycle-scoped
+    globals (`cycle_dir`, `enabler_assignee`, `node_name`, `cycle_id`) that
+    exist only inside `agent-cycle.sh`'s own per-item cycle, which the
+    Publisher never runs as — `lib/pager.sh` mirrors their dedup search, their
+    retry-without-label, and `escalation_webhook_notify`'s webhook fallback,
+    parameterised, rather than reaching into a stage it is not.
+
+    Configuration: `pager_enabled` (default `true`) gates evaluation
+    outright — the first boolean-typed key in this schema, needed because
+    unlike `crash_loop_repo`'s own empty-disables convention, an invariant's
+    fired/cleared transitions are worth having on the dashboard even with no
+    `pager_repo` configured to file into, so `pager_repo` empty cannot double
+    as this framework's off switch the way it does for crash-loop escalation.
+    `pager_repo` (default empty, falls back to `crash_loop_repo`) and
+    `pager_min_firing_minutes` (default 15) are described above.
+
+    Two invariants ship with the framework (`lib/pager-invariants.sh`),
+    chosen to exercise the whole of it:
+
+    - **`verdict-unanimous`** (pipeline-act). Fires when every *active* node
+      (`.stale | not`; fewer than two active nodes can never be "unanimous")
+      reports the identical failing verdict at once — the #1071 signature,
+      where all four nodes read `updater: stuck` because the *reader's* rule
+      was wrong, not because every node had independently failed the same
+      way at the same instant. Checks, first hit wins: a `stage_health` stage
+      `failing` on every active node (`stage_health.stages` folds into every
+      heartbeat already, requirement 2.8), `updater.status == "stuck"` on
+      every active node (requirement 2.6), or `doctor.verdict == "fail"` on
+      every active node — the last of these needed a heartbeat change of its
+      own: `.doctor-status.json`'s `{timestamp, verdict}` (never the full
+      record — `fails`/`warns`/`skips` are unbounded diagnostic prose and
+      `token_expiry` has no reader off the node holding the credential, so
+      all four stay local) now folds into `heartbeat.json` as `doctor`, the
+      same way `stage_health`'s does, since this invariant is the first
+      reader anywhere that needs a peer's doctor verdict rather than only
+      this node's own. `publish-dashboard.sh` projects this node's own fleet
+      row identically, so every row in the fleet answers to one shape. Its
+      pipeline-act remedy files a
+      `pw::type:tech-debt` issue against this pipeline's own repository (the
+      reader lives here, never in a target repo), never asking.
+    - **`page-outlived-item`** (pipeline-act). Fires when any open issue
+      carrying `enabler_escalation_label` or `pw::pager` in `pager_repo`
+      links a PR or issue (the first `github.com/…/pull/<n>` or
+      `github.com/…/issues/<n>` its body names) that has already gone
+      terminal — merged, closed. "Or" is a union of two listings, one per
+      label, merged and deduped on the issue number, because `gh issue
+      list`'s own `--label "a,b"` is an *intersection* — it filters for
+      issues carrying every name given — and no page ever carries both, so a
+      single comma-joined listing would be empty in every real case and leave
+      this invariant permanently clear. The one documented exception to "pure
+      over replicated facts": an issue's own live state is the fact in question,
+      so its EVAL_FN reads GitHub directly, through
+      `PAGER_EVAL_REPO`/`PAGER_EVAL_ESCALATION_LABEL`, plain shell variables
+      `pager_evaluate` sets before calling it — deliberately not threaded
+      through EVAL_FN's own two-argument contract, so an ordinary invariant's
+      signature never has to know these exist. Its pipeline-act remedy closes
+      every outlived page it finds, generalising #1215's
+      `approver_escalation_retire` from the single adjudication page to
+      every page this framework or the Enabler files.
+
+    `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
+    evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
+    page-rendering section documents the `pager-firing` banner and node-card
+    badge this requirement's `nodes` field feeds.
 
 ## Components
 
@@ -16836,6 +17067,13 @@ What exists, and the requirements each part answers to:
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict`,
    `crash_loop_preselection_verdict` and `crash_loop_escalated_since`, all
    pure readers of the union stream),
+   `lib/pager.sh` and `lib/pager-invariants.sh` (requirement 51's fleet-level
+   invariant framework — `pager_register`/`pager_evaluate`/`pager_file`/
+   `pager_close`, and the two invariants, `verdict-unanimous` and
+   `page-outlived-item`, it ships with — sourced by
+   `scripts/publish-dashboard.sh` alone, never by `agent-cycle.sh`, since it
+   evaluates on the Publisher's own tick, not a cycle's. Unit-tested,
+   `test/pager.test.sh` and `test/pager-invariants.test.sh`),
    `lib/token-expiry.sh` (requirement 2.7a's `TOKEN_EXPIRY_WARN_DAYS`,
    `token_expiry_header`, `token_expiry_parse` and
    `token_expiry_escalated_for` — the one place the warning threshold and
@@ -17888,10 +18126,13 @@ What exists, and the requirements each part answers to:
     validity, but never fails over its absence: landing with the values
     unset is the expected state until an owner provisions the App (D25's own
     text on why this cannot be done by the pipeline itself).
-    Sourced, never executed. Sourced by `agent-cycle.sh` and by
-    `deploy/docker/entrypoint.sh`, ahead of the latter's `gh auth setup-git`
-    call, so a node carrying only this identity (no `GH_TOKEN` at container
-    start) still has something to configure the git credential helper with.
+    Sourced, never executed. Sourced by `agent-cycle.sh`, by
+    `lib/gh-shim.sh` (component 22c, which mints through it on every call),
+    and by `deploy/docker/entrypoint.sh` — the last of these purely for
+    `author_token_credential_present`, which is what decides whether the
+    entrypoint stashes the node's ambient PAT into `PW_GH_DEGRADE_TOKEN` and
+    leaves `GH_TOKEN` empty for the seam to resolve through; it mints nothing
+    itself.
     Regression-tested in `test/author-token.test.sh`, on the same terms
     `test/approver-token.test.sh` covers component 14b's own identity — the
     success path, the cache and its expiry/ownership/tmpfs guarantees, every
@@ -17899,34 +18140,54 @@ What exists, and the requirements each part answers to:
     cross-identity cache-isolation case component 14b's own tests do not
     need. Must pass `shellcheck`.
 14h. `lib/forge-auth.sh` — which identity a cycle authors as (D25,
-    agent-ops#607). `forge_auth_effective_gh_token [NOW_EPOCH]` is the one
-    decision point: print `SOURCE<TAB>TOKEN` on stdout (never a bare token —
-    a caller must read the two apart with `IFS=$'\t' read -r source token
-    < <(...)`, the same shape `lib/github-limit.sh`'s `github_auth_probe`
-    already uses, and for the same reason a plain `x="$(...)"` command
-    substitution cannot hand a side-effect global back to its caller through
-    a subshell boundary). `SOURCE` is `forge-app` when component 14g's
-    `author_token_credential_present` is true and a mint (or a cache hit)
-    actually succeeds, `gh-token-degraded` when the credential is configured
-    but a mint attempt just failed, and `gh-token` when no forge authoring
-    App is configured at all — the last two both resolve `TOKEN` to whatever
-    the node's own ambient `GH_TOKEN` already held, which may itself be
-    empty (the pre-existing "no credential" case this file does not change).
-    **Never fails.** An absent, unreadable or momentarily unreachable App
-    identity always degrades to `GH_TOKEN` rather than blocking a cycle —
-    the D25 requirement that this identity never brick a node that has
-    always worked fine on its PAT alone.
-    Called from `lib/standdown.sh`'s `run_standdown_checks`, first, ahead of
-    every check that authenticates against GitHub as this cycle — including
-    2.0's `/rate_limit` budget probe and 2.0b's credential-fault probe two
-    steps later — so both validate whichever credential this cycle will
-    actually use, resolved once and exported as `GH_TOKEN` for the rest of
-    the process (`gh` reads the variable directly; plain `git` reads it
-    through `deploy/docker/entrypoint.sh`'s credential-helper wiring,
-    component 3). A `gh-token-degraded` resolution logs a `warning` once per
-    cycle; every resolution logs a `forge-auth` event naming its `source`,
-    for `scripts/publish-dashboard.sh` and any operator reading the log to
-    see which identity authored a given cycle's work.
+    agent-ops#607), and the name of the on-demand credential seam's
+    degrade-path variable (D25 as amended, agent-ops#1021, component 22c). No
+    single point in a cycle's process resolves a credential once for the
+    process's whole life any more: a forge authoring App installation token
+    carries GitHub's ~1 h lifetime, and a cycle routinely outlives that
+    (`lib/stage-budget.sh`'s own priors put the Implementer alone at 150
+    minutes), so the credential is resolved on demand, per call, by
+    component 22c's `gh` transport shim (every `gh` invocation) and, for
+    plain `git`, the same shim reached through `git`'s own credential helper
+    (`!gh auth git-credential`, `deploy/docker/entrypoint.sh`, component 7).
+    Both mint only when `GH_TOKEN` is already empty in their own
+    environment — "explicit wins; empty resolves" — so a human's own exported
+    token, or `lib/approver.sh`'s own
+    `GH_TOKEN="$(approver_token_get)" gh …`, always passes through untouched;
+    the seam must never re-identify the Approver's own calls as the author,
+    which is the point of D18's two-identity separation. `PW_GH_DEGRADE_TOKEN`
+    is this file's own contribution to that seam: the name
+    `deploy/docker/entrypoint.sh` stashes the node's ambient PAT under, when
+    the forge authoring App is configured, before it leaves `GH_TOKEN` itself
+    empty for every process it execs — the seam's fallback whenever no App is
+    configured, or a mint attempt fails, which is the degrade path
+    agent-ops#607 requires: an unset, unreadable or momentarily unreachable
+    App identity must never brick a node that has always worked fine on its
+    PAT alone, and a token that ages out mid-cycle must never present a stale
+    one to the call that needed it.
+    `forge_auth_effective_gh_token [NOW_EPOCH]` no longer sets anything a
+    cycle authenticates with — it is diagnostic only, called once from
+    `lib/standdown.sh`'s `run_standdown_checks`, purely to log which path a
+    call made right now would take: print `SOURCE<TAB>TOKEN` on stdout (never
+    a bare token — a caller must read the two apart with `IFS=$'\t' read -r
+    source token < <(...)`, the same shape `lib/github-limit.sh`'s
+    `github_auth_probe` already uses, and for the same reason a plain
+    `x="$(...)"` command substitution cannot hand a side-effect global back
+    to its caller through a subshell boundary). `SOURCE` is `forge-app` when
+    component 14g's `author_token_credential_present` is true and a mint (or
+    a cache hit) actually succeeds, `gh-token-degraded` when the credential
+    is configured but a mint attempt just failed, and `gh-token` when no
+    forge authoring App is configured at all — the last two both resolve
+    `TOKEN` to whatever `PW_GH_DEGRADE_TOKEN`, or (absent that) the node's own
+    ambient `GH_TOKEN`, already held, which may itself be empty (the
+    pre-existing "no credential" case this file does not change). **Never
+    fails.**
+    `lib/standdown.sh` logs the `forge-auth` event naming `SOURCE`, and a
+    `warning` once per cycle for a `gh-token-degraded` resolution, so
+    `scripts/publish-dashboard.sh` and any operator reading the log can see
+    which identity a cycle would author under; 2.0b's credential-fault probe
+    two steps later validates the identity the cycle actually uses, because
+    its own `gh` call goes through the seam too.
     Sourced, never executed; requires component 14g already sourced.
     Regression-tested in `test/forge-auth.test.sh`: the plain-`GH_TOKEN` path
     with and without one set, the App path (fresh mint and a cached reuse),
@@ -18584,11 +18845,35 @@ What exists, and the requirements each part answers to:
     (`test/github-budget-report.test.sh`); must pass `shellcheck`.
 
 22c. `lib/gh-shim.sh` and `scripts/gh-shim.sh` — the `gh` transport shim
-    (requirement 2.0e, agent-ops#1084): the executable, installed on `PATH`
-    ahead of the real binary (`deploy/docker/Dockerfile`), is a thin entry
-    point that sources the library and calls `gh_shim_main "$@"`; every
+    (requirement 2.0e, agent-ops#1084), and, since agent-ops#1021, the front
+    door for the forge authoring App's on-demand credential seam (D18
+    decision 1 as amended, component 14h): the executable, installed on
+    `PATH` ahead of the real binary (`deploy/docker/Dockerfile`), is a thin
+    entry point that sources the library and calls `gh_shim_main "$@"`; every
     other function lives in the library and is unit-tested by sourcing it
-    directly. `gh_shim_classify` (built on `gh_shim_parse`) is the one place
+    directly. `gh_shim_main` calls `gh_shim_resolve_token` first, ahead of
+    classification and every transport pathway below: "explicit wins; empty
+    resolves" — a non-empty `GH_TOKEN` is never touched (which is what keeps
+    `lib/approver.sh`'s own `GH_TOKEN="$(approver_token_get)" gh …` posting
+    as the Approver rather than being re-minted as the author); an empty one
+    mints a forge authoring App installation token (`lib/author-token.sh`,
+    component 14g) — a cache hit costs nothing, so this runs unconditionally
+    on every single invocation, the one place that guarantees every
+    `git`/`gh` authoring act this node makes starts with at least
+    `lib/github-app-token.sh`'s own `refresh_buffer=300` seconds of token
+    life left, however long the cycle or the stage running it has been
+    alive — and falls back to `PW_GH_DEGRADE_TOKEN` (component 14h owns the
+    name) when no App is configured or a mint attempt fails, leaving
+    `GH_TOKEN` empty when neither is available (the pre-existing "nothing
+    configured" case). This is the seam's *first* front door; the second is
+    the same shim reached through `git`'s own credential helper
+    (`!gh auth git-credential`, `deploy/docker/entrypoint.sh`, component 7)
+    — an unqualified `gh` there resolves through `PATH` to this file exactly
+    as any other caller's does, so `gh_shim_resolve_token` mints for `git`
+    too, and `gh auth git-credential`'s own protocol answer
+    (`username=x-access-token`, `password=<token>`) reflects whatever this
+    file just resolved.
+    `gh_shim_classify` (built on `gh_shim_parse`) is the one place
     a call is sorted into `read` (a plain `gh api` GET — the only class ever
     conditioned), `paginate` (a `gh api` GET carrying `--paginate`/`--slurp`
     — stored and served last-known-good like a `read`, but never conditioned
@@ -18615,14 +18900,21 @@ What exists, and the requirements each part answers to:
     through a shell variable); `gh_shim_ledger_line` and `gh_shim_budget_update`
     write `state_dir/gh-shim/ledger.ndjson` and `budget.json` under `flock`.
     `gh_shim_identity` hashes `GH_TOKEN`/`GITHUB_TOKEN` (or the fixed
-    `no-token` tag) so the App and the PAT never share a cache entry or a
-    budget reading. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`, `PW_GH_NO_CACHE`,
-    `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE` are its test
-    seams and operator knobs, documented in the library's own header rather
-    than in `config.schema.json` — the same convention `lib/github-limit.sh`'s
+    `no-token` tag) — read after `gh_shim_resolve_token` has already run, so
+    a minted App token and the PAT it may have replaced never share a cache
+    entry or a budget reading either. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`,
+    `PW_GH_NO_CACHE`, `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE`
+    are its transport test seams and operator knobs; `PW_GH_DEGRADE_TOKEN`
+    (component 14h owns the name) and `PW_GH_NOW_EPOCH` (a test seam only,
+    the clock `gh_shim_resolve_token` mints against) are the credential
+    seam's own — documented in the library's own header rather than in
+    `config.schema.json` — the same convention `lib/github-limit.sh`'s
     own `GITHUB_LIMIT_*` variables already use. Unit- and integration-tested
     against a stub "real gh" binary answering from a per-call JSON plan
-    (`test/gh-shim.test.sh`); must pass `shellcheck`.
+    (`test/gh-shim.test.sh`) and, for the credential seam specifically —
+    stubbed `curl`/`openssl` and `PW_GH_NOW_EPOCH` advanced past a minted
+    token's `expires_at` — `test/gh-shim-auth.test.sh` (acceptance check 2q);
+    must pass `shellcheck`.
 
 23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
     requirements 24b/30d/36c/42a: given a working title, normalises it
@@ -19105,7 +19397,11 @@ oblige anyone to edit a test.
    pruned to the newest `state_local_cycles_retained` by the same push,
    newest always kept, and `log.jsonl` is byte-for-byte untouched by that
    same local prune regardless of how many cycle/review directories it
-   removes (requirement 2.6d); a fetch materialises a peer whole
+   removes (requirement 2.6d); everything the push commits is redacted first
+   (requirement 2.5, `lib/redact.sh`) — a token- and home-path-shaped
+   fixture planted in `cron.log` and in a cycle transcript reaches the
+   branch as `[REDACTED-TOKEN]` and `~`, neither raw form survives, and the
+   redacted transcript still parses as JSON; a fetch materialises a peer whole
    under the peers directory, leaves the node's own `state_dir` alone, never
    includes the node itself, and prunes a peer whose branch is gone; the
    union read (`lib/fleet.sh`) carries both nodes' events in time order; and
@@ -19734,6 +20030,31 @@ oblige anyone to edit a test.
    through unmodified; and `PW_GH_NO_CACHE=1` forces the same unmodified
    passthrough for an otherwise-cacheable read, still ledgered as `bypass`.
    `lib/gh-shim.sh` and `scripts/gh-shim.sh` pass `shellcheck -x`.
+2q. **The on-demand credential seam mints a fresh token once the previous
+   one is within `refresh_buffer` of expiry, never re-identifies an
+   explicit `GH_TOKEN`, and degrades exactly like the identity it fronts for
+   (D18 decision 1 as amended, agent-ops#1021).** `test/gh-shim-auth.test.sh`
+   passes, end to end against a stub "real gh" binary and stubbed
+   `curl`/`openssl` (never a live App or network call): with `GH_TOKEN`
+   empty and the forge authoring App configured, both `gh auth
+   git-credential` (standing in for the credential helper `git push` calls)
+   and an ordinary `gh` call present a freshly-minted token, and a second
+   call within the token's lifetime reuses it — no second mint; with
+   `PW_GH_NOW_EPOCH` advanced past that token's `expires_at`, the next call
+   of either kind presents a *different*, freshly-minted token, not the
+   stale one — the contract `TD-PPagop-26082833` named and this item exists
+   to close; a non-empty `GH_TOKEN` in the calling environment (including the
+   shape `GH_TOKEN="$(approver_token_get)" gh …` uses) reaches the stub
+   unchanged and mints nothing; with no forge authoring App configured, an
+   ambient `GH_TOKEN` authenticates every call exactly as before this item;
+   and, App configured but a mint refused, the call presents
+   `PW_GH_DEGRADE_TOKEN` rather than failing or reaching the real binary with
+   no credential at all. `test/forge-auth.test.sh` continues to pass
+   unmodified — `PW_GH_DEGRADE_TOKEN` unset in every one of its cases, so
+   `forge_auth_effective_gh_token`'s `gh-token-degraded` path still falls
+   back to `GH_TOKEN` exactly as before — and `test/forge-auth.test.sh`,
+   `test/gh-shim.test.sh` and `test/gh-shim-auth.test.sh` all pass
+   `shellcheck`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`
@@ -22551,9 +22872,13 @@ oblige anyone to edit a test.
     `merge_autonomy_routine_sources` (a repo-level override taking
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
-    unreadable protected-path read (naming the changed-file list) or an
+    unreadable protected-path read (naming the changed-file list), an
     unevaluable protected-paths list (naming `merge_autonomy_protected_paths`
-    instead, TD-PPagop-26082325), and `eligible` only once every condition
+    instead, TD-PPagop-26082325), or an exit code from
+    `landing_protected_paths_hit` outside its documented 0/1/2/3 contract
+    (agent-ops#1232, pinned by temporarily replacing the helper with one
+    that exits an out-of-contract code, since the real helper's own case
+    statement never produces one), and `eligible` only once every condition
     clears — with a repo-level `merge_autonomy_routine_complexity` override
     admitting `complexity:high` for that repository alone while a repository
     without one still refuses it, and a top-level override admitting it
@@ -22727,11 +23052,15 @@ oblige anyone to edit a test.
     a protected-path pull request launches a real critical-tier engagement
     at every complexity grade, `complexity:low` included (which alone would
     have skipped the model entirely), logging `critical_reason: "protected-path"`;
-    the classifier's own exit 2 (an unreadable changed-file list) and its
+    the classifier's own exit 2 (an unreadable changed-file list), its
     exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
-    against a path, TD-PPagop-26082325) each force the same critical tier
-    rather than falling back to a cheaper one, pinned separately so the
-    exit-code split cannot silently drop one of them; a refuse
+    against a path, TD-PPagop-26082325), and any exit code outside its
+    documented 0/1/2/3 contract (agent-ops#1232) each force the same
+    critical tier rather than falling back to a cheaper one, pinned
+    separately so the exit-code split cannot silently drop one of them —
+    the guarding condition names only the legitimate exit 1 as an
+    exemption from the forced tier, rather than enumerating the fail-closed
+    codes, so an unrecognised code cannot silently join it; a refuse
     streak of two still logs `critical_reason: "refuse-streak"`, so the two
     causes are pinned as distinguishable in the log; and a pull request
     touching no protected path is unaffected, keeping every tier exactly as
@@ -23560,8 +23889,44 @@ oblige anyone to edit a test.
     logs `idle-without-demand`/`no-demand` as before; and with a `lock.json`
     naming a pid that is gone it logs it too — which is what proves the guard
     is suppressing on the peer rather than swallowing the transition
-    wholesale. `scripts/lint-shell.sh` is clean on every
+    wholesale. The live and gone readings are then repeated against
+    `review-lock.json`, for the peer *review* run the second probe answers
+    about, and a fourth case pins the one guarded site that runs after the
+    lock is won: with a usage-limit cooldown in force and this run's own pid
+    in `review-lock.json`, the cooldown stand-down still logs
+    `externally-blocked`/`usage-limit`, which is what proves that probe
+    excludes this process itself rather than reading its own lock as a peer.
+    `scripts/lint-shell.sh` is clean on every
     file this requirement touches.
+
+51. **The pager framework files once per firing key, closes once the fact
+    clears, and never twice for the same transition (requirement 51).**
+    `test/pager.test.sh` drives `lib/pager.sh` directly, against fixture
+    union logs built inline the same way `test/crash-loop-escalate.test.sh`
+    does, with `gh`/`lib/claim.sh` stubbed as shell functions: a fire →
+    re-evaluate → clear sequence over one `pipeline-act` invariant asserts
+    exactly one `pager-fired` and, once the stub's eval function reports
+    clear, exactly one `pager-cleared` — never a second of either on a
+    third, fourth or fifth re-evaluation while the state is unchanged; a
+    candidate that stops firing before `pager_min_firing_minutes` elapses
+    logs `pager-candidate-cleared` and never reaches `pager-fired` at all;
+    and one test per remedy class confirms what each one actually does —
+    `pipeline-act` calls the registered remedy function and embeds its
+    return value in the issue body, `config-lever` files a second, separate
+    `pw::decision` issue via the closed-immediately convention alongside the
+    ordinary tracking issue, and `owner-only` assigns the tracking issue to
+    the configured assignee and no other class does. `test/pager-invariants.
+    test.sh` drives `lib/pager-invariants.sh`'s two built-ins against fixture
+    heartbeat sets: `verdict-unanimous` fires on a `stage_health` stage
+    failing on every active (non-stale) node, on `updater.status: "stuck"`
+    fleet-wide, and on `doctor.verdict: "fail"` fleet-wide, but not when
+    only some nodes agree, not when fewer than two nodes are active, and not
+    when a stale node's own disagreement would otherwise break the
+    unanimity; `page-outlived-item` fires when a stubbed `gh issue
+    list`/`gh pr view` shows an open page's own linked PR merged or closed,
+    and its remedy closes exactly the pages found outlived, none still
+    open. `scripts/lint-shell.sh` is clean on every file this requirement
+    touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

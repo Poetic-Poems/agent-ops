@@ -20,24 +20,23 @@
 # replaces. `exit 0` inside it ends the cycle exactly as it did inline: nothing
 # here runs inside a subshell.
 run_standdown_checks() {
-# --- 1.9 Forge authoring identity (D18 decision 1, agent-ops#607). Resolved
-# first, ahead of every check below that authenticates against GitHub as
-# this cycle — starting with 2.0's own budget probe and 2.0b's credential
-# probe right after it — so both validate the credential this cycle will
-# actually use: the forge authoring App's own minted installation token
-# when configured, or the node's own ambient GH_TOKEN otherwise
-# (lib/forge-auth.sh). Cheap either way — a cache hit costs nothing, and a
-# fresh mint is one HTTPS call, the same cost class as 2.0's own
-# /rate_limit probe two lines down — and never blocking: an absent or
-# broken App credential degrades silently rather than standing the cycle
-# down, so nothing here can turn "the App isn't configured yet" into a
-# stand-down a bare GH_TOKEN would not have hit.
-IFS=$'\t' read -r forge_auth_source forge_auth_gh_token < <(forge_auth_effective_gh_token)
-[[ -n "$forge_auth_gh_token" ]] && export GH_TOKEN="$forge_auth_gh_token"
+# --- 1.9 Forge authoring identity (D18 decision 1, agent-ops#607; the
+# on-demand credential seam, agent-ops#1021). Nothing here resolves or
+# exports a credential any more — that now happens per call, on demand,
+# through the seam (lib/gh-shim.sh's `gh` transport shim and, for plain
+# `git`, deploy/docker/entrypoint.sh's credential-helper wiring), which is
+# what lets a cycle outlive a forge authoring App installation token's ~1 h
+# lifetime without presenting a stale one. This step only logs which path a
+# call made right now would take — `forge_auth_effective_gh_token`'s
+# TOKEN is diagnostic only (lib/forge-auth.sh) — so that 2.0b's credential
+# probe two steps later, whose own `gh` call goes through the same seam, and
+# any operator reading the log, can see which identity this cycle actually
+# authors under.
+IFS=$'\t' read -r forge_auth_source _ < <(forge_auth_effective_gh_token)
 log_event "forge-auth" "$(jq -nc --arg s "$forge_auth_source" '{source: $s}')"
 if [[ "$forge_auth_source" == "gh-token-degraded" ]]; then
   log_event "warning" "$(jq -nc \
-    --arg d "the forge authoring App credential (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) is configured but no token could be minted this cycle — degraded to GH_TOKEN, exactly as a node with none of the three configured" \
+    --arg d "the forge authoring App credential (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) is configured but no token could be minted this cycle — degraded to the seam's fallback (PW_GH_DEGRADE_TOKEN, or GH_TOKEN), exactly as a node with none of the three configured" \
     '{detail: $d}')"
 fi
 

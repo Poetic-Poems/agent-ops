@@ -96,13 +96,19 @@
 # what `scripts/sweep-decision-vetoes.sh` searches for across every
 # configured repository to find decision logs to check for a veto (a
 # reopen), so a renamed label would silently stop being swept.
+# `pw::pager` (agent-ops#1278) is fixed for the same reason again: it is
+# what lib/pager.sh's own dedup search and auto-close read to find a firing
+# invariant's own tracking issue, in `pager_repo`, so a renamed label would
+# silently stop being found — the same failure mode a renamed `pw::decision`
+# would have on `scripts/sweep-decision-vetoes.sh`.
 
 # labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE [REVIEW_PR_LABEL]
 # Print the labels a repository in ROLE needs, one per line, as
 # `name<TAB>colour<TAB>description`. ROLE is one of:
 #   target      — a repository the implementation pipeline works
 #   review      — a repository the project-review pipeline reviews
-#   escalation  — where escalation issues are filed (crash_loop_repo)
+#   escalation  — where escalation issues are filed (crash_loop_repo,
+#                 pager_repo)
 #
 # REVIEW_PR_LABEL is used only for ROLE "review": project_review's pr_label is
 # resolved per repository (requirement 342 — an entry in `project_review.repos`
@@ -163,7 +169,9 @@ labels_catalogue() {
        [ entry(.enabler_escalation_label; "b60205";
                "Raised by the Enabler: a blocked item that escalates"),
          entry("pw::decision"; "5319e7";
-               "A tactical decision the pipeline took under decide-tactical; reopen to veto") ]
+               "A tactical decision the pipeline took under decide-tactical; reopen to veto"),
+         entry("pw::pager"; "b60205";
+               "Raised by lib/pager.sh: a fleet-level invariant is firing") ]
      else [] end)
     | .[] | @tsv
   ' <<<"$defaulted" 2>/dev/null || true

@@ -8,9 +8,13 @@
 # index.html under <state_dir>/dashboard/. Open that index.html in a browser
 # to view the dashboard — no server, no open port, nothing leaves the machine.
 #
-# Safe to run any time: it only reads the pipeline's state, never writes into
-# it, never touches the lock, and cannot disturb a running cycle. Costs
-# nothing to run (no model calls). Companion doc: docs/DASHBOARD-SPEC.md.
+# Safe to run any time: it never touches the lock and cannot disturb a
+# running cycle. Costs no model calls. Almost entirely read-only, with one
+# deliberate exception (agent-ops#1278): a WITH_GITHUB (full) tick also
+# evaluates lib/pager.sh's fleet-level invariants, which may file or close a
+# GitHub issue and append a `pager-*` transition event to this node's own
+# log.jsonl — the one write this script makes to the pipeline's own state.
+# Companion doc: docs/DASHBOARD-SPEC.md.
 
 set -uo pipefail
 
@@ -61,6 +65,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/role.sh"
 # shellcheck source=lib/version.sh
 . "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/redact.sh
+. "$SCRIPT_DIR/lib/redact.sh"
 # shellcheck source=lib/compose-drift.sh
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
@@ -92,6 +98,19 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # strip an `anthropic/`-qualified tier config value before comparing it
 # against the bare id every stage-end's own `model` field already carries.
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/labels.sh
+# `labels_ensure_role` alone: lib/pager.sh's `_pager_ensure_label_role` calls
+# it — only on the path that actually creates an issue — before filing a
+# `pw::pager`/`pw::decision` issue, on the identical precedent
+# lib/enabler.sh's create_escalation_issue already sets. It is a `declare -F`
+# probe there, so sourcing this here is what turns it on; without it the
+# pager's own filings would land unlabelled and never be found again by
+# either its dedup or its auto-close.
+. "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/pager.sh
+. "$SCRIPT_DIR/lib/pager.sh"
+# shellcheck source=lib/pager-invariants.sh
+. "$SCRIPT_DIR/lib/pager-invariants.sh"
 
 MAX_CYCLES=40        # recent substantive cycles shown in detail (with
                      # transcripts); no-op ticks aggregate instead (#271)
@@ -162,8 +181,27 @@ github_budget_min_core="$(cfg '.github_min_core_budget')"
 github_budget_min_graphql="$(cfg '.github_min_graphql_budget')"
 github_budget_cycle_interval_minutes="$(cfg '.schedule.cycle_interval_minutes')"
 
+# lib/pager.sh's own config (agent-ops#1278). `pager_repo` empty falls back
+# to `crash_loop_repo` — both name "the pipeline's own repository", and an
+# installation that has already set the one for crash-loop escalations wants
+# the same repository for pager pages absent a reason to split them.
+pager_enabled="$(cfg '.pager_enabled')"
+pager_repo="$(cfg '.pager_repo')"
+[[ -n "$pager_repo" ]] || pager_repo="$(cfg '.crash_loop_repo')"
+pager_min_firing_minutes="$(cfg '.pager_min_firing_minutes')"
+[[ "$pager_min_firing_minutes" =~ ^[0-9]+$ ]] || pager_min_firing_minutes=15
+enabler_assignee="$(cfg '.enabler_assignee')"
+enabler_escalation_label="$(cfg '.enabler_escalation_label')"
+escalation_webhook_url="$(cfg '.escalation_webhook_url')"
+
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
+# A few dozen bytes beside data.js (issue #1288): {generated_at, fingerprint},
+# polled every refresh tick so an open tab can tell whether data.js actually
+# changed before paying to re-download it — see the write below, at the foot
+# of the script, for what fingerprint means and why it is safe to reuse the
+# no-op skip's own.
+stamp_file="$out_dir/stamp.js"
 # Last real GitHub fetch, kept out of the served dir. A --no-github tick reuses
 # it so a local-only refresh doesn't blank the PR list / work sources or raise a
 # false "GitHub unavailable" alarm between GitHub refreshes. Its mtime is also
@@ -213,6 +251,14 @@ image_cache="$state_dir/.image-drift-cache.json"
 # this instead. `null` when no unattended pass has run yet on this node.
 doctor_status_file="$state_dir/.doctor-status.json"
 doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
+# The same projection scripts/state-sync.sh folds into `heartbeat.json` for a
+# peer (requirement 2.5): `{timestamp, verdict}` and nothing else. This node's
+# own *fleet row* has to carry exactly the shape a peer's does, or the fleet
+# would be a set of rows only one of which answers to the same schema — and
+# `verdict-unanimous` reads `.doctor.verdict` across all of them alike. The
+# full record still reaches `status.doctor` above, where it is local to this
+# node and the page's own doctor panel reads `fails`/`warns` from it.
+doctor_heartbeat_json="$(jq -c '{timestamp, verdict}' "$doctor_status_file" 2>/dev/null || echo null)"
 # This node's own per-stage health verdict (lib/stage-health.sh,
 # agent-ops#662), written by agent-cycle.sh's own cleanup at the end of every
 # real cycle — read rather than recomputed, on the identical precedent
@@ -2179,13 +2225,14 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
   --argjson updater "$updater_json" \
+  --argjson doctor "$doctor_heartbeat_json" \
   --argjson pu "$provider_unreachable_json" \
   --argjson pub "$self_pub_json" \
   '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,
     last_cycle: (if $lc == "" then null else $lc end), self: true,
     stale: ($pub.verdict != "fresh"),
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
-    stage_health: $stage_health, updater: $updater,
+    stage_health: $stage_health, updater: $updater, doctor: $doctor,
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
@@ -2231,6 +2278,11 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # container had its first poll — yields null rather than this node
        # guessing at a peer it never ran.
        updater: ($h.updater // null),
+       # And for the doctor verdict (scripts/doctor.sh, agent-ops#543): only
+       # the peer itself ran its own hourly unattended pass, so a heartbeat
+       # built before this travelled (agent-ops#1278) yields null rather
+       # than this node guessing at a doctor run it never made.
+       doctor: ($h.doctor // null),
        # Unlike the fields above, `provider_unreachable` is not a report from
        # the peer about itself — it is this node reading the fleet-wide
        # union directly (issue #1073), computed once above and applied to
@@ -2355,7 +2407,45 @@ if [[ -s "$td_cache" ]] && jq -e 'type == "object"' "$td_cache" >/dev/null 2>&1;
 else
   printf '{}' > "$td_cache_json"
 fi
+# Default for a build that never reaches the WITH_GITHUB block below (a fast
+# tick, or a full local-only one run with --no-github): the FULL-build
+# assemble further down always needs this defined, and "no pager section
+# this tick" is exactly what null already means for every FULL-only key a
+# fast build carries forward instead.
+pager_json='null'
+
 if (( WITH_GITHUB )); then
+  # lib/pager.sh (agent-ops#1278): fleet-level invariants, evaluated once per
+  # GitHub tick — the point where this node's own union log (events_jsonl)
+  # and every peer's heartbeat (fleet_nodes_json) have already converged.
+  # WITH_GITHUB-gated, not merely FULL: firing/clearing may create or close a
+  # GitHub issue, which a --no-github (test or local-only) tick must never do.
+  if [[ "$pager_enabled" == "true" ]]; then
+    pager_register_builtin_invariants
+    export CLAIM_GH="$DASHBOARD_GH_CMD"
+    export PAGER_GH="$DASHBOARD_GH_CMD"
+    pager_evaluate "$SCRIPT_DIR/lib/claim.sh" "$pager_repo" "pw::pager" \
+      "$enabler_escalation_label" "$enabler_assignee" "$escalation_webhook_url" \
+      "$pager_min_firing_minutes" "$state_dir/log.jsonl" "$events_jsonl" "$fleet_nodes_json" \
+      "$self_node" "publisher-$self_node-$now_epoch" || true
+    # Re-read the union: pager_evaluate may just have appended to this node's
+    # own log.jsonl, which $events_jsonl (built before this block) cannot
+    # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs
+    # this tick's own answer, not the previous one.
+    pager_union="$work_tmp/pager-union.jsonl"
+    fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$pager_union" 2>/dev/null || : > "$pager_union"
+    pager_json="$(
+      { while IFS= read -r pk; do
+          [[ -n "$pk" ]] || continue
+          [[ "$(pager_state_for "$pk" < "$pager_union")" == "fired" ]] || continue
+          pager_last_event "$pk" < "$pager_union"
+        done < <(pager_registered_keys)
+      } | jq -sc '[.[] | {key, first_seen, evidence, nodes: (.nodes // []),
+                           issue_number: (.issue_number // null), issue_url: (.issue_url // null)}]' \
+        2>/dev/null)"
+    [[ -n "$pager_json" ]] || pager_json='[]'
+  fi
+
   gh_ok=true
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
@@ -3471,6 +3561,7 @@ data_json="$(jq -n \
   --argjson dropped_log "$dropped_log_lines" \
   --argjson dropped_rr "$dropped_revert_rate_lines" \
   --argjson cycle_render "$cycle_render_json" \
+  --argjson pager "$pager_json" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], cycle_render: $cycle_render,
     noop_ticks: $noop, blocked: $blocked[0],
@@ -3479,6 +3570,7 @@ data_json="$(jq -n \
     revert_rate: $rr[0], github_budget: $gb[0], rework: $rw[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
+    pager: $pager,
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 else
 # A fast build emits only the keys it actually recomputed and merges them over
@@ -3552,17 +3644,45 @@ if (( FULL )); then
   fi
 fi
 
-# --- Redact (defensive) & write atomically -----------------------------------
-redact() {
-  sed -E \
-    -e "s#/home/[A-Za-z0-9._-]+#~#g" \
-    -e "s#/Users/[A-Za-z0-9._-]+#~#g" \
-    -e "s#gh[pousr]_[A-Za-z0-9]{16,}#[REDACTED-TOKEN]#g" \
-    -e "s#github_pat_[A-Za-z0-9_]{20,}#[REDACTED-TOKEN]#g" \
-    -e "s#sk-(ant-|proj-)?[A-Za-z0-9_-]{16,}#[REDACTED-TOKEN]#g" \
-    -e "s#(Bearer|token) [A-Za-z0-9._~+/-]{16,}#\1 [REDACTED-TOKEN]#g"
-}
+# The state fingerprint this page was built from (issue #1288), computed once
+# every cache this tick itself rewrites — payload_cache just above included —
+# has already happened: a fingerprint taken earlier could never match the one
+# the next tick computes, and nothing would ever skip. $out_dir is pruned from
+# local_state_fingerprint, so computing it here rather than after the data.js
+# write below (as an earlier version of this comment had it) changes nothing
+# about the value — only about being able to embed it in data.js itself, next.
+new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
 
+# The fingerprint client code actually gets to see — embedded in data.js
+# itself (below) and in stamp.js alike, always the same value so the two can
+# never disagree about what "changed" means: $now_iso, unique to this tick,
+# whenever local_state_fingerprint could not produce a whole hash (the same
+# rare failure the no-op skip's own $fingerprint_file write below treats as
+# "no usable fingerprint"), or whenever this tick's render failed
+# ($cycle_render_ok != true, mirroring the $fingerprint_file drop below). A
+# fixed fallback in either case would read as "unchanged" to every tab
+# forever — worse than the needless re-fetch a changing one costs instead: a
+# repaired page from the very next tick would never reach a tab stuck
+# comparing against a fallback that never moves.
+public_fingerprint="$new_fingerprint"
+if [[ "$cycle_render_ok" != "true" ]] || [[ ! "$public_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+  public_fingerprint="$now_iso"
+fi
+
+# Embedding this tick's own fingerprint inside data.js — not only in the
+# separately-fetched stamp.js — lets index.html initialise the fingerprint it
+# compares against from the very file it just parsed, rather than from a
+# second file loaded moments later by a second HTTP request: on the page's
+# first, non-cache-busted load (the plain <script src> pair in <head>), a
+# publish landing between those two requests would otherwise pair the
+# fingerprint of a *newer* publish with the *older* data.js the tab actually
+# has, wedging it exactly as a lost fetch does (see the loadData callback
+# below) until state moves again.
+data_json="$(jq --arg fingerprint "$public_fingerprint" '. + {fingerprint: $fingerprint}' <<<"$data_json")"
+
+# --- Redact (defensive) & write atomically -----------------------------------
+# redact() itself is lib/redact.sh, shared with scripts/state-sync.sh's own
+# push (agent-ops#966).
 tmp="$(mktemp "$out_dir/.data.XXXXXX.js")"
 {
   printf '// Generated by publish-dashboard.sh at %s — do not edit. Regenerated each run.\n' "$now_iso"
@@ -3572,15 +3692,24 @@ tmp="$(mktemp "$out_dir/.data.XXXXXX.js")"
 } > "$tmp"
 mv -f "$tmp" "$data_file"
 
+# stamp.js (issue #1288): a client-visible companion to data.js, a few dozen
+# bytes, that dashboard tabs poll every refresh tick instead of the multi-MB
+# payload — data.js itself is re-fetched only when a tab's own last-loaded
+# fingerprint no longer matches this one. Written right beside data.js, from
+# the very state that just produced it, carrying the same $public_fingerprint
+# just embedded in data.js above, so the two can never disagree about what
+# "changed" means.
+stamp_tmp="$(mktemp "$out_dir/.stamp.XXXXXX.js")"
+jq -rn --arg generated_at "$now_iso" --arg fingerprint "$public_fingerprint" \
+  '"window.DASHBOARD_STAMP = " + ({generated_at: $generated_at, fingerprint: $fingerprint} | tojson) + ";"' \
+  > "$stamp_tmp"
+mv -f "$stamp_tmp" "$stamp_file"
+
 # Refresh the page template alongside the data (source of truth is the repo).
 [[ -f "$TEMPLATE" ]] && cp -f "$TEMPLATE" "$out_dir/index.html"
 
-# Stamp the state this page was built from, *after* writing it: a GitHub tick
-# rewrites several of the caches under the state dir as part of publishing, so a
-# fingerprint taken before the build could never match the one the next tick
-# computes, and nothing would ever skip.
-#
-# Written only when it is a whole hash, and removed rather than left behind
+# Persist the fingerprint for the no-op skip's own next comparison. Written
+# only when it is a whole hash, and removed rather than left behind
 # otherwise. The two failure directions are not equal: an absent or unreadable
 # stamp costs one needless rebuild, a truncated one that happens to match costs
 # a page that stops updating.
@@ -3591,7 +3720,6 @@ mv -f "$tmp" "$data_file"
 # the broken window in place until something unrelated happened to change —
 # which on a quiet node can be a long time. Dropping the stamp costs one
 # rebuild and makes the retry the very next tick.
-new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
 if [[ "$cycle_render_ok" != "true" ]]; then
   rm -f "$fingerprint_file" 2>/dev/null || true
 elif [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then

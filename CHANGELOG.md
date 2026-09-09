@@ -21,6 +21,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   by running real stages), and `--status` gains an `overrun: N firing(s)
   overrun in the last 24h` line, which `check-nodes.sh` inherits for free.
 
+- **The pager: fleet-level invariant evaluation, filing and auto-close**
+  (issue #1278, requirement 51): `lib/pager.sh`, a registry of named
+  invariants evaluated once per Publisher GitHub tick, each a function over
+  facts every node already holds fleet-wide (the union log, every peer's
+  heartbeat, this node's own doctor verdict). A firing invariant claims its
+  evaluation window through `lib/claim.sh`, waits out `pager_min_firing_
+  minutes`' hysteresis, then files one deduped `pw::pager`-labelled issue in
+  `pager_repo` (default: falls back to `crash_loop_repo`) — a *pipeline-act*
+  remedy performs the fix directly and records it, a *config-lever* remedy
+  additionally files a `pw::decision` record under `escalation_autonomy:
+  decide-tactical`, an *owner-only* remedy assigns the issue to
+  `enabler_assignee` — and auto-closes it with a one-line comment the
+  moment the fact clears. Ships with two invariants
+  (`lib/pager-invariants.sh`): `verdict-unanimous` (the #1071 signature — the
+  identical failing verdict on every active node at once, almost always the
+  reader being wrong rather than a real fleet-wide failure; files a
+  `pw::type:tech-debt` issue against this pipeline's own repository), and
+  `page-outlived-item` (closes an open page whose own linked PR or issue has
+  already gone terminal, generalising #1215's `approver_escalation_retire`
+  to every page this framework or the Enabler files). `.doctor-status.json`'s
+  own verdict now folds into every heartbeat, the same way `stage_health`'s
+  does, so `verdict-unanimous` can see a peer's doctor verdict, not only its
+  own. New config: `pager_enabled` (default `true`), `pager_repo`,
+  `pager_min_firing_minutes` (default 15). The dashboard gains a
+  `pager-firing` page-top banner and a node-card badge naming a firing
+  invariant on the node(s) its evidence names.
+
+- **The dashboard polls a stamp instead of re-downloading `data.js` every
+  tick** (issue #1288): every open dashboard tab was re-fetching the whole
+  payload — 2.7–2.9 MB measured on real nodes — unconditionally on every
+  `dashboard_refresh_seconds` tick, whether or not anything had changed;
+  about 45 GB/day per tab left open, and over a slow enough path a single
+  tick took longer than the interval it was fired at, so a tab there never
+  caught up. `scripts/publish-dashboard.sh` now writes a `stamp.js` sibling
+  beside `data.js` on every run — `window.DASHBOARD_STAMP =
+  {generated_at, fingerprint}`, a few dozen bytes, atomically, from the same
+  no-op-skip fingerprint that already governs whether `data.js` itself gets
+  rewritten. `dashboard/index.html` fetches `stamp.js` every tick and
+  `data.js` only when its `fingerprint` no longer matches the one last
+  loaded; `generated_at` still ticks the header's staleness clock every
+  tick regardless. With unchanged data a tick now costs bytes, not
+  megabytes.
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for
@@ -417,6 +460,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The forge authoring App's token is now minted on demand, not once per
+  cycle** (issue #1021, TD-PPagop-26082833). `lib/standdown.sh` used to
+  resolve the App's installation token once, at stand-down, and export it
+  as `GH_TOKEN` for the rest of the cycle's process — but the token carries
+  GitHub's ~1 h lifetime, and a cycle routinely outlives that (the
+  Implementer alone budgets 150 minutes), so a long-running stage's
+  `git push`/`gh pr create` could present an expired credential after all
+  its work was already paid for. `lib/gh-shim.sh`'s `gh` transport shim now
+  mints (or reuses a cached token) immediately before every `gh` call, and
+  the same shim, reached through `git`'s own credential helper
+  (`deploy/docker/entrypoint.sh`), does the same for plain `git` — both
+  minting only when `GH_TOKEN` is already empty, so an explicit token (a
+  human's own, or the Approver's) always passes through untouched.
+
+- **`state-sync.sh` now redacts tokens and home paths before pushing state**
+  (issue #966): its push committed `log.jsonl`, `review-log.jsonl`, cron
+  logs, and cycle/review transcripts to the private state-mirror
+  repository — deliberately never rotated — with no redaction pass, even
+  though `publish-dashboard.sh` already strips token-shaped strings and
+  home-directory paths from its own (lower-risk) published payload as
+  defence-in-depth. The pattern set is now shared (`lib/redact.sh`) and
+  applied to every file the push stages before it commits.
+
 - **A scheduler's memory ceiling now survives being recreated**
   (TD-PPagop-26090401, following issue #1266). `memory.high` — the soft
   ceiling that has the kernel reclaim a ratcheting cgroup instead of
@@ -500,6 +566,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it never actually carried markup). No `html:` attribute use remains in
   `dashboard/index.html`.
 
+- **`review-cycle.sh`'s five pre-lock stand-down sites now suppress their
+  node-state transition against a live peer review run, not just a live
+  implementation cycle** (issue #1275). An operator config change
+  (`--disable`, or `project_review.defaults.not_before`) landing while a peer
+  `review-cycle.sh` was mid-Reviewer let the next tick's terminal `down`/
+  `idle-without-demand` transition overwrite that live run's own `producing`
+  on the shared per-node timeline — `suppress_node_state_if_peer_owns_node`
+  probed only `lock.json` (a live `agent-cycle.sh`), never
+  `review-lock.json`. It now also probes `review-lock.json` for a live peer
+  pid, on the same "err toward not-running" terms as the existing probe.
+
 - **Recent cycles no longer reads as an idle fleet when the Publisher could
   not render it** (the 2026-08-29 blackout). Every dashboard in the fleet
   reported "No substantive cycles in the fleet window" for ten days while all
@@ -559,6 +636,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GH_TOKEN` to a classic PAT, and a reader of the old wording would have
   concluded the warning goes dark at that cutover and needed a manual
   stand-in — it does not, and never did.
+
+- **Both by-number callers of `landing_protected_paths_hit` now fail closed
+  on an exit code outside its documented contract** (issue #1232). That
+  classifier's contract is exits 0/1/2/3, but its two callers that branch on
+  the number defaulted the other way — toward a pass — for anything else
+  (e.g. `128+n`, the command substitution's own subshell being signal-killed
+  mid-gate). `landing_eligible` (`lib/landing.sh`) handled 0, 2 and 3
+  explicitly and then fell through to `eligible`, which is right for the
+  legitimate 1 and a silent pass for everything unrecognised; `lib/approver.sh`'s
+  protected-path-forces-Critical check enumerated `== 0 || == 2 || == 3`, so
+  an unrecognised code skipped the forced critical tier — the same fail-open
+  shape pointing at the cheaper tier. Each call site now names only the
+  legitimate exit 1 (no protected path touched) as its explicit exemption and
+  routes every other code to the fail-closed side: `landing_eligible` returns
+  `unknown:` naming the out-of-contract code, and the Approver forces the
+  critical tier. Nothing changes for the documented codes 0, 1, 2 and 3, and
+  `landing_protected_paths_hit`'s own contract is untouched; the fix is to
+  the default arm alone, on the gate `lib/landing.sh`'s own header calls the
+  deadliest landing class.
 
 - **`landing_eligible`'s `unknown:` diagnostic now names which of
   `landing_protected_paths_hit`'s two refusal causes actually fired**
