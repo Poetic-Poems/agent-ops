@@ -196,6 +196,12 @@ escalation_webhook_url="$(cfg '.escalation_webhook_url')"
 
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
+# A few dozen bytes beside data.js (issue #1288): {generated_at, fingerprint},
+# polled every refresh tick so an open tab can tell whether data.js actually
+# changed before paying to re-download it — see the write below, at the foot
+# of the script, for what fingerprint means and why it is safe to reuse the
+# no-op skip's own.
+stamp_file="$out_dir/stamp.js"
 # Last real GitHub fetch, kept out of the served dir. A --no-github tick reuses
 # it so a local-only refresh doesn't blank the PR list / work sources or raise a
 # false "GitHub unavailable" alarm between GitHub refreshes. Its mtime is also
@@ -3622,6 +3628,42 @@ if (( FULL )); then
   fi
 fi
 
+# The state fingerprint this page was built from (issue #1288), computed once
+# every cache this tick itself rewrites — payload_cache just above included —
+# has already happened: a fingerprint taken earlier could never match the one
+# the next tick computes, and nothing would ever skip. $out_dir is pruned from
+# local_state_fingerprint, so computing it here rather than after the data.js
+# write below (as an earlier version of this comment had it) changes nothing
+# about the value — only about being able to embed it in data.js itself, next.
+new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
+
+# The fingerprint client code actually gets to see — embedded in data.js
+# itself (below) and in stamp.js alike, always the same value so the two can
+# never disagree about what "changed" means: $now_iso, unique to this tick,
+# whenever local_state_fingerprint could not produce a whole hash (the same
+# rare failure the no-op skip's own $fingerprint_file write below treats as
+# "no usable fingerprint"), or whenever this tick's render failed
+# ($cycle_render_ok != true, mirroring the $fingerprint_file drop below). A
+# fixed fallback in either case would read as "unchanged" to every tab
+# forever — worse than the needless re-fetch a changing one costs instead: a
+# repaired page from the very next tick would never reach a tab stuck
+# comparing against a fallback that never moves.
+public_fingerprint="$new_fingerprint"
+if [[ "$cycle_render_ok" != "true" ]] || [[ ! "$public_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+  public_fingerprint="$now_iso"
+fi
+
+# Embedding this tick's own fingerprint inside data.js — not only in the
+# separately-fetched stamp.js — lets index.html initialise the fingerprint it
+# compares against from the very file it just parsed, rather than from a
+# second file loaded moments later by a second HTTP request: on the page's
+# first, non-cache-busted load (the plain <script src> pair in <head>), a
+# publish landing between those two requests would otherwise pair the
+# fingerprint of a *newer* publish with the *older* data.js the tab actually
+# has, wedging it exactly as a lost fetch does (see the loadData callback
+# below) until state moves again.
+data_json="$(jq --arg fingerprint "$public_fingerprint" '. + {fingerprint: $fingerprint}' <<<"$data_json")"
+
 # --- Redact (defensive) & write atomically -----------------------------------
 # redact() itself is lib/redact.sh, shared with scripts/state-sync.sh's own
 # push (agent-ops#966).
@@ -3634,15 +3676,24 @@ tmp="$(mktemp "$out_dir/.data.XXXXXX.js")"
 } > "$tmp"
 mv -f "$tmp" "$data_file"
 
+# stamp.js (issue #1288): a client-visible companion to data.js, a few dozen
+# bytes, that dashboard tabs poll every refresh tick instead of the multi-MB
+# payload — data.js itself is re-fetched only when a tab's own last-loaded
+# fingerprint no longer matches this one. Written right beside data.js, from
+# the very state that just produced it, carrying the same $public_fingerprint
+# just embedded in data.js above, so the two can never disagree about what
+# "changed" means.
+stamp_tmp="$(mktemp "$out_dir/.stamp.XXXXXX.js")"
+jq -rn --arg generated_at "$now_iso" --arg fingerprint "$public_fingerprint" \
+  '"window.DASHBOARD_STAMP = " + ({generated_at: $generated_at, fingerprint: $fingerprint} | tojson) + ";"' \
+  > "$stamp_tmp"
+mv -f "$stamp_tmp" "$stamp_file"
+
 # Refresh the page template alongside the data (source of truth is the repo).
 [[ -f "$TEMPLATE" ]] && cp -f "$TEMPLATE" "$out_dir/index.html"
 
-# Stamp the state this page was built from, *after* writing it: a GitHub tick
-# rewrites several of the caches under the state dir as part of publishing, so a
-# fingerprint taken before the build could never match the one the next tick
-# computes, and nothing would ever skip.
-#
-# Written only when it is a whole hash, and removed rather than left behind
+# Persist the fingerprint for the no-op skip's own next comparison. Written
+# only when it is a whole hash, and removed rather than left behind
 # otherwise. The two failure directions are not equal: an absent or unreadable
 # stamp costs one needless rebuild, a truncated one that happens to match costs
 # a page that stops updating.
@@ -3653,7 +3704,6 @@ mv -f "$tmp" "$data_file"
 # the broken window in place until something unrelated happened to change —
 # which on a quiet node can be a long time. Dropping the stamp costs one
 # rebuild and makes the retry the very next tick.
-new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
 if [[ "$cycle_render_ok" != "true" ]]; then
   rm -f "$fingerprint_file" 2>/dev/null || true
 elif [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then

@@ -1447,13 +1447,13 @@
       }
     },
     "dashboard_refresh_seconds": {
-      "description": "How often an open dashboard tab reloads to pick up freshly-written data. Match it to the heartbeat cadence.",
+      "description": "How often an open dashboard tab polls for freshly-written data, fetching the full payload only when a small stamp says it changed. Match it to the heartbeat cadence.",
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 5,
       "x-docs": {
-        "readme": "Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading.",
-        "spec": "How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on."
+        "readme": "Seconds. How often an open dashboard tab polls for freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence — it fetches a small stamp every tick and the full payload only when the stamp says it changed. Untick the page's *auto-refresh* box to pause it while reading.",
+        "spec": "How often an open dashboard tab polls for freshly-written data (`docs/DASHBOARD-SPEC.md`) — a small stamp every tick, the full `data.js` payload only when the stamp's fingerprint changed. Match it to the heartbeat cadence: a shorter interval polls a stamp nothing has rewritten, a longer one shows a cycle that has already moved on."
       }
     },
     "schedule": {
