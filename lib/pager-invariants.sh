@@ -21,15 +21,17 @@
 # gap. All five are owner-only: none has an automatic fix a pipeline could
 # perform on its own behalf, unlike verdict-unanimous's tech-debt filing.
 #
-#   firing-missed          an active node whose newest `cycle-start` (the
-#                          implementation union log) is older than 2×
-#                          `schedule.cycle_interval_minutes` while its
-#                          heartbeat is fresh and it holds no lock — caught
-#                          purely from the union log, since `lock.json` is
-#                          never published (scripts/state-sync.sh excludes
-#                          it) and `schedule.cycle_interval_minutes` is
-#                          fleet-wide config, identical on every node that
-#                          reads it, including the evaluating node itself.
+#   firing-missed          an active node whose newest `cycle-start` *or
+#                          `cycle-skipped`* (the implementation union log —
+#                          either one proves the scheduler fired) is older
+#                          than 2× `schedule.cycle_interval_minutes` while
+#                          its heartbeat is fresh and it holds no lock —
+#                          caught purely from the union log, since
+#                          `lock.json` is never published (scripts/state-
+#                          sync.sh excludes it) and
+#                          `schedule.cycle_interval_minutes` is fleet-wide
+#                          config, identical on every node that reads it,
+#                          including the evaluating node itself.
 #   node-stale             a node's publication age past 2×
 #                          `node_stale_after_minutes` — files only after
 #                          `pager_stale_file_after_minutes` (default 180),
@@ -490,7 +492,7 @@ pager_register_builtin_invariants() {
   pager_register page-outlived-item pager_eval_page_outlived_item \
     pipeline-act pager_remedy_page_outlived_item
   pager_register firing-missed pager_eval_firing_missed owner-only \
-    "A node's scheduler appears to have dropped a firing outright (the union log carries no cycle-start recent enough, and this node holds no lock) rather than merely still running a long cycle. Check the node's own cron/supercronic logs and crontab directly — on Kubernetes, check for a concurrencyPolicy: Forbid skip. The evidence above carries this node's own recent cycle-duration histogram."
+    "A node's scheduler appears to have dropped a firing outright (the union log carries neither a cycle-start nor a cycle-skipped recent enough, and this node's newest cycle event is not an unmatched cycle-start) rather than merely still running a long cycle — a cycle-skipped would itself have proved the scheduler ticked and deferred to a held lock. Check the node's own cron/supercronic logs and crontab directly — on Kubernetes, check for a concurrencyPolicy: Forbid skip. The evidence above carries this node's own recent cycle-duration histogram."
   pager_register node-stale pager_eval_node_stale owner-only \
     "This node has not confirmed a publication into the shared state for over twice node_stale_after_minutes. Confirm directly whether the node (container/host) is still running, and check its own state-sync push logs. Once agent-ops#1279's notification channel lands, this class of page reaches it automatically (notify_events' own default includes \"pager\") — today it is filed only." \
     "$stale_file_after_minutes"
