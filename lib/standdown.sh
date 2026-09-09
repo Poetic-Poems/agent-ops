@@ -377,6 +377,9 @@ if (( resume_epoch > now_epoch )); then
         log_event "limit-cleared" "$(jq -nc --arg w "$resume_at" \
           --arg by "auto-probe@$node_name" --arg n "$node_name" \
           '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by, actor: $n, kind: "auto"}')"
+        notify_post_cycle "fleet-standdown-end" "standdown:usage-limit" \
+          "Usage-limit cooldown lifted" "" "" \
+          "probe answered: the limit behind this estimated stand-down (resume was $resume_at) is gone"
         # node-state (docs/FLOW-SCHEMA.md, D21): the fleet-wide block just
         # lifted and this cycle continues past this point — an immediate
         # transition, not a terminal one (this call does not exit).
@@ -460,6 +463,8 @@ if (( resume_epoch > now_epoch )); then
       fi
     fi
     log_event "stand-down" "$(jq -nc --arg r "$standdown_reason" '{reason: $r, cause: "usage-limit"}')"
+    notify_post_cycle "fleet-standdown-begin" "standdown:usage-limit" \
+      "Usage-limit cooldown in effect" "" "" "$standdown_reason"
     set_node_state_terminal externally-blocked usage-limit
     exit 0
   fi

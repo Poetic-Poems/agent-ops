@@ -57,41 +57,24 @@ enabler_claim_key() {
 }
 
 # escalation_webhook_notify REPO ITEM TITLE BODY_FILE
-# Best-effort, `GH_TOKEN`-independent fallback for an escalation
-# `create_escalation_issue` could not file (requirement 2m,
-# TD-PPagop-26082304). Every escalation route ultimately reaches GitHub
-# through the same credential its own trigger may have just shown GitHub
-# rejects — requirement 2.0b's is the expected case, but 1c's usage-limit
-# freeze and requirement 2.7's crash loop can hit a dead token or a genuine
-# outage too — so this lives inside `create_escalation_issue` itself rather
-# than at each call site: every route gets the same fallback, and no site
-# has to guess whether its own failure was credential-shaped.
+# The `escalation-unfiled` class of the installation's one notification
+# channel (requirement 2m, lib/notify.sh, issue #1279) — what a filing
+# failure from `create_escalation_issue` posts. Every escalation route
+# ultimately reaches GitHub through the same credential its own trigger may
+# have just shown GitHub rejects — requirement 2.0b's is the expected case,
+# but 1c's usage-limit freeze and requirement 2.7's crash loop can hit a dead
+# token or a genuine outage too — so this lives inside `create_escalation_issue`
+# itself rather than at each call site: every route gets the same fallback,
+# and no site has to guess whether its own failure was credential-shaped.
 #
-# A no-op when `escalation_webhook_url` is unset (the default): nothing is
-# attempted, so an installation that configures none of this behaves exactly
-# as it did before this existed. When it is set, POSTs a JSON body carrying
-# `reason` (TITLE) and `detail` (BODY_FILE's own content) — the same two
-# fields a `stand-down` event already carries — plus `item`, `repo`, `node`
-# and `cycle` for routing. Never propagates a failure of its own: a webhook
-# that is down, misconfigured, or rejects the payload is worth a local
-# `warning` event for a human to find later, never worth costing the caller
-# the escalation it was already failing to file through GitHub.
+# `notify_post_cycle`'s own no-op/rate-limit/best-effort rules apply
+# unchanged (TD-PPagop-26082304's original guarantee): an installation with
+# no webhook configured behaves exactly as it did before this existed.
 escalation_webhook_notify() {
   local repo="$1" item="$2" title="$3" body_file="$4"
-  [[ -n "$escalation_webhook_url" ]] || return 0
-  local detail payload
+  local detail
   detail="$(cat "$body_file" 2>/dev/null || true)"
-  payload="$(jq -nc --arg reason "$title" --arg detail "$detail" \
-    --arg repo "$repo" --arg item "$item" --arg node "$node_name" \
-    --arg cycle "$cycle_id" \
-    '{reason: $reason, detail: $detail, repo: $repo, item: $item, node: $node, cycle: $cycle}' \
-    2>/dev/null)" || return 0
-  if ! curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
-        --data-binary "$payload" "$escalation_webhook_url" \
-        >/dev/null 2>>"$cycle_dir/escalation-webhook.err"; then
-    log_event "warning" "$(jq -nc --arg d "escalation webhook POST to escalation_webhook_url failed for item $item — see escalation-webhook.err" '{detail: $d}')"
-  fi
-  return 0
+  notify_post_cycle "escalation-unfiled" "$repo#$item" "$title" "" "$repo" "$detail"
 }
 
 # create_escalation_issue REPO ITEM LABEL TITLE BODY_FILE
@@ -113,6 +96,11 @@ escalation_webhook_notify() {
 #   - One retry without the label, because a repo where the label has not been
 #     created yet must still get its issue. Losing the label costs a filter;
 #     losing the issue costs the escalation.
+#
+# A fresh create (never the duplicate-guard path) also posts `escalation-filed`
+# on the installation's notify channel (`notify_post_cycle`, lib/notify.sh,
+# issue #1279); a failed create posts `escalation-unfiled` via
+# `escalation_webhook_notify` below.
 create_escalation_issue() {
   local repo="$1" item="$2" label="$3" title="$4" body_file="$5"
   local existing raw url number
@@ -150,6 +138,7 @@ create_escalation_issue() {
     escalation_webhook_notify "$repo" "$item" "$title" "$body_file"
     return 1
   fi
+  notify_post_cycle "escalation-filed" "$repo#$item" "$title" "$url" "$repo" ""
   printf '%s\t%s' "$number" "$url"
 }
 
@@ -634,6 +623,9 @@ Retired automatically by agent-cycle.sh (requirement 2.7)."
       log_event "crash-loop-retired" "$(jq -nc --arg s "$stage" --arg d "$detail" --arg f "$first_ts" \
         --argjson n "$issue_number" --arg u "$issue_url" \
         '{stage: $s, detail: $d, first_ts: $f, issue_number: $n, issue_url: $u}')"
+      notify_post_cycle "escalation-closed" "$crash_loop_repo#issue-$issue_number" \
+        "Crash loop resolved: $detail" "$issue_url" "$crash_loop_repo" \
+        "The Co-Ordinator has succeeded since this run's first failure ($first_ts) — at $success_ts."
     else
       log_event "warning" "$(jq -nc --argjson n "$issue_number" \
         --arg d "crash-loop escalation issue #$issue_number has resolved but could not be closed — see crash-loop-retire.err" \

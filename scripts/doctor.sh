@@ -93,6 +93,11 @@ source "$SCRIPT_DIR/lib/token-expiry.sh"
 source "$SCRIPT_DIR/lib/host-facts.sh"
 # shellcheck source=lib/host-budget.sh
 source "$SCRIPT_DIR/lib/host-budget.sh"
+# shellcheck source=lib/notify.sh
+# `notify_resolve_webhook_url` alone, to resolve notify_webhook_url the same
+# way agent-cycle.sh and scripts/publish-dashboard.sh do (issue #1279),
+# for this file's own alias warning and egress reachability check below.
+source "$SCRIPT_DIR/lib/notify.sh"
 # doctor.sh has no other trap and exits from several points below (bad
 # arguments, an unusable config, the ordinary end of a clean pass) — a single
 # EXIT trap, armed as soon as the library that owns the cache directory is
@@ -240,6 +245,24 @@ if [[ -n "$doc_value_mismatches" ]]; then
   done <<<"$doc_value_mismatches"
 else
   ok "every documented installation value (x-docs.value differing from its own default) matches config.json"
+fi
+
+# issue #1279: escalation_webhook_url is accepted as an alias for
+# notify_webhook_url for one release — a `warn`, not a `fail`, since the
+# alias still works; it exists so the rename is visible rather than silently
+# indefinite. notify_webhook_url_resolved is used again below, by the Egress
+# section's own reachability probe.
+notify_webhook_url_raw="$(cfg '.notify_webhook_url')"
+escalation_webhook_url_raw="$(cfg '.escalation_webhook_url')"
+notify_webhook_url_resolved="$(notify_resolve_webhook_url "$notify_webhook_url_raw" "$escalation_webhook_url_raw")"
+if [[ -n "$escalation_webhook_url_raw" ]]; then
+  if [[ -n "$notify_webhook_url_raw" ]]; then
+    warn "escalation_webhook_url is set but ignored — notify_webhook_url is also set and always wins; remove the old key"
+  else
+    warn "escalation_webhook_url is set — it is accepted as a deprecated alias for notify_webhook_url this release; rename it before the alias is removed"
+  fi
+elif [[ -n "$notify_webhook_url_raw" ]]; then
+  ok "notify_webhook_url is set (no deprecated escalation_webhook_url alias in use)"
 fi
 
 # The rules below are the ones the schema cannot state, because each holds
@@ -2020,6 +2043,20 @@ else
     fail "direct egress works despite HTTPS_PROXY being set: the scheduler is not on the internal-only egress network, so the fence is advisory — this node's compose.yaml predates the fence; update it and 'docker compose up -d'"
   else
     ok "direct egress is blocked (the internal-only network holds)"
+  fi
+  # issue #1279, requirement 2m: a configured notify webhook whose host is
+  # not in this node's EGRESS_EXTRA_ALLOW is inert, not broken, and looks
+  # exactly like a webhook that is simply down — a silent channel is a
+  # `warn` here, not a discovery the day an escalation needed it. No `-f`:
+  # any completed HTTP response (even a 404/405 from the receiver) proves
+  # the fence let the connection through, which is all this checks — never
+  # POSTs, so no receiver ever sees a synthetic notification from this run.
+  if [[ -n "$notify_webhook_url_resolved" ]]; then
+    if curl -sS --max-time 10 -o /dev/null "$notify_webhook_url_resolved" 2>/dev/null; then
+      ok "the notify webhook host answers through the egress fence"
+    else
+      warn "the notify webhook ($notify_webhook_url_resolved) does not answer through the egress fence — add its host to this node's EGRESS_EXTRA_ALLOW (.env), or notify_post will silently fail every time"
+    fi
   fi
 fi
 
