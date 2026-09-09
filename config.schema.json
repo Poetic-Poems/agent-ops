@@ -1092,6 +1092,46 @@
         }
       }
     },
+    "pager_idle_cycles": {
+      "description": "How many of an active node's own most recent cycles lib/pager-invariants.sh's `idle-with-demand` invariant (agent-ops#1281) must find all ended `node-state` `idle-with-demand` (excluding `back-pressure`, a deliberate throttle) before firing — the fleet-wide starvation/wedging class of agent-ops#1128/#1163/#1165. Fewer than this many `node-state` events for a node decides nothing.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 6,
+      "x-docs": {
+        "readme": "How many of a node's own most recent cycles must all have ended idle with real demand waiting (excluding a deliberate back-pressure throttle) before the dashboard's `idle-with-demand` pager invariant fires.",
+        "spec": "Requirement 51's own `idle-with-demand` threshold (agent-ops#1281): the count of an active node's own trailing `node-state` events that must all read `idle-with-demand` (cause other than `back-pressure`) before this invariant fires.",
+        "value": {
+          "spec": "6 cycles"
+        }
+      }
+    },
+    "pager_repair_rate_percent": {
+      "description": "The percentage of a trailing-24h window's `selection` events lib/pager-invariants.sh's `work-order-repaired-rate` invariant (agent-ops#1281) tolerates also carrying a `work-order-repaired` event (agent-ops#821's own signature: a work order composed from trimmed input) before firing. A window with zero selections decides nothing.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 20,
+      "x-docs": {
+        "readme": "Percent. How much of a trailing 24h's selections may need a work-order-repaired repair before the dashboard's `work-order-repaired-rate` pager invariant fires.",
+        "spec": "Requirement 51's own `work-order-repaired-rate` threshold (agent-ops#1281): the percentage, of a trailing 24h window's `selection` events, also carrying a `work-order-repaired` event, above which this invariant fires.",
+        "value": {
+          "spec": "20%"
+        }
+      }
+    },
+    "pager_escalation_burst": {
+      "description": "How many `escalated` events lib/pager-invariants.sh's `escalation-burst` invariant (agent-ops#1281) tolerates fleet-wide in a trailing 24h window before firing — the mechanical-burst signature of agent-ops#933. Independently, the same re-flag reason paging the same item twice always fires this invariant, regardless of this threshold.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 10,
+      "x-docs": {
+        "readme": "How many escalations may be filed fleet-wide in a trailing 24h before the dashboard's `escalation-burst` pager invariant fires — independently of a re-flagged item's own repeat, which always fires it.",
+        "spec": "Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice fires it regardless of this count.",
+        "value": {
+          "spec": "10 escalations"
+        }
+      }
+    },
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",

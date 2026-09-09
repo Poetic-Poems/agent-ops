@@ -852,6 +852,9 @@ and the schema must carry every one of them.
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
 | `pager_stale_file_after_minutes` | 180 min | `node-stale`'s own per-key override of requirement 51's `pager_min_firing_minutes` hysteresis (agent-ops#1282): the fact this invariant evaluates is already slow-forming (a publication age past `2 × node_stale_after_minutes`), so filing waits far longer than the framework's own blip-sized default. |
 | `pager_dashboard_fetch_seconds` | 30 s | `dashboard-unreadable`'s own tolerance (agent-ops#1282) for how long a viewer's fetch of a node's `data.js` (agent-ops#1283's own viewer-vantage probe) may take before this invariant fires; a failed parse fires regardless of the elapsed time. |
+| `pager_idle_cycles` | 6 cycles | Requirement 51's own `idle-with-demand` threshold (agent-ops#1281): the count of an active node's own trailing `node-state` events that must all read `idle-with-demand` (cause other than `back-pressure`) before this invariant fires. |
+| `pager_repair_rate_percent` | 20% | Requirement 51's own `work-order-repaired-rate` threshold (agent-ops#1281): the percentage, of a trailing 24h window's `selection` events, also carrying a `work-order-repaired` event, above which this invariant fires. |
+| `pager_escalation_burst` | 10 escalations | Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice fires it regardless of this count. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -16437,6 +16440,127 @@ with the Reviewer's own.
     `updater_stuck_after_minutes` and a fixed, un-schema-backed 3
     respectively, needing no key of their own.
 
+    Issue #1281 (part 3b of #1126's own findings) adds seven more — the
+    **selection and ledger** class: the fleet-wide starvation/wedging class
+    of #1128/#1136/#1163/#1165, this time read from the Co-Ordinator's own
+    selection/fit machinery and from the block/escalation ledger rather than
+    a peer's liveness signals. `pager_evaluate` gains three more trailing,
+    optional parameters — `IDLE_CYCLES`, `REPAIR_RATE_PERCENT`,
+    `ESCALATION_BURST` — set as `PAGER_EVAL_IDLE_CYCLES` and two siblings, the
+    identical plain-variable exception `PAGER_EVAL_REPO`/`PAGER_EVAL_CYCLE_
+    INTERVAL_MINUTES` already established. `pager_file` additionally sets
+    `PAGER_REMEDY_LOG_FILE`, `PAGER_REMEDY_UNION_LOG_FILE`, `PAGER_REMEDY_
+    NODE` and `PAGER_REMEDY_CYCLE` before calling a pipeline-act REMEDY_ARG —
+    the identical documented exception as `PAGER_REMEDY_REPO`, needed here
+    because `blocked-label-orphaned`, `claim-unreconciled` and
+    `digest-truncated`'s own remedies re-derive their candidate set from the
+    union log or log a new union-log event of their own, neither of which
+    `REMEDY_ARG KEY EVIDENCE`'s own two-argument contract carries.
+
+    - **`idle-with-demand`** (owner-only). Fires when an *active* node's
+      last `pager_idle_cycles` (default 6) `node-state` events (D21,
+      `lib/node-time-state.sh`) all read state `idle-with-demand` with a
+      cause other than `back-pressure` — a deliberate throttle, not a
+      symptom, and the one exclusion the issue's own list (usage-limit,
+      disk/memory, unauthorized, a fleet/kill-switch's own `down`,
+      back-pressure) names that the D21 state vocabulary does not already
+      separate into a different state on its own: every other named
+      exclusion already logs `externally-blocked` or `down` instead of
+      `idle-with-demand`. Fewer than `pager_idle_cycles` events for a node
+      decides nothing — "last N cycles" cannot be confirmed from an
+      incomplete window. Caught: the 2026-09-04 fleet-wide stand-down
+      (#1163/#1165) and the 2026-08-31 starvation (#1128). Evidence embeds
+      the node's own most recent `none-selected.reason` and
+      `coordinator-input-fitted` detail — the two facts a diagnosis starts
+      from, per the issue's own acceptance — though neither is load-bearing
+      for the firing decision itself.
+    - **`fit-ladder-pinned`** (owner-only). Fires when a node's
+      `coordinator-input-fitted` events (`lib/coordinator-input.sh`,
+      `agent-cycle.sh`) in the trailing 24h all land at the ladder's own top
+      rung — 8 prose tiers plus 7 entry caps, 15, a fixed constant of the
+      ladder rather than a field either array carries — with
+      `entries_dropped > 0`. A node with no fitted cycle at all in the
+      window contributes nothing. Caught: #1128, #1136 (a lower rung of the
+      ladder as it stood then dropping 48–68 entries in 149 of 150 fitted
+      cycles on `poetic-1` since 2026-09-04).
+    - **`work-order-repaired-rate`** (owner-only). Fires when the fleet-wide
+      count of `work-order-repaired` events (`agent-cycle.sh`, #821 — a work
+      order composed from trimmed input) in the trailing 24h exceeds
+      `pager_repair_rate_percent` (default 20) percent of that same
+      window's `selection` count. A window with zero selections decides
+      nothing. **Retire this invariant once #769's part (b) lands and #1156
+      removes the gate this rate reads** — the issue's own instruction,
+      recorded here since a requirement, unlike an issue comment, is what
+      this repository's own conventions treat as the durable copy.
+    - **`blocked-label-orphaned`** (pipeline-act). Fires when a live
+      `blocked:needs-refinement`/`blocked` label carries no open block
+      behind it — either `lib/refinement.sh`'s own `own-label-action`
+      history shows an `add` with no later `remove`
+      (`refinement_blocked_label_stale`, pure over the union log), or a live
+      GitHub read (scoped to every repo this pipeline's own history has ever
+      applied the `needs-refinement` block kind or a `blocked`/`blocked:
+      <reason>` label to, never an arbitrary configured-repo list) finds one
+      history alone cannot prove ours (`refinement_blocked_label_orphaned`,
+      requirement 38b, #816). Caught: #816 — twelve issues unselectable for
+      five days after being unblocked. The remedy calls the identical
+      `refinement_label_remove`/`label_own_action_fields` requirement 38b's
+      own release path already uses, never a reimplementation, logging
+      `own-label-action` on success; a removal that succeeds clears on this
+      invariant's own next evaluation (the label is gone), so only a
+      removal that keeps failing stays filed — "the invariant files only if
+      the removal fails," in a framework that always records a pipeline-act
+      attempt (this requirement's own remedy-class table).
+    - **`claim-unreconciled`** (pipeline-act). Fires when an
+      `enabler-examined` event whose `outcome` is the Enabler's own escalate
+      verdict (`lib/enabler.sh`: `outcome="$verdict"`, never reassigned on
+      the path that actually files) carries no `escalated`/`tech-debt-filed`
+      event for the same repo, item and cycle. Caught: #815 — #640 sat
+      blocked five days on a claim an adjudication pass had cancelled; this
+      invariant catches the same signature recurring by a different route (a
+      crash between the claim and its own reconciliation, or an engagement
+      that never reached it). The remedy re-checks live — never parsing
+      EVIDENCE's own prose, on `pager_remedy_page_outlived_item`'s own
+      terms — and, for any claim still unreconciled, posts one correction
+      comment on the item's own thread, mirroring (never calling —
+      `escalation_thread_reconcile` reads cycle-scoped globals this
+      framework's process does not have, this requirement's own header)
+      the #815 correction-comment pattern.
+    - **`escalation-burst`** (owner-only). Fires when the fleet-wide count
+      of `escalated` events in the trailing 24h exceeds
+      `pager_escalation_burst` (default 10), or the same re-flag reason —
+      the triggering `attempt-failed`'s own `detail`/`unblock_condition`,
+      fingerprinted with `escalation_autonomy_decide_reason_key`
+      (`lib/escalation-autonomy.sh`, requirement 36d's own per-reason bound,
+      reused rather than duplicated) — pages the same item twice, regardless
+      of the count threshold. Caught: 2026-08-28 (#933–#938; 55% mechanical,
+      from three unfixed bugs). Evidence carries the reason histogram.
+    - **`digest-truncated`** (pipeline-act). Fires when a repo's most recent
+      `source-state-digest` event (`lib/candidate-gather.sh`, logged
+      alongside `gather_source_state`'s own already-fetched counts — no
+      extra `gh` call on that cheap per-cycle path) still claiming `ok:
+      true` undercounts a live total this invariant fetches itself via
+      GitHub's search API, once per evaluation window rather than once per
+      node per cycle. Caught: #1165 — requirement 34i read absence-from-
+      digest as "closed" and false-cleared every block older than the
+      newest hundred; #1165 already fixed the root cause
+      (`api_json_paged`'s own full pagination in `scripts/gather-source-
+      state.sh`), so this invariant is a regression watchdog for the same
+      signature recurring. The remedy logs a `digest-truncation-veto` event
+      for the affected repo(s) (parsed from EVIDENCE's own repo tokens);
+      `lib/candidate-gather.sh` checks for one still active (within a
+      trailing 24h) immediately after its own `gather_source_state` call
+      and forces that cycle's digest `ok: false` when it finds one, so
+      `work_gone_clearances`'s own `ok == true` gate — "unknown decides
+      nothing" — refuses to act on that repo's absence for the vetoed
+      cycle, exactly the issue's own remedy text ("refuse to act on absence
+      for that cycle, then file").
+
+    Configuration for the seven: `pager_idle_cycles` (default 6),
+    `pager_repair_rate_percent` (default 20) and `pager_escalation_burst`
+    (default 10) are new; `blocked-label-orphaned`, `claim-unreconciled` and
+    `digest-truncated` read no new configuration of their own, only the
+    union log and (for the latter two) a live GitHub read.
+
     `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
     evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
     page-rendering section documents the `pager-firing` banner and node-card
@@ -24127,10 +24251,53 @@ oblige anyone to edit a test.
     `PAGER_EVAL_*` variable). `test/pager.test.sh` additionally proves
     `pager_register`'s new, optional fifth argument records against the key
     (empty when omitted) and that a key registered with an override ignores
-    `pager_evaluate`'s own shared `MIN_FIRING_MINUTES` entirely. `scripts/
-    render-config-table.sh --check` passes with `pager_stale_file_after_
-    minutes`/`pager_dashboard_fetch_seconds` added. `scripts/lint-shell.sh`
-    is clean on every file this requirement touches.
+    `pager_evaluate`'s own shared `MIN_FIRING_MINUTES` entirely.
+
+    The same file also drives agent-ops#1281's seven selection/ledger
+    invariants against fixture union logs (`lib/refinement.sh`/
+    `lib/cycle-state.sh`/`lib/label-marker.sh`/`lib/pipeline-marker.sh`/
+    `lib/escalation-autonomy.sh` sourced alongside, for the three that call
+    their own real detection/remedy functions rather than a
+    reimplementation) and a shared, extended `gh` stub (`issue edit`, `issue
+    comment` and `api` added to the existing `issue list`/`issue create`/
+    `issue close`/`pr view`/`issue view` cases): `idle-with-demand` fires on
+    an active node whose last `pager_idle_cycles` `node-state` events all
+    read `idle-with-demand`, excludes a node whose own streak is
+    `back-pressure` throughout, excludes a node whose streak is broken by
+    one `producing` cycle, and never fires with `pager_idle_cycles`
+    unconfigured, with its evidence carrying the node's own `none-selected`
+    reason and `coordinator-input-fitted` detail; `fit-ladder-pinned` fires
+    on a node whose every `coordinator-input-fitted` event in the trailing
+    24h sits at the ladder's own top rung (15) with entries dropped, not on
+    a node one rung short of the top, and not on a fitted event outside the
+    trailing 24h; `work-order-repaired-rate` fires when the fleet-wide ratio
+    of `work-order-repaired` to `selection` events in the trailing 24h
+    exceeds `pager_repair_rate_percent`, not below it, and never on a window
+    with zero selections; `blocked-label-orphaned` fires on an
+    `own-label-action add` with no later `remove` whose item has since
+    cleared, its remedy calls a stubbed `issue edit --remove-label` and
+    reports a failing removal rather than dropping it silently, and it does
+    not fire against a union log carrying no blocked-label history at all;
+    `claim-unreconciled` fires on an `enabler-examined` event reading
+    `outcome: "escalate"` with no matching `escalated` in the same cycle,
+    does not fire once a matching `escalated` event is added, does not fire
+    on an `escalation-failed` outcome (which never claimed to escalate), and
+    its remedy posts a stubbed `issue comment` naming what could not be
+    confirmed; `escalation-burst` fires once the fleet-wide `escalated`
+    count in the trailing 24h exceeds `pager_escalation_burst`, and,
+    independently, when the same `attempt-failed` `detail`/
+    `unblock_condition` fingerprint pages the same item twice regardless of
+    the count threshold, with evidence naming the reflagged item; and
+    `digest-truncated` fires when a `source-state-digest` event's own counts
+    fall short of a stubbed `gh api search/issues` total, not when the two
+    agree, its remedy logs a `digest-truncation-veto` event naming the
+    affected repo (parsed from the evidence's own repo token, never
+    re-deriving the live counts), and it never fires against a union log
+    carrying no `source-state-digest` event at all. `scripts/render-config-
+    table.sh --check` passes with `pager_stale_file_after_minutes`/
+    `pager_dashboard_fetch_seconds`/`pager_idle_cycles`/`pager_repair_rate_
+    percent`/`pager_escalation_burst` added. `scripts/lint-shell.sh` is
+    clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

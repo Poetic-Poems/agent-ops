@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# test/pager-invariants.test.sh — the two invariants lib/pager-invariants.sh
-# ships with (agent-ops#1278): `verdict-unanimous` against fixture heartbeat
-# sets, `page-outlived-item` against a stubbed `gh`.
+# test/pager-invariants.test.sh — the invariants lib/pager-invariants.sh
+# ships with: agent-ops#1278's `verdict-unanimous` (fixture heartbeat sets)
+# and `page-outlived-item` (a stubbed `gh`); agent-ops#1282's five
+# peer-vantage invariants; agent-ops#1281's seven selection/ledger
+# invariants (idle-with-demand, fit-ladder-pinned, work-order-repaired-rate,
+# blocked-label-orphaned, claim-unreconciled, escalation-burst,
+# digest-truncated).
 #
 # lib/pager.sh's own registry/state-machine/remedy-class behaviour is
 # test/pager.test.sh's job; this file calls each invariant's EVAL_FN and
@@ -25,6 +29,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/pager.sh"
 # shellcheck source=lib/pager-invariants.sh
 . "$SCRIPT_DIR/lib/pager-invariants.sh"
+# agent-ops#1281's own three invariants need these for the real detection
+# functions (requirement 38b's release path, the #815 correction-comment
+# convention, requirement 36d's reason-key fingerprint) rather than a
+# reimplementation.
+# shellcheck source=lib/cycle-state.sh
+. "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/refinement.sh
+. "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/label-marker.sh
+. "$SCRIPT_DIR/lib/label-marker.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/escalation-autonomy.sh
+. "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 
 failures=0
 assert_eq() {
@@ -134,8 +152,20 @@ stub_gh_label_of() {  # stub_gh_label_of ARGS... -> the value after --label
   done
   return 0
 }
+# agent-ops#1281's own three stub knobs: STUB_GH_EDIT_OK (issue edit's own
+# exit status, for blocked-label-orphaned's remedy), STUB_GH_API_MAP (path
+# -> value, for digest-truncated's live search/issues counts), and
+# STUB_GH_COMMENT_OK (issue comment's own exit status, for
+# claim-unreconciled's remedy).
+STUB_GH_EDIT_OK=1
+declare -A STUB_GH_API_MAP=()
+STUB_GH_COMMENT_OK=1
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS_FILE"
+  if [[ "$1" == "api" ]]; then
+    printf '%s' "${STUB_GH_API_MAP[$2]:-}"
+    return 0
+  fi
   case "$1 $2" in
     "issue list")
       local lbl; lbl="$(stub_gh_label_of "$@")"
@@ -147,6 +177,8 @@ gh() {
       return 0 ;;
     "issue create") printf 'created: %s\n' "$STUB_GH_CREATE_URL"; return 0 ;;
     "issue close") return 0 ;;
+    "issue comment") if (( STUB_GH_COMMENT_OK )); then return 0; else return 1; fi ;;
+    "issue edit") if (( STUB_GH_EDIT_OK )); then return 0; else return 1; fi ;;
     "pr view") gh_state_lookup "$STUB_GH_PR_STATE_MAP" "$3" ;;
     "issue view") gh_state_lookup "$STUB_GH_ISSUE_STATE_MAP" "$3" ;;
     *) return 1 ;;
@@ -412,6 +444,226 @@ PAGER_EVAL_DASHBOARD_FETCH_SECONDS=""
 assert_eq "no configured threshold: never fires" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_dashboard_unreadable "$df_nodes" /dev/null)")"
 PAGER_EVAL_DASHBOARD_FETCH_SECONDS=30
+
+# --- idle-with-demand (agent-ops#1281) -------------------------------------
+
+ns_ev() {  # ns_ev TS NODE CYCLE STATE CAUSE
+  jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" --arg s "$4" --arg cause "$5" \
+    '{ts: $ts, node: $n, cycle: $c, event: "node-state", state: $s, cause: $cause}'
+}
+idle_log="$WORKDIR/idle.jsonl"
+write_log "$idle_log" \
+  "$(ns_ev "$(rel -900)" n1 c1 idle-with-demand awaiting-tick)" \
+  "$(ns_ev "$(rel -600)" n1 c2 idle-with-demand peer-claimed)" \
+  "$(ns_ev "$(rel -300)" n1 c3 idle-with-demand coordinator-declined)" \
+  "$(cycle_ev "$(rel -650)" n1 c2 none-selected '{"reason":"nothing eligible clears the model'"'"'s own bar","eligible_total":4}')" \
+  "$(cycle_ev "$(rel -910)" n1 c1 coordinator-input-fitted '{"detail":"trimmed to rung 3","rung":3}')" \
+  "$(ns_ev "$(rel -900)" n2 c1 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -600)" n2 c2 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -300)" n2 c3 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -900)" n3 c1 idle-with-demand awaiting-tick)" \
+  "$(ns_ev "$(rel -600)" n3 c2 producing "")"
+idle_nodes="$(fleet3 "$(node_row n1 false "" "" "")" "$(node_row n2 false "" "" "")" \
+  "$(node_row n3 false "" "" "")")"
+PAGER_EVAL_IDLE_CYCLES=3
+verdict="$(pager_eval_idle_with_demand "$idle_nodes" "$idle_log")"
+assert_eq "last 3 cycles all idle-with-demand (excluding back-pressure): fires" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names exactly n1" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+assert_eq "  ... n2's own back-pressure cycles are excluded" "0" \
+  "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... n3's one producing cycle breaks the streak" "0" \
+  "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... evidence carries the none-selected reason" "1" \
+  "$(grep -c 'nothing eligible clears' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... evidence carries the fit report" "1" \
+  "$(grep -c 'trimmed to rung 3' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+PAGER_EVAL_IDLE_CYCLES=""
+assert_eq "no configured cycle count: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_idle_with_demand "$idle_nodes" "$idle_log")")"
+PAGER_EVAL_IDLE_CYCLES=3
+
+# --- fit-ladder-pinned (agent-ops#1281) -------------------------------------
+
+fit_ev() {  # fit_ev TS NODE CYCLE RUNG DROPPED
+  jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" --argjson rung "$4" --argjson dropped "$5" \
+    '{ts: $ts, node: $n, cycle: $c, event: "coordinator-input-fitted", rung: $rung, entries_dropped: $dropped}'
+}
+fit_log="$WORKDIR/fit.jsonl"
+write_log "$fit_log" \
+  "$(fit_ev "$(rel -7200)" n1 c1 15 12)" \
+  "$(fit_ev "$(rel -3600)" n1 c2 15 30)" \
+  "$(fit_ev "$(rel -900)" n2 c1 15 8)" \
+  "$(fit_ev "$(rel -300)" n2 c2 6 0)"
+verdict="$(pager_eval_fit_ladder_pinned "[]" "$fit_log")"
+assert_eq "every fitted cycle at the top rung with drops: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names exactly n1" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+assert_eq "  ... n2 (one cycle back off the top rung) is excluded" "0" \
+  "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
+
+fit_log_none="$WORKDIR/fit-none.jsonl"
+write_log "$fit_log_none" "$(fit_ev "$(rel -100000)" n1 c1 15 12)"
+assert_eq "the only fitted cycle is outside the trailing 24h: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_fit_ladder_pinned "[]" "$fit_log_none")")"
+
+# --- work-order-repaired-rate (agent-ops#1281) ------------------------------
+
+sel_ev() { jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" '{ts: $ts, node: $n, cycle: $c, event: "selection"}'; }
+repaired_ev() { jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" '{ts: $ts, node: $n, cycle: $c, event: "work-order-repaired"}'; }
+rate_log="$WORKDIR/rate.jsonl"
+write_log "$rate_log" \
+  "$(sel_ev "$(rel -3600)" n1 c1)" "$(repaired_ev "$(rel -3550)" n1 c1)" \
+  "$(sel_ev "$(rel -3000)" n1 c2)" \
+  "$(sel_ev "$(rel -2000)" n1 c3)" \
+  "$(sel_ev "$(rel -1000)" n1 c4)" "$(repaired_ev "$(rel -950)" n1 c4)"
+PAGER_EVAL_REPAIR_RATE_PERCENT=20
+verdict="$(pager_eval_work_order_repaired_rate "[]" "$rate_log")"
+assert_eq "2 of 4 selections repaired (50%), above the 20% threshold: fires" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the rate" "1" "$(grep -c '50%' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+PAGER_EVAL_REPAIR_RATE_PERCENT=60
+assert_eq "the same rate under a 60% threshold: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_work_order_repaired_rate "[]" "$rate_log")")"
+
+rate_log_empty="$WORKDIR/rate-empty.jsonl"
+: > "$rate_log_empty"
+PAGER_EVAL_REPAIR_RATE_PERCENT=20
+assert_eq "no selections in the window: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_work_order_repaired_rate "[]" "$rate_log_empty")")"
+
+# --- blocked-label-orphaned (agent-ops#1281) --------------------------------
+
+orph_log="$WORKDIR/orphaned.jsonl"
+write_log "$orph_log" \
+  "$(cycle_ev 2026-09-01T00:00:00Z n1 c1 attempt-failed '{"repo":"o/r","item":"5","kind":"needs-refinement","blocked_label":"blocked"}')" \
+  "$(cycle_ev 2026-09-01T00:00:01Z n1 c1 own-label-action '{"repo":"o/r","item":"5","label":"blocked","action":"add"}')" \
+  "$(cycle_ev 2026-09-02T00:00:00Z n1 c2 unblocked '{"repo":"o/r","item":"5"}')"
+STUB_GH_LIST_BY_LABEL=()
+STUB_GH_LIST_OPEN='[]'
+verdict="$(pager_eval_blocked_label_orphaned "[]" "$orph_log")"
+assert_eq "an own-label-action add with no later remove, and the block cleared: fires" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the issue" "1" "$(grep -c 'o/r#5' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+: > "$GH_CALLS_FILE"
+PAGER_REMEDY_UNION_LOG_FILE="$orph_log"
+PAGER_REMEDY_LOG_FILE="$WORKDIR/orph-remedy.jsonl"; : > "$PAGER_REMEDY_LOG_FILE"
+PAGER_REMEDY_NODE="n1"; PAGER_REMEDY_CYCLE="c9"
+STUB_GH_EDIT_OK=1
+outcome="$(pager_remedy_blocked_label_orphaned blocked-label-orphaned "irrelevant, re-derived live")"
+assert_eq "the remedy removes the orphaned label" "removed 1 orphaned label(s); 0 removal(s) failed" "$outcome"
+assert_eq "  ... via issue edit --remove-label" "1" "$(grep -c '^issue edit' "$GH_CALLS_FILE")"
+
+STUB_GH_EDIT_OK=0
+outcome="$(pager_remedy_blocked_label_orphaned blocked-label-orphaned "irrelevant, re-derived live")"
+assert_eq "a failing removal is reported, not silently dropped" "removed 0 orphaned label(s); 1 removal(s) failed" "$outcome"
+STUB_GH_EDIT_OK=1
+
+orph_log_clear="$WORKDIR/orphaned-clear.jsonl"
+write_log "$orph_log_clear" \
+  "$(cycle_ev 2026-09-01T00:00:00Z n1 c1 warning '{"detail":"unrelated"}')"
+assert_eq "no blocked-label history at all: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_blocked_label_orphaned "[]" "$orph_log_clear")")"
+
+# --- claim-unreconciled (agent-ops#1281) ------------------------------------
+
+claim_log="$WORKDIR/claim.jsonl"
+write_log "$claim_log" \
+  "$(cycle_ev "$(rel -100)" n1 c1 enabler-examined '{"repo":"o/r","item":"9","outcome":"escalate"}')"
+verdict="$(pager_eval_claim_unreconciled "[]" "$claim_log")"
+assert_eq "an escalate verdict with no matching escalated event in the same cycle: fires" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the item and cycle" "1" \
+  "$(grep -c 'o/r#9 (cycle c1)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+: > "$GH_CALLS_FILE"
+PAGER_REMEDY_UNION_LOG_FILE="$claim_log"
+PAGER_REMEDY_NODE="n1"; PAGER_REMEDY_CYCLE="c9"
+STUB_GH_COMMENT_OK=1
+outcome="$(pager_remedy_claim_unreconciled claim-unreconciled "irrelevant, re-derived live")"
+assert_eq "the remedy posts one correction comment" "posted 1 correction comment(s)" "$outcome"
+assert_eq "  ... on the claimed item's own thread" "1" "$(grep -c '^issue comment 9 ' "$GH_CALLS_FILE")"
+
+claim_log_reconciled="$WORKDIR/claim-reconciled.jsonl"
+write_log "$claim_log_reconciled" \
+  "$(cycle_ev "$(rel -100)" n1 c1 escalated '{"repo":"o/r","item":"9","issue_number":11}')" \
+  "$(cycle_ev "$(rel -99)" n1 c1 enabler-examined '{"repo":"o/r","item":"9","outcome":"escalate"}')"
+assert_eq "a matching escalated event in the same cycle: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_claim_unreconciled "[]" "$claim_log_reconciled")")"
+
+claim_log_failed="$WORKDIR/claim-failed.jsonl"
+write_log "$claim_log_failed" \
+  "$(cycle_ev "$(rel -100)" n1 c1 enabler-examined '{"repo":"o/r","item":"9","outcome":"escalation-failed"}')"
+assert_eq "an escalation-failed outcome (never claimed escalate): does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_claim_unreconciled "[]" "$claim_log_failed")")"
+
+# --- escalation-burst (agent-ops#1281) --------------------------------------
+
+esc_ev() { jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" --arg r "$4" --arg i "$5" \
+  '{ts: $ts, node: $n, cycle: $c, event: "escalated", repo: $r, item: $i}'; }
+burst_log="$WORKDIR/burst.jsonl"
+write_log "$burst_log" \
+  "$(esc_ev "$(rel -300)" n1 c1 o/r 1)" "$(esc_ev "$(rel -200)" n1 c2 o/r 2)" "$(esc_ev "$(rel -100)" n1 c3 o/r 3)"
+PAGER_EVAL_ESCALATION_BURST=2
+verdict="$(pager_eval_escalation_burst "[]" "$burst_log")"
+assert_eq "3 escalations in 24h, above a burst threshold of 2: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+
+PAGER_EVAL_ESCALATION_BURST=10
+assert_eq "the same 3 escalations under a burst threshold of 10: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_escalation_burst "[]" "$burst_log")")"
+
+reflag_log="$WORKDIR/reflag.jsonl"
+write_log "$reflag_log" \
+  "$(cycle_ev "$(rel -500)" n1 c1 attempt-failed '{"repo":"o/r","item":"9","detail":"cannot tell what done means","unblock_condition":"a human clarifies scope"}')" \
+  "$(esc_ev "$(rel -400)" n1 c1 o/r 9)" \
+  "$(cycle_ev "$(rel -300)" n1 c2 attempt-failed '{"repo":"o/r","item":"9","detail":"cannot tell what done means","unblock_condition":"a human clarifies scope"}')" \
+  "$(esc_ev "$(rel -200)" n1 c2 o/r 9)"
+PAGER_EVAL_ESCALATION_BURST=10
+verdict="$(pager_eval_escalation_burst "[]" "$reflag_log")"
+assert_eq "the same re-flag reason paged the same item twice: fires despite a high burst threshold" \
+  "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the reflagged item" "1" "$(grep -c 'o/r#9 reflagged 2x' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+PAGER_EVAL_ESCALATION_BURST=""
+assert_eq "no configured burst threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_escalation_burst "[]" "$burst_log")")"
+
+# --- digest-truncated (agent-ops#1281) --------------------------------------
+
+digest_ev() { jq -nc --arg ts "$1" --arg r "$2" --argjson ok "$3" --argjson ic "$4" --argjson pc "$5" \
+  '{ts: $ts, node: "n1", cycle: "c1", event: "source-state-digest", repo: $r, ok: $ok, issues_count: $ic, open_prs_count: $pc}'; }
+digest_log="$WORKDIR/digest.jsonl"
+write_log "$digest_log" "$(digest_ev "$(rel -300)" o/r true 50 2)"
+STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open"]="150"
+                 ["search/issues?q=repo:o/r+type:pr+state:open"]="2")
+verdict="$(pager_eval_digest_truncated "[]" "$digest_log")"
+assert_eq "the digest undercounts a live paginated total: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the repo and both counts" "1" \
+  "$(grep -c 'o/r (digest issues=50/live=150, digest open_prs=2/live=2)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+: > "$GH_CALLS_FILE"
+: > "$WORKDIR/pager-remedy.jsonl"
+PAGER_REMEDY_LOG_FILE="$WORKDIR/pager-remedy.jsonl"
+PAGER_REMEDY_NODE="n1"
+PAGER_REMEDY_CYCLE="c9"
+outcome="$(pager_remedy_digest_truncated digest-truncated "$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "the remedy vetoes the affected repo" "vetoed this cycle's work-gone clearances for 1 repo(s) pending a healthy digest" "$outcome"
+assert_eq "  ... logging a digest-truncation-veto event" "1" \
+  "$(grep -c '"event":"digest-truncation-veto"' "$WORKDIR/pager-remedy.jsonl")"
+assert_eq "  ... naming the affected repo" "1" \
+  "$(grep -c '"repo":"o/r"' "$WORKDIR/pager-remedy.jsonl")"
+
+STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open"]="50"
+                 ["search/issues?q=repo:o/r+type:pr+state:open"]="2")
+assert_eq "a digest that matches the live count: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_digest_truncated "[]" "$digest_log")")"
+
+digest_log_empty="$WORKDIR/digest-empty.jsonl"
+: > "$digest_log_empty"
+assert_eq "no source-state-digest events at all: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_digest_truncated "[]" "$digest_log_empty")")"
 
 printf '\n'
 if (( failures )); then

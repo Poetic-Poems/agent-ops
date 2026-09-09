@@ -86,6 +86,104 @@
 # fleet-replicated too (scripts/state-sync.sh does not exclude it), so its
 # own union travels the same way, via PAGER_EVAL_REVIEW_UNION_LOG_FILE.
 #
+# Issue #1281 (part 3b of #1126's findings) adds seven more — the selection
+# and ledger invariants: the class that wedged or starved the fleet in
+# August and September, this time read from the Co-Ordinator's own
+# selection/fit machinery (idle-with-demand, fit-ladder-pinned,
+# work-order-repaired-rate) and from the block/escalation ledger
+# (blocked-label-orphaned, claim-unreconciled, escalation-burst,
+# digest-truncated):
+#
+#   idle-with-demand        an active node whose last `pager_idle_cycles`
+#                           `node-state` events (lib/node-time-state.sh,
+#                           D21) all read `idle-with-demand` with a cause
+#                           other than `back-pressure` (a deliberate
+#                           throttle, not a symptom) — the D21 state
+#                           vocabulary already excludes every externally-
+#                           blocking cause (usage-limit, disk/memory,
+#                           unauthorized, a fleet/kill-switch's own `down`)
+#                           on its own terms, so no separate stand-down
+#                           reclassification is needed here. owner-only:
+#                           the evidence embeds the node's own most recent
+#                           `none-selected.reason` and `coordinator-input-
+#                           fitted` detail, the two facts a diagnosis
+#                           starts from, but there is no fix a pipeline
+#                           could perform on the owner's behalf.
+#   fit-ladder-pinned       `coordinator-input-fitted` pinned at the
+#                           ladder's own top rung (lib/coordinator-
+#                           input.sh's `COORDINATOR_INPUT_TIERS` +
+#                           `COORDINATOR_INPUT_ENTRY_CAPS`, 8 + 7 = 15)
+#                           with `entries_dropped > 0` in every fitted
+#                           cycle a node logged in the trailing 24h.
+#                           owner-only: raising `coordinator_prompt_max_
+#                           bytes` or shrinking the backlog is an owner's
+#                           call, not a pipeline fix.
+#   work-order-repaired-rate  more than `pager_repair_rate_percent` of a
+#                           day's `selection` events also logged a
+#                           `work-order-repaired` (agent-ops#821's own
+#                           signature: a work order composed from trimmed
+#                           input). owner-only; retire once agent-ops#769's
+#                           part (b) lands and agent-ops#1156 removes the
+#                           gate this rate reads.
+#   blocked-label-orphaned  a live `blocked:needs-refinement`/`blocked`
+#                           label with no open block behind it — either
+#                           lib/refinement.sh's own `own-label-action`
+#                           history shows an `add` with no later `remove`
+#                           (`refinement_blocked_label_stale`, pure over
+#                           the union log), or a live GitHub read finds one
+#                           history cannot prove ours
+#                           (`refinement_blocked_label_orphaned`, requirement
+#                           38b, agent-ops#816). pipeline-act: the remedy
+#                           calls the identical `refinement_label_remove`/
+#                           `label_own_action_fields` requirement 38b's own
+#                           release path already uses — never a
+#                           reimplementation — so a removal that succeeds
+#                           clears on the invariant's own next evaluation,
+#                           and only a removal that keeps failing stays
+#                           filed.
+#   claim-unreconciled      an `enabler-examined` event whose `outcome` is
+#                           the Enabler's own escalate verdict
+#                           (`lib/enabler.sh`'s `outcome="$verdict"`, never
+#                           reassigned on that path) with no `escalated` or
+#                           `tech-debt-filed` event for the same repo, item
+#                           and cycle — agent-ops#815's own signature (#640
+#                           sat blocked five days on a claim an
+#                           adjudication pass had cancelled) recurring by a
+#                           different route (a crash between the two, or an
+#                           engagement that never reached its own
+#                           reconciliation call). pipeline-act: the remedy
+#                           re-checks live and, if still unreconciled,
+#                           posts one correction comment naming what could
+#                           not be confirmed.
+#   escalation-burst        more than `pager_escalation_burst` `escalated`
+#                           events fleet-wide in the trailing 24h, or the
+#                           same re-flag reason (the triggering
+#                           `attempt-failed`'s own `detail`/
+#                           `unblock_condition`, fingerprinted with
+#                           `escalation_autonomy_decide_reason_key`,
+#                           lib/escalation-autonomy.sh — requirement 36d's
+#                           own per-reason bound, reused rather than
+#                           duplicated) paged the same item twice.
+#                           owner-only: the evidence carries the reason
+#                           histogram.
+#   digest-truncated        a repo's most recent `source-state-digest`
+#                           event (lib/candidate-gather.sh, logged
+#                           alongside `gather_source_state`'s own already-
+#                           fetched counts — no extra `gh` call on that
+#                           cheap per-cycle path) still claiming `ok: true`
+#                           while undercounting a live total this
+#                           invariant fetches itself, once per evaluation
+#                           rather than once per node per cycle — the
+#                           agent-ops#1165 signature (requirement 34i read
+#                           absence-from-digest as "closed" and
+#                           false-cleared every block past the newest
+#                           hundred) recurring. pipeline-act: the remedy
+#                           logs a `digest-truncation-veto` for the
+#                           affected repo, which `lib/candidate-gather.sh`
+#                           checks before trusting that repo's digest —
+#                           "refuse to act on absence for that cycle" — then
+#                           files, a durable record if it keeps recurring.
+#
 # Sourced after lib/pager.sh; registration itself is a separate call
 # (`pager_register_builtin_invariants`), not top-level code, so a test can
 # source this file and register only what it means to exercise.
@@ -475,6 +573,440 @@ pager_eval_dashboard_unreadable() {
   ' 2>/dev/null || printf '{"firing":false}'
 }
 
+# --- agent-ops#1281: selection and ledger -----------------------------------
+
+# pager_eval_idle_with_demand FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when an *active* node's (`.stale | not`) last PAGER_EVAL_IDLE_CYCLES
+# `node-state` events (lib/node-time-state.sh, D21) all read state
+# `idle-with-demand` with a cause other than `back-pressure` — a deliberate
+# throttle, not a symptom, and the one `idle-with-demand` cause the issue's
+# own exclusion list names that the D21 state vocabulary does not already
+# separate out on its own (every other named exclusion — usage-limit,
+# disk/memory, unauthorized, a fleet/kill-switch's own `down` — already logs
+# a *different* `node-state` state: `externally-blocked` or `down`). Fewer
+# than PAGER_EVAL_IDLE_CYCLES events for a node decides nothing — "last N
+# cycles" cannot be confirmed from an incomplete window, the same direction
+# every other "unknown decides nothing" guard in this codebase takes.
+pager_eval_idle_with_demand() {
+  local fleet_nodes_json="$1" union_log_file="$2"
+  local n="${PAGER_EVAL_IDLE_CYCLES:-}"
+  if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n <= 0 )); then printf '{"firing":false}'; return 0; fi
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n --argjson nodes "$fleet_nodes_json" --argjson n "$n" '
+    ($nodes | map(select(.stale | not)) | map(.node)) as $active
+    | [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    | ($all | map(select(.event == "node-state"))) as $ns_all
+    | ($all | map(select(.event == "none-selected"))) as $none_selected
+    | ($all | map(select(.event == "coordinator-input-fitted"))) as $fitted
+    | ( [ $active[] as $node
+          | ($ns_all | map(select(.node == $node)) | sort_by(.ts)) as $node_ns
+          | if ($node_ns | length) < $n then empty
+            else
+              ($node_ns[-$n:]) as $window
+              | if ($window | all(.state == "idle-with-demand" and ((.cause // "") != "back-pressure")))
+                then
+                  ($window | map(.cause // "unknown") | unique) as $causes
+                  | (($none_selected | map(select(.node == $node)) | sort_by(.ts) | last) // {}) as $ns
+                  | (($fitted | map(select(.node == $node)) | sort_by(.ts) | last) // {}) as $fit
+                  | {node: $node, causes: $causes,
+                     reason: ($ns.reason // ""), fit: ($fit.detail // "")}
+                else empty end
+            end
+        ] ) as $hits
+    | if ($hits | length) == 0 then {firing: false}
+      else {firing: true, nodes: ($hits | map(.node)),
+            evidence: ("last " + ($n | tostring) + " cycles ended idle-with-demand (excluding back-pressure) on "
+              + (($hits | map("\(.node) (causes: \(.causes | join(", "))"
+                  + (if .reason != "" then "; none-selected reason: \(.reason)" else "" end)
+                  + (if .fit != "" then "; fit report: \(.fit)" else "" end)
+                  + ")")) | join("; ")))}
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_eval_fit_ladder_pinned FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when a node's `coordinator-input-fitted` events (agent-cycle.sh,
+# lib/coordinator-input.sh) in the trailing 24h all land at the ladder's own
+# top rung (8 prose tiers + 7 entry caps = 15 — `COORDINATOR_INPUT_TIERS`/
+# `COORDINATOR_INPUT_ENTRY_CAPS`, a fixed constant of the ladder rather than a
+# field either array carries) with `entries_dropped > 0` — a node whose
+# eligible backlog has outgrown `coordinator_prompt_max_bytes` on every
+# fitted cycle for a full day, not merely a one-off spike. A node with no
+# fitted cycle at all in the window contributes nothing (never fires on
+# silence).
+pager_eval_fit_ladder_pinned() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local top_rung=15
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n --argjson top "$top_rung" --argjson now "$(date -u +%s)" '
+    86400 as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "coordinator-input-fitted")
+        | select((try (.ts | fromdateiso8601) catch null) != null)
+        | select(($now - (.ts | fromdateiso8601)) <= $window_s) ] as $recent
+    | ([$recent[] | .node] | unique) as $nodes
+    | ( [ $nodes[] as $n
+          | ($recent | map(select(.node == $n))) as $node_events
+          | select(($node_events | length) > 0)
+          | select($node_events | all(.rung == $top and ((.entries_dropped // 0) > 0)))
+          | {node: $n, count: ($node_events | length),
+             dropped_min: ($node_events | map(.entries_dropped) | min),
+             dropped_max: ($node_events | map(.entries_dropped) | max)}
+        ] ) as $hits
+    | if ($hits | length) == 0 then {firing: false}
+      else {firing: true, nodes: ($hits | map(.node)),
+            evidence: ("coordinator-input-fitted pinned at the ladder'"'"'s top rung (" + ($top | tostring)
+              + ") with entries dropped on every fitted cycle in the trailing 24h on "
+              + (($hits | map("\(.node) (\(.count) cycle(s), \(.dropped_min)-\(.dropped_max) entries dropped)"))
+                 | join("; ")))}
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_eval_work_order_repaired_rate FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when the fleet-wide count of `work-order-repaired` events
+# (agent-cycle.sh, agent-ops#821 — a work order composed from trimmed input)
+# in the trailing 24h exceeds PAGER_EVAL_REPAIR_RATE_PERCENT percent of that
+# same window's `selection` count. A window with zero selections decides
+# nothing (no rate is defined against an empty denominator).
+pager_eval_work_order_repaired_rate() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local pct="${PAGER_EVAL_REPAIR_RATE_PERCENT:-}"
+  [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf '{"firing":false}'; return 0; }
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n --argjson pct "$pct" --argjson now "$(date -u +%s)" '
+    86400 as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "selection" or .event == "work-order-repaired")
+        | select((try (.ts | fromdateiso8601) catch null) != null)
+        | select(($now - (.ts | fromdateiso8601)) <= $window_s) ] as $recent
+    | ([$recent[] | select(.event == "selection")] | length) as $selections
+    | ([$recent[] | select(.event == "work-order-repaired")] | length) as $repaired
+    | if $selections == 0 then {firing: false}
+      else
+        (($repaired * 100.0) / $selections) as $rate
+        | if $rate > $pct
+          then {firing: true,
+                evidence: ("\($repaired) work-order-repaired event(s) out of \($selections) selection(s) in the trailing 24h ("
+                  + (($rate * 10 | round) / 10 | tostring) + "%), above pager_repair_rate_percent (" + ($pct | tostring) + "%)")}
+          else {firing: false}
+          end
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# _pager_blocked_label_candidate_repos UNION_LOG_FILE -> one repo per line
+# The bounded candidate set for blocked-label-orphaned's own live reads: every
+# repo this pipeline's own history shows it has ever applied the
+# `needs-refinement` block kind, or a `blocked`/`blocked:<reason>` label, to
+# — never an arbitrary configured-repo list, so this invariant costs one `gh`
+# call per repo this history actually names, not per repo ever configured.
+_pager_blocked_label_candidate_repos() {
+  local union_log_file="$1"
+  [[ -f "$union_log_file" ]] || return 0
+  jq -r -R '
+    (fromjson? // empty)
+    | select((.event == "attempt-failed" and (.kind // "") == "needs-refinement")
+             or (.event == "own-label-action"
+                 and ((.label // "") == "blocked" or ((.label // "") | startswith("blocked:")))))
+    | (.repo // empty)
+  ' "$union_log_file" 2>/dev/null | sort -u
+}
+
+# _pager_blocked_label_candidates UNION_LOG_FILE -> "<repo>\t<item>\t<label>"
+# per line. Shared by the eval and remedy functions below, mirroring
+# `_pager_open_page_issues`'s own "one shared listing" discipline: both the
+# history-only half (`refinement_blocked_label_stale`, pure over the union
+# log) and the live-read half (`refinement_blocked_label_orphaned`,
+# requirement 38b, agent-ops#816) that candidate-gather.sh's own
+# reconciliation sweep already uses — never a reimplementation. Requires
+# lib/refinement.sh and lib/cycle-state.sh (`blocked_items`) to already be
+# sourced by the caller; a caller that has not (this file's own tests) simply
+# sees this print nothing, exactly the "no candidates" answer an untouched
+# repository would also give.
+_pager_blocked_label_candidates() {
+  local union_log_file="$1" repo open_blocked reason_label live_json gh
+  declare -F blocked_items >/dev/null 2>&1 || return 0
+  declare -F refinement_blocked_label_stale >/dev/null 2>&1 || return 0
+  declare -F refinement_blocked_label_orphaned >/dev/null 2>&1 || return 0
+  declare -F refinement_blocked_reason_label >/dev/null 2>&1 || return 0
+  gh="${PAGER_GH:-gh}"
+  open_blocked="$(blocked_items "$union_log_file")"
+  refinement_blocked_label_stale "$open_blocked" "$union_log_file"
+  reason_label="$(refinement_blocked_reason_label "${REFINEMENT_BLOCK_KIND:-needs-refinement}")"
+  [[ -n "$reason_label" ]] || return 0
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    live_json="$("$gh" issue list -R "$repo" --label "$reason_label" --state open --limit 200 \
+        --json number,labels 2>/dev/null \
+      | jq -c '[.[] | {number: .number, labels: [.labels[].name]}]' 2>/dev/null)"
+    [[ -n "$live_json" ]] || live_json='[]'
+    refinement_blocked_label_orphaned "$open_blocked" "$live_json" "$repo" "$union_log_file"
+  done < <(_pager_blocked_label_candidate_repos "$union_log_file")
+}
+
+# pager_eval_blocked_label_orphaned FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when `_pager_blocked_label_candidates` finds at least one
+# `blocked:<reason>`/`blocked` label still live with no open block behind it
+# (agent-ops#816's own signature: twelve issues unselectable for five days
+# after being unblocked).
+pager_eval_blocked_label_orphaned() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  local hits
+  hits="$(_pager_blocked_label_candidates "$union_log_file")"
+  [[ -n "$hits" ]] || { printf '{"firing":false}'; return 0; }
+  jq -Rsc '
+    (split("\n") | map(select(length > 0) | split("\t"))
+     | map({repo: .[0], item: .[1], label: .[2]})) as $rows
+    | {firing: true,
+       evidence: ("\($rows | length) orphaned blocked-label issue(s) with no open block behind them: "
+         + ($rows | map("\(.repo)#\(.item) (\(.label))") | join(", ")))}
+  ' <<<"$hits" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_remedy_blocked_label_orphaned KEY EVIDENCE
+# Pipeline act: re-derive the same candidate set (never parse EVIDENCE's own
+# prose, on `pager_remedy_page_outlived_item`'s own terms) and call
+# `refinement_label_remove` — requirement 38b's own release path, the
+# identical function candidate-gather.sh's sweep already uses — for each,
+# logging `own-label-action` on success via `label_own_action_fields`. A
+# removal that succeeds clears on this invariant's own next evaluation (the
+# label is gone); only a removal that keeps failing stays filed, which is
+# what "the invariant files only if the removal fails" means in a framework
+# that always records a pipeline-act attempt (lib/pager.sh's own header).
+pager_remedy_blocked_label_orphaned() {
+  local _key="$1" _evidence="$2"
+  local union_log_file="${PAGER_REMEDY_UNION_LOG_FILE:-}" log_file="${PAGER_REMEDY_LOG_FILE:-}" \
+        node="${PAGER_REMEDY_NODE:-}" cycle="${PAGER_REMEDY_CYCLE:-}"
+  declare -F refinement_label_remove >/dev/null 2>&1 || { printf 'refinement_label_remove is not available'; return 1; }
+  [[ -n "$union_log_file" ]] || { printf 'no PAGER_REMEDY_UNION_LOG_FILE — nothing to re-derive'; return 1; }
+  local hits removed=0 failed=0 repo item label
+  hits="$(_pager_blocked_label_candidates "$union_log_file")"
+  while IFS=$'\t' read -r repo item label; do
+    [[ -n "$repo" && -n "$item" && -n "$label" ]] || continue
+    if refinement_label_remove "$repo" "$item" "$label"; then
+      removed=$(( removed + 1 ))
+      if declare -F label_own_action_fields >/dev/null 2>&1 && [[ -n "$log_file" ]]; then
+        pager_log_event "$log_file" "$node" "$cycle" "own-label-action" \
+          "$(label_own_action_fields "$repo" "$item" "$label" "remove")"
+      fi
+    else
+      failed=$(( failed + 1 ))
+    fi
+  done <<<"$hits"
+  printf 'removed %d orphaned label(s); %d removal(s) failed' "$removed" "$failed"
+}
+
+# pager_eval_claim_unreconciled FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when an `enabler-examined` event whose `outcome` is the Enabler's own
+# escalate verdict (lib/enabler.sh: `outcome="$verdict"`, never reassigned on
+# the path that actually files) carries no `escalated`/`tech-debt-filed`
+# event for the same repo, item and cycle — agent-ops#815's own signature
+# (#640 sat blocked five days on a claim an adjudication pass had cancelled)
+# recurring by a different route.
+pager_eval_claim_unreconciled() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n '
+    [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))) as $claims
+    | ($all | map(select(.event == "escalated" or .event == "tech-debt-filed"))) as $resolved
+    | ( [ $claims[]
+          | . as $c
+          | select(($resolved | map(select(.cycle == $c.cycle and (.repo // "") == ($c.repo // "")
+                                           and ((.item // "") | tostring) == (($c.item // "") | tostring)))
+                    | length) == 0)
+          | {repo: $c.repo, item: $c.item, cycle: $c.cycle}
+        ] ) as $hits
+    | if ($hits | length) == 0 then {firing: false}
+      else {firing: true,
+            evidence: ("\($hits | length) enabler escalation claim(s) with no matching escalated/tech-debt-filed event in the same cycle: "
+              + ($hits | map("\(.repo)#\(.item) (cycle \(.cycle))") | join(", ")))}
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_remedy_claim_unreconciled KEY EVIDENCE
+# Pipeline act: re-check live (never parse EVIDENCE's own prose) and, for
+# every claim still unreconciled, post one correction comment on the item's
+# own thread naming what could not be confirmed — the agent-ops#815 pattern
+# (`escalation_thread_reconcile`), mirrored rather than called directly:
+# that function reads cycle-scoped globals (`node_name`/`cycle_id`/
+# `cycle_dir`) lib/pager.sh's own header documents as unavailable to the
+# Publisher's process.
+pager_remedy_claim_unreconciled() {
+  local _key="$1" _evidence="$2"
+  local union_log_file="${PAGER_REMEDY_UNION_LOG_FILE:-}" node="${PAGER_REMEDY_NODE:-}" \
+        cycle="${PAGER_REMEDY_CYCLE:-}" gh
+  gh="${PAGER_GH:-gh}"
+  [[ -n "$union_log_file" && -f "$union_log_file" ]] || { printf 'no union log available — nothing corrected'; return 1; }
+  if ! declare -F pipeline_comment_header >/dev/null 2>&1 || ! declare -F pipeline_comment_marker >/dev/null 2>&1; then
+    printf 'lib/pipeline-marker.sh is not available'; return 1
+  fi
+  local hits posted=0 repo item body
+  hits="$(jq -r -R -n '
+    [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))) as $claims
+    | ($all | map(select(.event == "escalated" or .event == "tech-debt-filed"))) as $resolved
+    | ( [ $claims[] | . as $c
+          | select(($resolved | map(select(.cycle == $c.cycle and (.repo // "") == ($c.repo // "")
+                                           and ((.item // "") | tostring) == (($c.item // "") | tostring)))
+                    | length) == 0)
+          | {repo: $c.repo, item: $c.item} ]
+      | unique
+      | .[] | "\(.repo)\t\(.item)" )
+  ' < "$union_log_file" 2>/dev/null || true)"
+  [[ -n "$hits" ]] || { printf 'no unreconciled claim found on re-check — nothing to correct'; return 0; }
+  while IFS=$'\t' read -r repo item; do
+    [[ -n "$repo" && -n "$item" ]] || continue
+    body="$(pipeline_comment_header script "$node")
+
+This pipeline previously indicated it was escalating this item, but no \`escalated\` or tech-debt record was ever confirmed for that engagement — an adjudication or decide-tactical pass may have overridden the original verdict, or the engagement did not complete. A later cycle will re-examine this item.
+
+$(pipeline_comment_marker "$cycle" script)"
+    "$gh" issue comment "$item" -R "$repo" --body "$body" >/dev/null 2>&1 \
+      && posted=$(( posted + 1 ))
+  done <<<"$hits"
+  printf 'posted %d correction comment(s)' "$posted"
+}
+
+# pager_eval_escalation_burst FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when the fleet-wide count of `escalated` events in the trailing 24h
+# exceeds PAGER_EVAL_ESCALATION_BURST, or the same re-flag reason (the
+# triggering `attempt-failed`'s own `detail`/`unblock_condition`,
+# fingerprinted with `escalation_autonomy_decide_reason_key` — requirement
+# 36d's own per-reason bound, reused rather than duplicated) paged the same
+# item twice.
+pager_eval_escalation_burst() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local burst="${PAGER_EVAL_ESCALATION_BURST:-}"
+  if ! [[ "$burst" =~ ^[0-9]+$ ]] || (( burst <= 0 )); then printf '{"firing":false}'; return 0; fi
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  local now count pairs
+  now="$(date -u +%s)"
+  count="$(jq -R -n --argjson now "$now" '
+    86400 as $w
+    | [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "escalated")
+        | select((try (.ts | fromdateiso8601) catch null) != null)
+        | select(($now - (.ts | fromdateiso8601)) <= $w) ] | length
+  ' < "$union_log_file" 2>/dev/null)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+
+  local reflag_desc=""
+  if declare -F escalation_autonomy_decide_reason_key >/dev/null 2>&1; then
+    pairs="$(jq -c -R -n '
+      [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+      | ($all | map(select(.event == "attempt-failed"))) as $attempts
+      | ($all | map(select(.event == "escalated"))) as $escalated
+      | [ $escalated[] | . as $e
+          | ($attempts | map(select((.repo // "") == ($e.repo // "")
+                                    and ((.item // "") | tostring) == (($e.item // "") | tostring)
+                                    and .ts <= $e.ts))
+             | sort_by(.ts) | last) as $a
+          | select($a != null)
+          | {repo: $e.repo, item: $e.item, detail: ($a.detail // ""), unblock_condition: ($a.unblock_condition // "")} ]
+    ' < "$union_log_file" 2>/dev/null || true)"
+    [[ -n "$pairs" ]] || pairs='[]'
+    local -A reflag_count=()
+    local row repo item rk k
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      repo="$(jq -r '.repo' <<<"$row" 2>/dev/null)"
+      item="$(jq -r '.item' <<<"$row" 2>/dev/null)"
+      rk="$(escalation_autonomy_decide_reason_key "$row")"
+      [[ -n "$repo" && -n "$item" && -n "$rk" ]] || continue
+      k="$repo|$item|$rk"
+      reflag_count["$k"]=$(( ${reflag_count[$k]:-0} + 1 ))
+    done < <(jq -c '.[]' <<<"$pairs" 2>/dev/null)
+    for k in "${!reflag_count[@]}"; do
+      if (( reflag_count[$k] >= 2 )); then
+        reflag_desc+="${reflag_desc:+; }${k%%|*}#$(printf '%s' "$k" | cut -d'|' -f2) reflagged ${reflag_count[$k]}x"
+      fi
+    done
+  fi
+
+  if (( count > burst )) || [[ -n "$reflag_desc" ]]; then
+    local ev="$count escalated event(s) in the trailing 24h (pager_escalation_burst: $burst)"
+    [[ -n "$reflag_desc" ]] && ev="$ev; repeat re-flags: $reflag_desc"
+    jq -nc --arg e "$ev" '{firing: true, evidence: $e}'
+  else
+    printf '{"firing":false}'
+  fi
+}
+
+# pager_eval_digest_truncated FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when the most recent `source-state-digest` event (lib/candidate-
+# gather.sh, logged alongside `gather_source_state`'s own already-fetched
+# counts) for some repo, still claiming `ok: true`, undercounts a live total
+# this invariant fetches itself via GitHub's search API — cheaply, once per
+# evaluation window rather than once per node per cycle the way gather-
+# source-state.sh's own already-paginated fetch runs. The agent-ops#1165
+# signature (requirement 34i read absence-from-digest as "closed" and
+# false-cleared blocks past the newest hundred) recurring.
+pager_eval_digest_truncated() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  local gh latest
+  gh="${PAGER_GH:-gh}"
+  latest="$(jq -c -R -n '
+    [ inputs | select(length > 0) | (fromjson? // empty)
+      | select(.event == "source-state-digest" and (.ok // false) == true and (.repo // "") != "") ]
+    | group_by(.repo) | map(sort_by(.ts) | last)
+  ' < "$union_log_file" 2>/dev/null)"
+  [[ -n "$latest" && "$latest" != "null" ]] || { printf '{"firing":false}'; return 0; }
+  local row repo digest_issues digest_prs live_issues live_prs
+  local hits=()
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    repo="$(jq -r '.repo' <<<"$row")"
+    digest_issues="$(jq -r '.issues_count // 0' <<<"$row")"
+    digest_prs="$(jq -r '.open_prs_count // 0' <<<"$row")"
+    [[ -n "$repo" ]] || continue
+    live_issues="$("$gh" api "search/issues?q=repo:$repo+type:issue+state:open" --jq '.total_count' 2>/dev/null)"
+    live_prs="$("$gh" api "search/issues?q=repo:$repo+type:pr+state:open" --jq '.total_count' 2>/dev/null)"
+    [[ "$live_issues" =~ ^[0-9]+$ ]] || live_issues=""
+    [[ "$live_prs" =~ ^[0-9]+$ ]] || live_prs=""
+    if { [[ -n "$live_issues" ]] && (( live_issues > digest_issues )); } \
+       || { [[ -n "$live_prs" ]] && (( live_prs > digest_prs )); }; then
+      hits+=("$repo (digest issues=$digest_issues/live=${live_issues:-?}, digest open_prs=$digest_prs/live=${live_prs:-?})")
+    fi
+  done < <(jq -c '.[]' <<<"$latest" 2>/dev/null)
+  if (( ${#hits[@]} > 0 )); then
+    local joined
+    joined="$(IFS='; '; printf '%s' "${hits[*]}")"
+    jq -nc --arg ev "source-state digest undercounts a live paginated total (the #1165 signature): $joined" \
+      '{firing: true, evidence: $ev}'
+  else
+    printf '{"firing":false}'
+  fi
+}
+
+# pager_remedy_digest_truncated KEY EVIDENCE
+# Pipeline act: log a `digest-truncation-veto` for each affected repo (parsed
+# from EVIDENCE's own repo tokens — the live counts themselves are not
+# re-derived here, since the veto is unconditional for the cycle regardless
+# of the exact numbers) — lib/candidate-gather.sh checks for this event
+# before trusting that repo's digest, refusing to act on its absence for the
+# vetoed cycle, exactly as the issue's own remedy class states — then files,
+# a durable record if the veto keeps recurring.
+pager_remedy_digest_truncated() {
+  local _key="$1" evidence="$2"
+  local log_file="${PAGER_REMEDY_LOG_FILE:-}" node="${PAGER_REMEDY_NODE:-}" cycle="${PAGER_REMEDY_CYCLE:-}"
+  [[ -n "$log_file" ]] || { printf 'no PAGER_REMEDY_LOG_FILE — could not veto this cycle'\''s clearances'; return 1; }
+  local repos repo vetoed=0
+  repos="$(grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+ \(digest' <<<"$evidence" 2>/dev/null \
+    | sed 's/ (digest.*//' | sort -u)"
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    pager_log_event "$log_file" "$node" "$cycle" "digest-truncation-veto" \
+      "$(jq -nc --arg r "$repo" '{repo: $r}')"
+    vetoed=$(( vetoed + 1 ))
+  done <<<"$repos"
+  printf 'vetoed this cycle'\''s work-gone clearances for %d repo(s) pending a healthy digest' "$vetoed"
+}
+
 # pager_register_builtin_invariants [STALE_FILE_AFTER_MINUTES]
 # Register every built-in invariant above with lib/pager.sh's own registry.
 # Not top-level code (see this file's header). STALE_FILE_AFTER_MINUTES —
@@ -502,4 +1034,19 @@ pager_register_builtin_invariants() {
     "The repository-review pipeline (review-cycle.sh) has failed its last several attempts on this node with no successful review-end between. This is the interim reader pending agent-ops#996, which folds a review-pipeline verdict directly into the heartbeat; for now, check review-log.jsonl and the Reviewer stage's own logs on this node directly."
   pager_register dashboard-unreadable pager_eval_dashboard_unreadable owner-only \
     "A viewer fetching this node's data.js (agent-ops#1283's own probe) found it slower than pager_dashboard_fetch_seconds or unparseable — a fact this node cannot observe about itself. Check network/tailnet conditions to this node and the size of its data.js directly."
+  # agent-ops#1281: the selection and ledger class.
+  pager_register idle-with-demand pager_eval_idle_with_demand owner-only \
+    "A node's own selection/stand-down history shows real demand going unclaimed for several cycles running (agent-ops#1128/#1163/#1165's own class of fleet-wide stand-down and starvation). The evidence above carries this node's own most recent none-selected reason and coordinator-input-fitted detail — the two facts a diagnosis starts from. Check the Co-Ordinator's own verdicts and eligibility gates on this node directly."
+  pager_register fit-ladder-pinned pager_eval_fit_ladder_pinned owner-only \
+    "The coordinator input ladder (lib/coordinator-input.sh) has bottomed out at its own tightest rung and is still shedding backlog entries on every fitted cycle for a full day — the eligible backlog has outgrown coordinator_prompt_max_bytes. Either raise the byte budget or reduce the backlog (close stale issues, tighten a repo's own sources) directly."
+  pager_register work-order-repaired-rate pager_eval_work_order_repaired_rate owner-only \
+    "More than pager_repair_rate_percent of a day's selections needed a work-order-repaired repair (agent-ops#821's own signature: a work order composed from trimmed input). Check the fit report and the trimmed candidates' own sizes directly. Retire this invariant once agent-ops#769's part (b) lands and agent-ops#1156 removes the gate this rate reads."
+  pager_register blocked-label-orphaned pager_eval_blocked_label_orphaned \
+    pipeline-act pager_remedy_blocked_label_orphaned
+  pager_register claim-unreconciled pager_eval_claim_unreconciled \
+    pipeline-act pager_remedy_claim_unreconciled
+  pager_register escalation-burst pager_eval_escalation_burst owner-only \
+    "More than pager_escalation_burst escalations were filed fleet-wide in the trailing 24h, or the same re-flag reason paged the same item twice (agent-ops#933's own signature: a mechanical burst from a handful of unfixed bugs). The evidence above carries the reason histogram — start from whichever reason recurs most."
+  pager_register digest-truncated pager_eval_digest_truncated \
+    pipeline-act pager_remedy_digest_truncated
 }

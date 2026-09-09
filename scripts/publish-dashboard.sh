@@ -107,6 +107,31 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # pager's own filings would land unlabelled and never be found again by
 # either its dedup or its auto-close.
 . "$SCRIPT_DIR/lib/labels.sh"
+# `blocked_items` (lib/cycle-state.sh, already sourced above): agent-ops#1281's
+# `blocked-label-orphaned` reads the open blocked extract the same way
+# candidate-gather.sh's own requirement 38b sweep does.
+# shellcheck source=lib/refinement.sh
+# `refinement_blocked_label_orphaned`/`refinement_blocked_label_stale`/
+# `refinement_label_remove`/`refinement_blocked_reason_label`/
+# `REFINEMENT_BLOCK_KIND` — agent-ops#1281's `blocked-label-orphaned` calls
+# requirement 38b's own release path directly rather than reimplementing it.
+. "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/label-marker.sh
+# `label_own_action_fields` alone: what `blocked-label-orphaned`'s own
+# remedy logs after a successful `refinement_label_remove`, on the same
+# terms the requirement 38b sweep it mirrors already does.
+. "$SCRIPT_DIR/lib/label-marker.sh"
+# shellcheck source=lib/pipeline-marker.sh
+# `pipeline_comment_header`/`pipeline_comment_marker` alone: agent-ops#1281's
+# `claim-unreconciled` remedy posts its own correction comment in the same
+# attributed, markered form every other pipeline-posted comment uses.
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/escalation-autonomy.sh
+# `escalation_autonomy_decide_reason_key` alone: agent-ops#1281's
+# `escalation-burst` fingerprints a re-flagged item's reason the identical
+# way requirement 36d's own per-reason decide-tactical bound already does,
+# rather than duplicating the hash.
+. "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/pager.sh
 . "$SCRIPT_DIR/lib/pager.sh"
 # shellcheck source=lib/pager-invariants.sh
@@ -196,6 +221,15 @@ pager_stale_file_after_minutes="$(cfg '.pager_stale_file_after_minutes')"
 [[ "$pager_stale_file_after_minutes" =~ ^[0-9]+$ ]] || pager_stale_file_after_minutes=180
 pager_dashboard_fetch_seconds="$(cfg '.pager_dashboard_fetch_seconds')"
 [[ "$pager_dashboard_fetch_seconds" =~ ^[0-9]+$ ]] || pager_dashboard_fetch_seconds=30
+# agent-ops#1281's own three keys: idle-with-demand's cycle-count window,
+# work-order-repaired-rate's percentage threshold, escalation-burst's own
+# 24h count threshold.
+pager_idle_cycles="$(cfg '.pager_idle_cycles')"
+[[ "$pager_idle_cycles" =~ ^[0-9]+$ ]] || pager_idle_cycles=6
+pager_repair_rate_percent="$(cfg '.pager_repair_rate_percent')"
+[[ "$pager_repair_rate_percent" =~ ^[0-9]+$ ]] || pager_repair_rate_percent=20
+pager_escalation_burst="$(cfg '.pager_escalation_burst')"
+[[ "$pager_escalation_burst" =~ ^[0-9]+$ ]] || pager_escalation_burst=10
 enabler_assignee="$(cfg '.enabler_assignee')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 escalation_webhook_url="$(cfg '.escalation_webhook_url')"
@@ -2438,7 +2472,8 @@ if (( WITH_GITHUB )); then
       "$self_node" "publisher-$self_node-$now_epoch" \
       "$github_budget_cycle_interval_minutes" "$node_stale_after_minutes_raw" \
       "$updater_stuck_after_minutes_raw" "$pager_dashboard_fetch_seconds" \
-      "$pager_review_union" || true
+      "$pager_review_union" "$pager_idle_cycles" "$pager_repair_rate_percent" \
+      "$pager_escalation_burst" || true
     # Re-read the union: pager_evaluate may just have appended to this node's
     # own log.jsonl, which $events_jsonl (built before this block) cannot
     # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs

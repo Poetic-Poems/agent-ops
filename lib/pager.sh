@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2016
-# SC2034: PAGER_EVAL_REPO/PAGER_EVAL_ESCALATION_LABEL/PAGER_REMEDY_REPO, and
+# SC2034: PAGER_EVAL_REPO/PAGER_EVAL_ESCALATION_LABEL/PAGER_REMEDY_REPO,
 # agent-ops#1282's PAGER_EVAL_CYCLE_INTERVAL_MINUTES/PAGER_EVAL_NODE_STALE_
 # AFTER_MINUTES/PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES/PAGER_EVAL_DASHBOARD_
-# FETCH_SECONDS/PAGER_EVAL_REVIEW_UNION_LOG_FILE, are set here for a
-# dynamically-invoked EVAL_FN/remedy function to read (see this file's own
-# header) — real, load-bearing reads shellcheck cannot see across an
-# indirect call by name.
+# FETCH_SECONDS/PAGER_EVAL_REVIEW_UNION_LOG_FILE, and agent-ops#1281's
+# PAGER_EVAL_IDLE_CYCLES/PAGER_EVAL_REPAIR_RATE_PERCENT/PAGER_EVAL_ESCALATION_
+# BURST/PAGER_REMEDY_LOG_FILE/PAGER_REMEDY_UNION_LOG_FILE/PAGER_REMEDY_NODE/
+# PAGER_REMEDY_CYCLE, are set here for a dynamically-invoked EVAL_FN/remedy
+# function to read (see this file's own header) — real, load-bearing reads
+# this tool cannot see across an indirect call by name.
 # SC2016: every backtick inside a single-quoted printf format string below is
 # literal — deliberate Markdown code-span syntax for the issue body it
 # builds, never a shell expansion shellcheck's heuristic mistakes it for.
@@ -466,21 +468,25 @@ Retired automatically by lib/pager.sh (issue #1278)."
 #                     UNION_LOG_FILE FLEET_NODES_JSON NODE CYCLE \
 #                     [CYCLE_INTERVAL_MINUTES] [NODE_STALE_AFTER_MINUTES] \
 #                     [UPDATER_STUCK_AFTER_MINUTES] [DASHBOARD_FETCH_SECONDS] \
-#                     [REVIEW_UNION_LOG_FILE]
-# The five trailing, optional parameters exist for agent-ops#1282's
-# peer-vantage invariants alone — see PAGER_EVAL_CYCLE_INTERVAL_MINUTES and
-# its siblings, set just below, and this file's own header for why they
-# travel as plain variables rather than through EVAL_FN's two-argument
-# contract. Every call site before #1282, and every existing test, omits
-# them; an omitted trailing bash positional parameter reads as empty, which
-# each of #1282's own EVAL_FNs treats as "nothing configured — never fire".
+#                     [REVIEW_UNION_LOG_FILE] [IDLE_CYCLES] \
+#                     [REPAIR_RATE_PERCENT] [ESCALATION_BURST]
+# The five trailing parameters through REVIEW_UNION_LOG_FILE exist for
+# agent-ops#1282's peer-vantage invariants; the three after them
+# (IDLE_CYCLES/REPAIR_RATE_PERCENT/ESCALATION_BURST) are agent-ops#1281's own
+# selection/ledger thresholds — see PAGER_EVAL_CYCLE_INTERVAL_MINUTES and its
+# siblings, set just below, and this file's own header for why they travel as
+# plain variables rather than through EVAL_FN's two-argument contract. Every
+# call site before #1282, and every existing test, omits them; an omitted
+# trailing bash positional parameter reads as empty, which every EVAL_FN that
+# reads one treats as "nothing configured — never fire".
 _pager_evaluate_one() {
   local key="$1" claim_script="$2" pager_repo="$3" label="$4" \
         escalation_label="$5" assignee="$6" webhook_url="$7" min_firing_minutes="$8" \
         log_file="$9" union_log_file="${10}" fleet_nodes_json="${11}" node="${12}" cycle="${13}" \
         cycle_interval_minutes="${14:-}" node_stale_after_minutes="${15:-}" \
         updater_stuck_after_minutes="${16:-}" dashboard_fetch_seconds="${17:-}" \
-        review_union_log_file="${18:-}"
+        review_union_log_file="${18:-}" idle_cycles="${19:-}" \
+        repair_rate_percent="${20:-}" escalation_burst="${21:-}"
   local eval_fn remedy_class remedy_arg window claim_key claim_rc
   eval_fn="${PAGER_EVAL_FN[$key]}"
   remedy_class="${PAGER_REMEDY_CLASS[$key]}"
@@ -522,6 +528,26 @@ _pager_evaluate_one() {
   PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES="$updater_stuck_after_minutes"
   PAGER_EVAL_DASHBOARD_FETCH_SECONDS="$dashboard_fetch_seconds"
   PAGER_EVAL_REVIEW_UNION_LOG_FILE="$review_union_log_file"
+  # agent-ops#1281's own three: idle-with-demand's cycle-count window,
+  # work-order-repaired-rate's percentage threshold, escalation-burst's own
+  # 24h count threshold — the identical documented-exception pattern above,
+  # one plain variable per threshold `pager_evaluate` cannot derive from
+  # either of EVAL_FN's own two arguments.
+  PAGER_EVAL_IDLE_CYCLES="$idle_cycles"
+  PAGER_EVAL_REPAIR_RATE_PERCENT="$repair_rate_percent"
+  PAGER_EVAL_ESCALATION_BURST="$escalation_burst"
+  # A pipeline-act remedy that needs to log its own union-log event (rather
+  # than merely call `gh` directly, the way verdict-unanimous/page-outlived-
+  # item's remedies do) has no other way to reach LOG_FILE/NODE/CYCLE: REMEDY_ARG's
+  # own contract (`pager_file`'s header) is `REMEDY_ARG KEY EVIDENCE`, nothing
+  # else. Set here, not only in `pager_file`, so a remedy needing the union
+  # log itself (to re-derive candidates rather than parse EVIDENCE's own
+  # prose — the same `_pager_open_page_issues` discipline every remedy here
+  # already follows) has it too.
+  PAGER_REMEDY_LOG_FILE="$log_file"
+  PAGER_REMEDY_UNION_LOG_FILE="$union_log_file"
+  PAGER_REMEDY_NODE="$node"
+  PAGER_REMEDY_CYCLE="$cycle"
   verdict="$("$eval_fn" "$fleet_nodes_json" "$union_log_file" 2>/dev/null)"
   firing="$(jq -r '.firing // false' <<<"$verdict" 2>/dev/null)"
   evidence="$(jq -r '.evidence // ""' <<<"$verdict" 2>/dev/null)"
@@ -564,11 +590,12 @@ _pager_evaluate_one() {
 #                WEBHOOK_URL MIN_FIRING_MINUTES LOG_FILE UNION_LOG_FILE \
 #                FLEET_NODES_JSON NODE CYCLE [CYCLE_INTERVAL_MINUTES] \
 #                [NODE_STALE_AFTER_MINUTES] [UPDATER_STUCK_AFTER_MINUTES] \
-#                [DASHBOARD_FETCH_SECONDS] [REVIEW_UNION_LOG_FILE]
-# The five trailing, optional parameters are agent-ops#1282's — see
-# _pager_evaluate_one's own header for why they exist and why omitting them
-# (every call site before #1282) is safe. Evaluates every registered
-# invariant once, in registration order. One bad
+#                [DASHBOARD_FETCH_SECONDS] [REVIEW_UNION_LOG_FILE] \
+#                [IDLE_CYCLES] [REPAIR_RATE_PERCENT] [ESCALATION_BURST]
+# The eight trailing, optional parameters are agent-ops#1282's and
+# agent-ops#1281's own — see _pager_evaluate_one's own header for why they
+# exist and why omitting them (every call site before #1282) is safe.
+# Evaluates every registered invariant once, in registration order. One bad
 # EVAL_FN or one lost claim never stops the rest — each invariant's own
 # failure is contained to itself, the same isolation crash_loop_verdict's own
 # `2>/dev/null || true` gives a torn union-log line.
