@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2016
-# SC2034: PAGER_EVAL_REPO/PAGER_EVAL_ESCALATION_LABEL/PAGER_REMEDY_REPO are
-# set here for a dynamically-invoked EVAL_FN/remedy function to read (see
-# this file's own header) — real, load-bearing reads shellcheck cannot see
-# across an indirect call by name.
+# SC2034: PAGER_EVAL_REPO/PAGER_EVAL_ESCALATION_LABEL/PAGER_REMEDY_REPO, and
+# agent-ops#1282's PAGER_EVAL_CYCLE_INTERVAL_MINUTES/PAGER_EVAL_NODE_STALE_
+# AFTER_MINUTES/PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES/PAGER_EVAL_DASHBOARD_
+# FETCH_SECONDS/PAGER_EVAL_REVIEW_UNION_LOG_FILE, are set here for a
+# dynamically-invoked EVAL_FN/remedy function to read (see this file's own
+# header) — real, load-bearing reads shellcheck cannot see across an
+# indirect call by name.
 # SC2016: every backtick inside a single-quoted printf format string below is
 # literal — deliberate Markdown code-span syntax for the issue body it
 # builds, never a shell expansion shellcheck's heuristic mistakes it for.
@@ -91,9 +94,10 @@
 declare -gA PAGER_EVAL_FN=()
 declare -gA PAGER_REMEDY_CLASS=()
 declare -gA PAGER_REMEDY_ARG=()
+declare -gA PAGER_MIN_FIRING_MINUTES_OVERRIDE=()
 declare -ga PAGER_KEYS=()
 
-# pager_register KEY EVAL_FN REMEDY_CLASS REMEDY_ARG
+# pager_register KEY EVAL_FN REMEDY_CLASS REMEDY_ARG [MIN_FIRING_MINUTES_OVERRIDE]
 # EVAL_FN is a shell function, `EVAL_FN FLEET_NODES_JSON UNION_LOG_FILE`,
 # called with the union log as EVAL_FN's own stdin is *not* used — it takes
 # the path so a pure jq reader can `-R -n` it directly without this framework
@@ -109,13 +113,24 @@ declare -ga PAGER_KEYS=()
 # an existing KEY replaces its entry — the last registration wins, which lets
 # a caller (or a test) override a built-in invariant's eval function without
 # needing a separate unregister.
+#
+# MIN_FIRING_MINUTES_OVERRIDE, when non-empty, replaces `pager_evaluate`'s own
+# MIN_FIRING_MINUTES for this key alone — agent-ops#1282's `node-stale`, whose
+# fact (a publication age already past `2 × node_stale_after_minutes`) is
+# itself slow-forming, needs a filing wait measured in hours
+# (`pager_stale_file_after_minutes`) rather than the framework's own
+# blip-sized default. Every other registered key is unaffected: an empty
+# override (the default, and every call site before agent-ops#1282) falls
+# through to `pager_evaluate`'s own parameter exactly as before.
 pager_register() {
-  local key="$1" eval_fn="$2" remedy_class="$3" remedy_arg="${4:-}"
+  local key="$1" eval_fn="$2" remedy_class="$3" remedy_arg="${4:-}" \
+        min_firing_override="${5:-}"
   case "$remedy_class" in
     pipeline-act|config-lever|owner-only) ;;
     *) printf 'pager_register: unknown remedy class: %s\n' "$remedy_class" >&2; return 1 ;;
   esac
   [[ -n "$key" && -n "$eval_fn" ]] || { printf 'pager_register: key and eval_fn are required\n' >&2; return 1; }
+  PAGER_MIN_FIRING_MINUTES_OVERRIDE["$key"]="$min_firing_override"
   local k seen=0
   for k in "${PAGER_KEYS[@]}"; do [[ "$k" == "$key" ]] && { seen=1; break; }; done
   (( seen )) || PAGER_KEYS+=("$key")
@@ -448,11 +463,24 @@ Retired automatically by lib/pager.sh (issue #1278)."
 
 # _pager_evaluate_one KEY CLAIM_SCRIPT PAGER_REPO LABEL ESCALATION_LABEL \
 #                     ASSIGNEE WEBHOOK_URL MIN_FIRING_MINUTES LOG_FILE \
-#                     UNION_LOG_FILE FLEET_NODES_JSON NODE CYCLE
+#                     UNION_LOG_FILE FLEET_NODES_JSON NODE CYCLE \
+#                     [CYCLE_INTERVAL_MINUTES] [NODE_STALE_AFTER_MINUTES] \
+#                     [UPDATER_STUCK_AFTER_MINUTES] [DASHBOARD_FETCH_SECONDS] \
+#                     [REVIEW_UNION_LOG_FILE]
+# The five trailing, optional parameters exist for agent-ops#1282's
+# peer-vantage invariants alone — see PAGER_EVAL_CYCLE_INTERVAL_MINUTES and
+# its siblings, set just below, and this file's own header for why they
+# travel as plain variables rather than through EVAL_FN's two-argument
+# contract. Every call site before #1282, and every existing test, omits
+# them; an omitted trailing bash positional parameter reads as empty, which
+# each of #1282's own EVAL_FNs treats as "nothing configured — never fire".
 _pager_evaluate_one() {
   local key="$1" claim_script="$2" pager_repo="$3" label="$4" \
         escalation_label="$5" assignee="$6" webhook_url="$7" min_firing_minutes="$8" \
-        log_file="$9" union_log_file="${10}" fleet_nodes_json="${11}" node="${12}" cycle="${13}"
+        log_file="$9" union_log_file="${10}" fleet_nodes_json="${11}" node="${12}" cycle="${13}" \
+        cycle_interval_minutes="${14:-}" node_stale_after_minutes="${15:-}" \
+        updater_stuck_after_minutes="${16:-}" dashboard_fetch_seconds="${17:-}" \
+        review_union_log_file="${18:-}"
   local eval_fn remedy_class remedy_arg window claim_key claim_rc
   eval_fn="${PAGER_EVAL_FN[$key]}"
   remedy_class="${PAGER_REMEDY_CLASS[$key]}"
@@ -483,6 +511,17 @@ _pager_evaluate_one() {
   # elsewhere in this codebase needs no `export` either.
   PAGER_EVAL_REPO="$pager_repo"
   PAGER_EVAL_ESCALATION_LABEL="$escalation_label"
+  # agent-ops#1282's five peer-vantage invariants: none of these thresholds
+  # (or, for review-pipeline-failing, the review-log union path) is a fact
+  # any heartbeat or the implementation union log carries, so — the same
+  # documented exception as PAGER_EVAL_REPO above — each travels as a plain
+  # variable rather than a third EVAL_FN argument every other invariant
+  # would then have to ignore.
+  PAGER_EVAL_CYCLE_INTERVAL_MINUTES="$cycle_interval_minutes"
+  PAGER_EVAL_NODE_STALE_AFTER_MINUTES="$node_stale_after_minutes"
+  PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES="$updater_stuck_after_minutes"
+  PAGER_EVAL_DASHBOARD_FETCH_SECONDS="$dashboard_fetch_seconds"
+  PAGER_EVAL_REVIEW_UNION_LOG_FILE="$review_union_log_file"
   verdict="$("$eval_fn" "$fleet_nodes_json" "$union_log_file" 2>/dev/null)"
   firing="$(jq -r '.firing // false' <<<"$verdict" 2>/dev/null)"
   evidence="$(jq -r '.evidence // ""' <<<"$verdict" 2>/dev/null)"
@@ -495,13 +534,15 @@ _pager_evaluate_one() {
         "$(jq -nc --arg k "$key" --arg fs "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{key: $k, first_seen: $fs}')"
       ;;
     candidate:true)
-      local cand first_seen first_seen_epoch age_min nodes_json
+      local cand first_seen first_seen_epoch age_min nodes_json key_min_firing_minutes
       cand="$(pager_last_event "$key" < "$union_log_file")"
       first_seen="$(jq -r '.first_seen // empty' <<<"$cand" 2>/dev/null)"
       [[ -n "$first_seen" ]] || first_seen="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       first_seen_epoch="$(date -u -d "$first_seen" +%s 2>/dev/null || date -u +%s)"
       age_min=$(( ( $(date -u +%s) - first_seen_epoch ) / 60 ))
-      if (( age_min >= min_firing_minutes )); then
+      key_min_firing_minutes="${PAGER_MIN_FIRING_MINUTES_OVERRIDE[$key]:-}"
+      [[ -n "$key_min_firing_minutes" ]] || key_min_firing_minutes="$min_firing_minutes"
+      if (( age_min >= key_min_firing_minutes )); then
         nodes_json="$(jq -c '.nodes // []' <<<"$verdict" 2>/dev/null)"
         [[ -n "$nodes_json" ]] || nodes_json='[]'
         pager_file "$key" "$remedy_class" "$remedy_arg" "$evidence" "$first_seen" \
@@ -521,8 +562,13 @@ _pager_evaluate_one() {
 
 # pager_evaluate CLAIM_SCRIPT PAGER_REPO LABEL ESCALATION_LABEL ASSIGNEE \
 #                WEBHOOK_URL MIN_FIRING_MINUTES LOG_FILE UNION_LOG_FILE \
-#                FLEET_NODES_JSON NODE CYCLE
-# Evaluates every registered invariant once, in registration order. One bad
+#                FLEET_NODES_JSON NODE CYCLE [CYCLE_INTERVAL_MINUTES] \
+#                [NODE_STALE_AFTER_MINUTES] [UPDATER_STUCK_AFTER_MINUTES] \
+#                [DASHBOARD_FETCH_SECONDS] [REVIEW_UNION_LOG_FILE]
+# The five trailing, optional parameters are agent-ops#1282's — see
+# _pager_evaluate_one's own header for why they exist and why omitting them
+# (every call site before #1282) is safe. Evaluates every registered
+# invariant once, in registration order. One bad
 # EVAL_FN or one lost claim never stops the rest — each invariant's own
 # failure is contained to itself, the same isolation crash_loop_verdict's own
 # `2>/dev/null || true` gives a torn union-log line.

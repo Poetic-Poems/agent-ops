@@ -102,17 +102,26 @@ chmod +x "$bin_dir/shellcheck"
 export PATH="$bin_dir:$PATH"
 
 # run_lint TIER — TIER is follow | degraded | skip, forced by moving the
-# thresholds rather than by pretending about the machine's real memory.
+# thresholds rather than by pretending about the machine's real memory: the
+# estimator's own breakpoints are overridden so that anything at or below 10
+# union lines (small.sh, hook-like, lone-entry.sh) costs next to nothing
+# regardless of tier, while anything above it (big.sh at 41 lines,
+# wide-entry.sh at 44) costs either next to nothing too (follow) or an amount
+# no real budget on the machine running this suite could ever satisfy
+# (degraded/skip) — the same "move the thresholds, not the machine" trick the
+# old LARGE_LINES-based guard used, now aimed at the cost curve instead of a
+# single line-count gate.
 run_lint() {
-  local tier="$1" follow plain
+  local tier="$1" big_mib plain
   case "$tier" in
-    follow)   follow=1 ;         plain=1 ;;
-    degraded) follow=99999999 ;  plain=1 ;;
-    skip)     follow=99999999 ;  plain=99999999 ;;
+    follow)   big_mib=1 ;         plain=1 ;;
+    degraded) big_mib=99999999 ;  plain=1 ;;
+    skip)     big_mib=99999999 ;  plain=99999999 ;;
   esac
   : > "$invocations"
-  ( cd "$repo" && LINT_SHELL_LARGE_LINES=10 \
-                  LINT_SHELL_FOLLOW_MIB="$follow" \
+  ( cd "$repo" && LINT_SHELL_COST_P1_LINES=10  LINT_SHELL_COST_P1_MIB=1 \
+                  LINT_SHELL_COST_P2_LINES=41  LINT_SHELL_COST_P2_MIB="$big_mib" \
+                  LINT_SHELL_COST_P3_LINES=1000 LINT_SHELL_COST_P3_MIB="$big_mib" \
                   LINT_SHELL_PLAIN_MIB="$plain" \
                   ./scripts/lint-shell.sh 2>&1 )
 }
@@ -188,6 +197,46 @@ assert_contains "a three-line file that sources a small one is followed as usual
   "-x -- lone-entry.sh" "$(cat "$invocations")"
 assert_contains "the warning reports the union, not only the file's own length" \
   "3 lines, 44 including everything it sources" "$out"
+
+# --- The budget is consulted for every file, not only ones above some fixed
+#     line count (agent-ops#1305) --------------------------------------------
+#
+# scripts/doctor.sh's real union (9,367 lines) sits comfortably under the old
+# 10,000-line LARGE_LINES gate and so was never costed at all — on a node
+# bound by a parent cgroup's memory.high (deploy/docker/compose.yaml), that
+# meant `shellcheck -x` ran uncosted, at an estimated 772 MiB, against a
+# ceiling of 768. This exercises the *real*, un-overridden cost estimator
+# (no LINT_SHELL_COST_P* here) against a fixture file well short of the old
+# threshold, with the budget itself pinned to a heavily parented node via
+# LINT_SHELL_PARENT_HIGH_FILE — the same read-only window
+# deploy/docker/compose.yaml mounts for lib/memory.sh's own parent-ceiling
+# reads.
+real_repo="$tmp_dir/real-repo"
+mkdir -p "$real_repo/scripts"
+cp "$LINT" "$real_repo/scripts/lint-shell.sh"
+chmod +x "$real_repo/scripts/lint-shell.sh"
+{ printf '#!/usr/bin/env bash\n'; for _ in $(seq 1 5000); do printf 'true\n'; done; } > "$real_repo/midsize.sh"
+git -C "$real_repo" init --quiet
+git -C "$real_repo" add midsize.sh
+git -C "$real_repo" -c user.email=t@t -c user.name=t commit --quiet -m init
+
+parent_high_fixture="$tmp_dir/parent-memory.high"
+# 50 MiB: far below the ~400 MiB the real estimator gives a 5,000-line union
+# (interpolated from the measured points in scripts/lint-shell.sh's own
+# header), and far below any real budget this test host itself is likely to
+# report — so this is what actually binds, whatever machine runs the suite.
+printf '%s\n' "$(( 50 * 1048576 ))" > "$parent_high_fixture"
+
+: > "$invocations"
+out="$(cd "$real_repo" && LINT_SHELL_PARENT_HIGH_FILE="$parent_high_fixture" LINT_SHELL_PLAIN_MIB=1 \
+  ./scripts/lint-shell.sh 2>&1)"
+assert_contains "a fixture parent ceiling well below the real estimate degrades a file far under the old 10,000-line gate" \
+  "midsize.sh" "$out"
+assert_contains "…linted WITHOUT -x, since even that ceiling cannot afford to follow it" \
+  "was linted WITHOUT -x" "$out"
+assert_not_contains "…and is not run with -x" "-x -- midsize.sh" "$(cat "$invocations")"
+assert_contains "…and the warning names the parent cgroup as what actually bound the budget" \
+  "the parent cgroup's memory.high" "$out"
 
 printf '\n%s\n' "-----"
 if (( failures == 0 )); then

@@ -44,15 +44,27 @@
 # So the guard measures the union (`analysed_lines` below), never the file's
 # own length: the split that shrank `agent-cycle.sh` moved lines from it into
 # the modules it sources, and `-x` re-inlines every one of them. A file whose
-# union is above the threshold is linted WITHOUT `-x`, which costs the
-# analysis of its source targets and nothing else. Three checks are suppressed
-# for those files alone, because all three are artefacts of the degradation
-# rather than findings about the code: SC1091 ("not following") fires on every
-# source line, and SC2154/SC2034 fire on every variable that crosses the
-# boundary in either direction — read here and assigned in a module, or
-# assigned here for a module to read. All three are checked properly wherever
-# there is room to follow (CI has it), which is what makes suppressing them
-# here a deferral rather than a hole.
+# *estimated* cost (see `estimated_follow_mib`) exceeds what is available is
+# linted WITHOUT `-x`, which costs the analysis of its source targets and
+# nothing else. Three checks are suppressed for those files alone, because all
+# three are artefacts of the degradation rather than findings about the code:
+# SC1091 ("not following") fires on every source line, and SC2154/SC2034 fire
+# on every variable that crosses the boundary in either direction — read here
+# and assigned in a module, or assigned here for a module to read. All three
+# are checked properly wherever there is room to follow (CI has it), which is
+# what makes suppressing them here a deferral rather than a hole.
+#
+# THE GUARD APPLIES TO EVERY FILE, not only ones above some fixed line count —
+# this used to gate on a 10,000-line threshold (`LARGE_LINES`) and let every
+# smaller file run unconditionally, whatever the budget. `scripts/doctor.sh` is
+# what that costs: a 9,367-line union, comfortably under the old gate, and an
+# estimated 772 MiB to follow — against the 768 MiB a node bound by a parent
+# cgroup's `memory.high` (deploy/docker/compose.yaml,
+# `scripts/cgroup-parent-setup.sh`) actually has (agent-ops#1305). What "large
+# enough to matter" means depends on what the node running this actually has,
+# not on a line count picked in advance — so every file's estimated cost is
+# compared against the budget, and a small file on a small enough budget
+# degrades exactly like a large one on a starved one.
 #
 # This is still a real reduction in coverage, so it is announced on every run
 # rather than left to be discovered. What the guard can no longer say is that
@@ -74,26 +86,44 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
 
-# A script whose *analysed union* (see `analysed_lines`) is at or above this
-# many lines is "large" for the purposes of the guard above. Chosen to separate
-# the one offender from the rest of the tree rather than to tune anything:
-# agent-cycle.sh's union is 26,262 lines and the next largest is
-# scripts/publish-dashboard.sh's at 7,522, so anything in this range picks out
-# the same single file. It also sits below the point where the pinned linter's
-# cost starts to climb steeply — a 172-line entry point over the same modules,
-# 23,569 lines of union, costs 1,983 MiB, and agent-cycle.sh's own 26,262
-# passed 4,543 MiB before the kernel stopped it: 2,693 more lines for more
-# than twice the memory — rather than inside it.
-LARGE_LINES="${LINT_SHELL_LARGE_LINES:-10000}"
+# The window this container's own cgroup cannot see: an ancestor cgroup's
+# `memory.high`, bind-mounted read-only where `deploy/docker/compose.yaml`
+# puts it (the same file `lib/memory.sh`'s `memory_cgroup_parent_high` reads,
+# for the same reason — a cgroup namespace makes this container's own cgroup
+# the root of what it can see, so a parent ceiling is otherwise invisible from
+# in here). Overridable so the test suite can point it at a fixture instead of
+# the real mount.
+PARENT_HIGH_FILE="${LINT_SHELL_PARENT_HIGH_FILE:-/run/cgroup-parent/memory.high}"
 
-# What a large file costs, in MiB of headroom, as measured with the pinned
-# 0.10.0 linter on agent-cycle.sh at 2,865 lines and a 26,262-line union: it
-# reached 4,543 MiB with `-x` before the kernel killed it, and completed
-# without `-x` in 634 MiB. The first is a floor, not a peak — the run never
-# finished — and the GHC collector expands to fill what it is given, so both
-# figures below add the headroom that turns a measurement into a decision.
-FOLLOW_MIB="${LINT_SHELL_FOLLOW_MIB:-6144}"    # enough to lint a large file with -x
-PLAIN_MIB="${LINT_SHELL_PLAIN_MIB:-1024}"      # enough to lint one at all
+# What a shellcheck invocation costs to follow a file's sources with `-x`, in
+# MiB, is estimated by interpolating/extrapolating between three points
+# measured with the pinned 0.10.0 linter (see `estimated_follow_mib` below):
+# review-cycle.sh's 4,945-line union at 396 MiB, a 172-line entry point over
+# the same `lib/*.sh` modules at 23,569 lines / 1,983 MiB, and agent-cycle.sh's
+# own 26,262-line union, which passed 4,543 MiB before the kernel killed it —
+# a floor, not a peak, since that run never finished. Overridable in pairs so
+# the test suite can shrink the whole curve onto a small fixture file rather
+# than construct one many thousand lines long to exercise it for real.
+COST_P1_LINES="${LINT_SHELL_COST_P1_LINES:-4945}";   COST_P1_MIB="${LINT_SHELL_COST_P1_MIB:-396}"
+COST_P2_LINES="${LINT_SHELL_COST_P2_LINES:-23569}";  COST_P2_MIB="${LINT_SHELL_COST_P2_MIB:-1983}"
+COST_P3_LINES="${LINT_SHELL_COST_P3_LINES:-26262}";  COST_P3_MIB="${LINT_SHELL_COST_P3_MIB:-4543}"
+
+# LINT_SHELL_FOLLOW_MIB set to exactly `0` disables the guard outright: every
+# file is followed with `-x` whatever the estimate above says. This is CI's
+# own escape hatch (.github/workflows/shellcheck.yml) — a runner has the
+# memory, and the gate's coverage should not quietly track how much RAM GitHub
+# happens to give it this month. Any other value never decides a tier — the
+# estimator above is what a real run compares the budget against, and the
+# `LINT_SHELL_COST_P*` pairs are how a test moves that estimate instead. It is
+# read in one other place only, as `budget_mib`'s "nothing readable anywhere"
+# fallback: on a host with neither a cgroup nor a `/proc/meminfo` to read, the
+# budget becomes this number so the run assumes room rather than degrading
+# every file on an accounting scheme we simply cannot read.
+FOLLOW_MIB="${LINT_SHELL_FOLLOW_MIB:-6144}"
+# What running shellcheck on any one file WITHOUT `-x` costs, in MiB — roughly
+# constant regardless of that file's own size, unlike the union-scaled
+# estimate above: measured at 634 MiB for agent-cycle.sh's own 2,865 lines.
+PLAIN_MIB="${LINT_SHELL_PLAIN_MIB:-1024}"
 
 if ! command -v shellcheck >/dev/null 2>&1; then
   echo "lint-shell: shellcheck is not installed." >&2
@@ -108,31 +138,84 @@ if ! git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 # budget_mib
-# How much memory a single shellcheck may actually use here, in MiB: the
-# smaller of this process's cgroup ceiling and what the host says is available.
-# The cgroup matters because inside the scheduler container /proc/meminfo still
-# reports the host's memory, and it is the cgroup that does the killing; the
-# host figure matters because a developer's machine has no cgroup limit worth
+# How much memory a single shellcheck may actually use here, in MiB, and which
+# ceiling it came from (as a second word: container | parent | host | none) —
+# the smallest of this process's own cgroup ceiling, the parent cgroup's
+# `memory.high` (PARENT_HIGH_FILE, invisible to this container's own cgroup
+# reads — see that variable's own header), and what the host says is
+# available. The container figure matters because inside the scheduler
+# container /proc/meminfo still reports the host's memory, and it is the
+# cgroup that does the killing; the parent figure matters because a scheduler
+# bounded by a parent's `memory.high` throttles well below its own
+# `memory.max`, and a shellcheck invocation sized to the container alone is
+# exactly the shape of stage that wedged agent-ops#1305's node; the host
+# figure matters because a developer's machine has no cgroup limit worth
 # reading. An unreadable or absent limit is not treated as zero — it means "no
 # constraint found", and only a constraint we actually read may lower this.
+# Read via `read -r budget budget_source <<<"$(budget_mib)"`, never by command
+# substitution assigning straight to two variables — bash has no such form.
 budget_mib() {
-  local budget=0 v
+  local budget=0 v source=none
   if [[ -r /sys/fs/cgroup/memory.max ]]; then                     # cgroup v2
     v="$(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
-    [[ "$v" =~ ^[0-9]+$ ]] && budget=$(( v / 1048576 ))
+    if [[ "$v" =~ ^[0-9]+$ ]]; then budget=$(( v / 1048576 )); source=container; fi
   elif [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]]; then # cgroup v1
     v="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
     # v1 spells "unlimited" as a number near 2^63, not as a word
-    [[ "$v" =~ ^[0-9]+$ ]] && (( v < 4611686018427387904 )) && budget=$(( v / 1048576 ))
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v < 4611686018427387904 )); then
+      budget=$(( v / 1048576 )); source=container
+    fi
+  fi
+  v="$(cat "$PARENT_HIGH_FILE" 2>/dev/null)"
+  if [[ "$v" =~ ^[0-9]+$ ]]; then
+    v=$(( v / 1048576 ))
+    if (( budget == 0 || v < budget )); then budget=$v; source=parent; fi
   fi
   v="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
   if [[ "$v" =~ ^[0-9]+$ ]] && (( v > 0 )); then
-    (( budget == 0 || v < budget )) && budget=$v
+    if (( budget == 0 || v < budget )); then budget=$v; source=host; fi
   fi
   # Nothing readable anywhere: assume room rather than degrade silently on a
   # platform whose accounting we simply do not know how to read.
-  (( budget == 0 )) && budget=$FOLLOW_MIB
-  printf '%s\n' "$budget"
+  if (( budget == 0 )); then budget=$FOLLOW_MIB; source=none; fi
+  printf '%s %s\n' "$budget" "$source"
+}
+
+# budget_source_phrase SOURCE
+# The reader-facing name of whichever ceiling budget_mib found smallest, so a
+# degraded/skipped warning can name it: without this, an operator reading a
+# 1,536 MiB container and a 768 MiB verdict has no way to tell the number came
+# from the parent cgroup rather than a broken container reading.
+budget_source_phrase() {
+  case "${1:-none}" in
+    container) printf "this container's memory.max" ;;
+    parent)    printf "the parent cgroup's memory.high" ;;
+    host)      printf 'MemAvailable' ;;
+    *)         printf 'no constraint found' ;;
+  esac
+}
+
+# estimated_follow_mib UNION_LINES
+# The MiB a shellcheck -x invocation is estimated to cost for a file whose
+# analysed union (see `analysed_lines`) is UNION_LINES — piecewise-linear
+# through the three measured points named by the COST_P* pair above, and
+# extrapolated past the last of them using that final segment's own slope,
+# since the true curve climbs steeper still there (a 2,693-line difference
+# between the last two measured points cost more than twice the memory) and
+# under-estimating is the one way this guard can fail unsafely. This is
+# frankly an estimate, not a measurement — shellcheck's memory use depends on
+# more than line count — but it is the only figure cheap enough to compute
+# per file on every run, and erring high is the safe direction to be wrong in.
+estimated_follow_mib() {  # <union-lines>
+  awk -v u="${1:-0}" \
+      -v x1="$COST_P1_LINES" -v y1="$COST_P1_MIB" \
+      -v x2="$COST_P2_LINES" -v y2="$COST_P2_MIB" \
+      -v x3="$COST_P3_LINES" -v y3="$COST_P3_MIB" '
+    BEGIN {
+      if (u <= x1)      { printf "%d", (y1 / x1) * u }
+      else if (u <= x2) { printf "%d", y1 + ((y2 - y1) / (x2 - x1)) * (u - x1) }
+      else              { printf "%d", y2 + ((y3 - y2) / (x3 - x2)) * (u - x2) }
+    }'
 }
 
 # analysed_lines FILE
@@ -182,26 +265,36 @@ if (( ${#files[@]} == 0 )); then
   exit 1
 fi
 
-budget="$(budget_mib)"
+read -r budget budget_source <<<"$(budget_mib)"
+budget_phrase="$(budget_source_phrase "$budget_source")"
 
 printf 'lint-shell: %s\n' "$(shellcheck --version | sed -n 's/^version: /shellcheck /p')"
-printf 'lint-shell: checking %d shell scripts, one process each, %s MiB available\n' \
-  "${#files[@]}" "$budget"
+printf 'lint-shell: checking %d shell scripts, one process each, %s MiB available (%s)\n' \
+  "${#files[@]}" "$budget" "$budget_phrase"
 
 rc=0
 degraded=()
 skipped=()
 
 declare -A union_lines=()
+declare -A follow_cost_mib=()
 for f in "${files[@]}"; do
   union_lines["$f"]="$(analysed_lines "$f")"
-  if (( union_lines["$f"] < LARGE_LINES )); then
+
+  if (( FOLLOW_MIB == 0 )); then
+    # The CI escape hatch (see FOLLOW_MIB's own header): every file follows,
+    # whatever the estimate below would have said.
     shellcheck -x "$@" -- "$f" || rc=1
     continue
   fi
 
-  # Large. What we can afford decides how much of it gets looked at.
-  if (( budget >= FOLLOW_MIB )); then
+  follow_cost_mib["$f"]="$(estimated_follow_mib "${union_lines[$f]}")"
+  # What we can afford decides how much of this file gets looked at — checked
+  # for every file, not only ones above some line-count threshold: a file well
+  # under any such threshold still costs real memory to follow, and a budget
+  # starved enough (a parented container, agent-ops#1305) can be below even
+  # that.
+  if (( follow_cost_mib["$f"] <= budget )); then
     shellcheck -x "$@" -- "$f" || rc=1
   elif (( budget >= PLAIN_MIB )); then
     degraded+=( "$f" )
@@ -219,12 +312,12 @@ for f in "${files[@]}"; do
 done
 
 for f in "${degraded[@]}"; do
-  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was linted WITHOUT -x — its source targets were not analysed, and SC1091/SC2154/SC2034 were suppressed for it because they say nothing about the code once they are not. %s MiB available, %s MiB needed to follow them. See #771.\n' \
-    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" "$FOLLOW_MIB" >&2
+  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was linted WITHOUT -x — its source targets were not analysed, and SC1091/SC2154/SC2034 were suppressed for it because they say nothing about the code once they are not. %s MiB available (%s), an estimated %s MiB needed to follow them. See #771, #1305.\n' \
+    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" "$budget_phrase" "${follow_cost_mib[$f]}" >&2
 done
 for f in "${skipped[@]}"; do
-  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was NOT LINTED AT ALL — shellcheck cannot analyse it in %s MiB and would be OOM-killed trying, taking the cycle with it. CI has the memory and does check it. See #770, #771.\n' \
-    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" >&2
+  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was NOT LINTED AT ALL — shellcheck cannot analyse it in %s MiB (%s) and would be OOM-killed trying, taking the cycle with it. CI has the memory and does check it. See #770, #771, #1305.\n' \
+    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" "$budget_phrase" >&2
 done
 
 if (( rc == 0 )); then

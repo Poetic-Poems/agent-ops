@@ -64,6 +64,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tick regardless. With unchanged data a tick now costs bytes, not
   megabytes.
 
+- **The pager: fleet liveness from a peer's vantage** (issue #1282, part 3c
+  of #1126's findings, requirement 51): five more built-in invariants
+  (`lib/pager-invariants.sh`), all `owner-only` — the class where every
+  signal a node emitted was one it also consumed, so only another node
+  evaluating it can catch the gap. `firing-missed` (an active node's newest
+  `cycle-start` or `cycle-skipped` older than 2× `schedule.cycle_interval_
+  minutes` while its heartbeat is fresh and it holds no lock — caught purely
+  from the union log, since `lock.json` is never published; a long cycle
+  whose scheduler keeps ticking and skipping around it never counts as
+  missed). `node-stale` (publication age
+  past 2× `node_stale_after_minutes`; files only after the new
+  `pager_stale_file_after_minutes`, default 180 min — a per-key override of
+  the framework's own filing hysteresis, `pager_register`'s new fifth
+  argument). `updater-stuck` (`updater.status == "stuck"` for over 2×
+  `updater_stuck_after_minutes`, reading `.updater.seconds`' own elapsed
+  time directly). `review-pipeline-failing` (`review-log.jsonl`'s streak of
+  failed review *runs* at 3 or more with no completed review between —
+  runs, not events, because `review-cycle.sh` writes `review-end` on every
+  run whatever happened, so a failed run's own `review-end` still reports
+  `exit_code: 0`; the interim reader pending #996's own heartbeat
+  verdict). `dashboard-unreadable` (a node's `data.js` slower than the new
+  `pager_dashboard_fetch_seconds`, default 30 s, or unparseable, from a
+  viewer's vantage — reads the `dashboard_fetch` field #1283's own
+  viewer-vantage probe is expected to fold into `fleet_nodes_json`; never
+  fires until that lands). New config: `pager_stale_file_after_minutes`
+  (default 180), `pager_dashboard_fetch_seconds` (default 30).
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for
@@ -473,6 +500,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`deploy/docker/entrypoint.sh`), does the same for plain `git` — both
   minting only when `GH_TOKEN` is already empty, so an explicit token (a
   human's own, or the Approver's) always passes through untouched.
+
+- **The livelock band between a parent cgroup's `memory.high` and an
+  unbounded `memory.max` no longer has no escape** (issue #1305, following
+  #1296). A parent ceiling that only sets `memory.high`, with `memory.max`
+  left at `max`, throttles the whole hierarchy without ever disengaging: the
+  cgroup sits above the soft ceiling and below both cgroups' hard ones,
+  nothing anywhere reclaims past or kills, and every allocating task parks in
+  uninterruptible `D` state. `ockham-container` wedged 75 minutes in exactly
+  this band on 2026-09-09 — 2,788,595 throttle events climbing at
+  ~96/second, `docker exec` itself hanging — while `doctor.sh`'s `parented`
+  verdict reported it `[ ok ]` throughout. `scripts/cgroup-parent-setup.sh`
+  now also sets the parent's `memory.max` (`--max`, default `1536m`, the sum
+  of what runs under it) and `memory.swap.max` (`--swap`, default `0` — the
+  same incident took 100% of host swap on a memory-capped VM), and `--check`
+  exits 2 for a parent whose `memory.high` is set but whose `memory.max` is
+  not. Two new read-only mounts (`AGENT_OPS_SCHEDULER_CGROUP_MAX`,
+  `AGENT_OPS_SCHEDULER_CGROUP_EVENTS`) let `lib/memory.sh`'s
+  `memory_cgroup_verdict` tell a closed band (`parented`) apart from an open
+  one (`livelocked`) or an unmeasured one (`unconfirmed`, never guessed as
+  `parented`), and let `doctor.sh` warn on a rising delta in the parent's own
+  `memory.events` `high` counter — a signal that fires even on a
+  `livelocked` or `unconfirmed` node, since it needs no ceiling correctly
+  configured first. Separately, `scripts/lint-shell.sh`'s memory budget now
+  reads the parent cgroup window too and costs *every* file's estimated
+  `shellcheck -x` memory against it, not only files above a fixed line-count
+  threshold. A line count picked to isolate one file says nothing about what
+  a node can afford: `scripts/doctor.sh`'s 9,367-line union sat under the old
+  10,000-line gate and so followed its sources unconditionally, at an
+  estimated 772 MiB against the 768 MiB a parented node actually has — a
+  ceiling its own container-only budget reading never saw. On such a node
+  `agent-cycle.sh`, `scripts/publish-dashboard.sh` and `scripts/doctor.sh`
+  are now skipped rather than linted, which is the announced trade: CI has
+  the memory and still checks all three in full.
+  `scripts/publish-dashboard-launcher.sh`'s pacing backoff is now
+  clamped to what its window has left, so a tick costing minutes rather than
+  seconds — this incident's own symptom of the wedge — cannot compute or log
+  a backoff of hours.
 
 - **`state-sync.sh` now redacts tokens and home paths before pushing state**
   (issue #966): its push committed `log.jsonl`, `review-log.jsonl`, cron

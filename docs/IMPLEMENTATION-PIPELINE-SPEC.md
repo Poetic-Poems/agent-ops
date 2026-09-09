@@ -571,6 +571,16 @@ file and carries placeholders only; `.env` itself is never committed.
   warns `No blkio throttle.read_bps_device support`), and Compose has no
   per-container egress cap at all. Disk and bandwidth are therefore bounded
   only by what the pipeline itself does.
+  A scheduler's own `mem_limit` is not the whole of what bounds it: an
+  opted-in node also creates it under a parent cgroup
+  (`scripts/cgroup-parent-setup.sh`) carrying `memory.high` (the proactive
+  reclaim `mem_limit` alone cannot express), `memory.max` and
+  `memory.swap.max` — the latter two added by agent-ops#1305 after a parent
+  with `memory.high` set and `memory.max` left at `max` proved to be a
+  livelock, not a mitigation: throttling that never disengages because
+  nothing anywhere is a hard enough ceiling to reclaim past, or to kill (see
+  requirement 2.0f above for the full mechanism and `memory_cgroup_verdict`'s
+  `livelocked`/`unconfirmed` verdicts).
 
 ### Target repositories
 
@@ -840,6 +850,8 @@ and the schema must carry every one of them.
 | `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
 | `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
+| `pager_stale_file_after_minutes` | 180 min | `node-stale`'s own per-key override of requirement 51's `pager_min_firing_minutes` hysteresis (agent-ops#1282): the fact this invariant evaluates is already slow-forming (a publication age past `2 × node_stale_after_minutes`), so filing waits far longer than the framework's own blip-sized default. |
+| `pager_dashboard_fetch_seconds` | 30 s | `dashboard-unreadable`'s own tolerance (agent-ops#1282) for how long a viewer's fetch of a node's `data.js` (agent-ops#1283's own viewer-vantage probe) may take before this invariant fires; a failed parse fires regardless of the elapsed time. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -2151,6 +2163,44 @@ implements.
       `memory.high` reads `max` either way — so it is bind-mounted read-only
       at `/run/cgroup-parent/memory.high`, defaulting to `/dev/null`, which
       reads as "no parent ceiling" rather than as a guess.
+
+      A ceiling on the parent is not, by itself, enough: `memory.high` only
+      throttles, and throttling that never disengages because nothing
+      anywhere is a hard enough wall to reclaim past — or to kill — is a
+      livelock, not a mitigation (agent-ops#1305). `ockham-container` wedged
+      75 minutes in exactly this band: `memory.current` sat above the
+      parent's `memory.high` and below both cgroups' `memory.max`, 2,788,595
+      throttle events accumulated at ~96/second, and every allocating task
+      parked in uninterruptible `D` state — `docker exec` into the node
+      included, which is what made the node undiagnosable remotely while it
+      lasted. `doctor.sh`'s own `parented` verdict read this exact state as
+      `[ ok ]` throughout, because `parented` only ever checked that the
+      parent's `memory.high` sat below the child's own `memory.max`, never
+      that the parent had a `memory.max` of its own for the kernel to
+      reclaim past. `scripts/cgroup-parent-setup.sh` therefore also sets the
+      parent's `memory.max` (`--max`, defaulting to the sum of what runs
+      under it — `1536m`, matching `AGENT_OPS_SCHEDULER_MEMORY`'s own
+      default) and `memory.swap.max` (`--swap`, defaulting to `0` — the
+      incident also took 100% of host swap on a memory-capped WSL2 VM), and
+      `--check` now exits 2 for a parent whose `memory.high` is set but whose
+      `memory.max` is not. Two more mounts alongside `/run/cgroup-parent/
+      memory.high` — `AGENT_OPS_SCHEDULER_CGROUP_MAX` at `/run/cgroup-parent/
+      memory.max` and `AGENT_OPS_SCHEDULER_CGROUP_EVENTS` at
+      `/run/cgroup-parent/memory.events`, the same `/dev/null`-default idiom
+      — let `memory_cgroup_verdict` read the parent's own hard ceiling and let
+      `doctor.sh` read the parent's raw throttle counter. `memory_cgroup_verdict`
+      gains two verdicts from this: `livelocked` (a real parent `memory.high`
+      with the parent's own `memory.max` left at `max` — warns, and is never
+      `[ ok ]`) and `unconfirmed` (the same real parent `memory.high`, but the
+      parent's own `memory.max` window cannot be read — an un-migrated
+      `compose.yaml`, or a node not yet re-run through `cgroup-parent-setup.sh`
+      — warns rather than guessing `parented`, since a guess given as `[ ok ]`
+      is exactly what left this incident's node wedged for 75 minutes).
+      `doctor.sh` additionally reads the parent's `memory.events` `high`
+      counter every run, persists one sample to `state_dir`, and warns on any
+      rising delta since the last one — a signal that needs no ceiling to be
+      correctly configured first, so it still fires on a `livelocked` or
+      `unconfirmed` node, which is the exact gap this incident fell through.
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -16330,6 +16380,134 @@ with the Reviewer's own.
       `approver_escalation_retire` from the single adjudication page to
       every page this framework or the Enabler files.
 
+    Issue #1282 (part 3c of #1126's own findings) adds five more —
+    **fleet liveness from a peer's vantage**, the class where every signal a
+    node emitted was one it also consumed, so only another node evaluating
+    it can catch the gap. All five are `owner-only`: none has a fix a
+    pipeline could perform on its own behalf, unlike `verdict-unanimous`'s
+    tech-debt filing. `pager_register` gains a fifth, optional argument,
+    `MIN_FIRING_MINUTES_OVERRIDE` — when non-empty, `_pager_evaluate_one`
+    uses it instead of `pager_evaluate`'s own `MIN_FIRING_MINUTES` for that
+    key alone (`lib/pager.sh`'s `PAGER_MIN_FIRING_MINUTES_OVERRIDE`), and an
+    omitted one (every call site before #1282) falls through unchanged.
+    `pager_evaluate` also gains five trailing, optional parameters —
+    `CYCLE_INTERVAL_MINUTES`, `NODE_STALE_AFTER_MINUTES`,
+    `UPDATER_STUCK_AFTER_MINUTES`, `DASHBOARD_FETCH_SECONDS`,
+    `REVIEW_UNION_LOG_FILE` — which `_pager_evaluate_one` sets as
+    `PAGER_EVAL_CYCLE_INTERVAL_MINUTES` and four siblings, the identical
+    plain-variable exception `PAGER_EVAL_REPO` already established: none of
+    these thresholds (or, for `review-pipeline-failing`, the review-log
+    union path) is a fact either of EVAL_FN's own two arguments carries, an
+    omitted one is empty, and every EVAL_FN below treats an empty threshold
+    as "never fire" rather than guessing at a default.
+
+    - **`firing-missed`** (owner-only). Fires when an *active* node's newest
+      evidence of its scheduler firing — a `cycle-start` or a `cycle-skipped`
+      (the implementation union log; `acquire_lock` logs `cycle-skipped` only
+      when it found the lock held by another live pid, itself proof the
+      scheduler ticked on schedule and deferred correctly) — is older than 2×
+      `schedule.cycle_interval_minutes` while it holds no lock — the
+      signature of supercronic dropping a firing outright (#1287 records the
+      gap from the inside: no `cycle-start`, no `cycle-skipped`, nothing in
+      `log.jsonl` at all), as distinct from a cycle that is simply still
+      running, or a long cycle whose scheduler keeps ticking (and skipping)
+      around it. `lock.json` is never published (`scripts/state-sync.sh`
+      excludes it), so "holds no lock" is derived purely from the union log:
+      a node's own newest cycle-start/cycle-end/cycle-skipped event being a
+      `cycle-start` means that cycle has not yet ended, so a long
+      *legitimate* cycle is never mistaken for a missed one. Staleness itself
+      is measured from the newer of the node's last `cycle-start` and last
+      `cycle-skipped`, not from `cycle-start` alone, so a cycle that outlasts
+      2× the interval while its scheduler keeps ticking (and correctly
+      skipping, because the earlier cycle still holds the lock) never crosses
+      the age threshold either — only silence on both counts does (#1312's
+      review of #1282 caught a trailing `cycle-skipped` inverting "holds no
+      lock" into a false positive; the fixture at
+      `test/pager-invariants.test.sh`'s `n5` reproduces and covers it).
+      `schedule.cycle_interval_minutes` is fleet-wide config, identical on
+      every node that reads it including the evaluating one, so no peer-
+      specific threshold needs to travel at all. The threshold is that bare
+      interval, **not** requirement 1d's worst-case gap: an installation
+      that restricts `schedule.cycle_hours` or `schedule.excluded_minutes`
+      goes longer between firings than twice the interval by design, and
+      this invariant would read the quiet stretch as a dropped firing. The
+      shipped configuration restricts neither, where the two quantities
+      coincide; #1314 carries the derivation, which needs `cadence_gaps`
+      (requirement 1b) to surface a gap it currently only consumes.
+      Evidence carries each
+      firing node's own recent cycle-duration histogram (up to five
+      completed cycles, matched by the `cycle` id every start/end pair
+      shares) — the acceptance's own "file, with the node's cycle-duration
+      histogram".
+    - **`node-stale`** (owner-only). Fires when a node's `heartbeat_age_s`
+      (`fleet_publication_status`, requirement 2.5, carried by every row
+      including this node's own) exceeds 2× `node_stale_after_minutes` —
+      past the dashboard's own `.stale` badge (1×) and into the 2026-08-08
+      both-laptop-nodes signature, four days nobody was looking at a page
+      nobody had. Files only after `pager_stale_file_after_minutes`
+      (default 180 min), its own `MIN_FIRING_MINUTES_OVERRIDE`: the
+      underlying fact is already slow-forming, so filing waits far longer
+      than the framework's blip-sized default. Once #1279's notification
+      channel lands, this class of page reaches it automatically
+      (`notify_events`' own default already names `pager`) — today it is
+      filed only.
+    - **`updater-stuck`** (owner-only). Fires when any active node's
+      `updater.status == "stuck"` for over 2× `updater_stuck_after_minutes`.
+      `.updater.seconds` (`lib/updater-health.sh`'s `updater_status`) already
+      carries the streak's own elapsed time, recomputed fresh on every
+      heartbeat write, so this reads it directly rather than re-deriving an
+      age from the union log the way `firing-missed` has to for a fact that
+      is never published at all.
+    - **`review-pipeline-failing`** (owner-only). Fires when any node's
+      streak of failed review *runs* (`review-log.jsonl`, fleet-replicated
+      like `log.jsonl` — `scripts/state-sync.sh` does not exclude it)
+      reaches 3 with no completed review between. A run — grouped by the
+      `review` id `review-cycle.sh`'s own `log_event` stamps on every line —
+      rather than a bare event, because `review-end` is written by that
+      script's `cleanup()` EXIT trap on *every* run whatever happened, and
+      both of its ordinary `review-attempt-failed` sites return success, so
+      a run that just failed still reports `review-end` with `exit_code: 0`;
+      a reader resetting on that would reset on the very run it was counting
+      and could never reach 3 at one repository per run. So, per run: any
+      `review-attempt-failed` increments; none, plus a `review-stage-end`,
+      resets; neither — a stand-down, a skip, nothing due — leaves the streak
+      untouched, since such a run carries no information about the pipeline's
+      health in either direction. That last case is the indistinguishability
+      #996 names, refused here rather than resolved. 3 is not schema-backed,
+      mirroring `lib/stage-health.sh`'s own un-schema-backed `THRESHOLD`
+      default for the identical reason it states: this class has not yet
+      seen a real incident to tune the number against. (`stage_health_
+      verdicts` itself counts non-zero `stage-end` events and never counts
+      `attempt-failed` toward its streak — the threshold is shared, the
+      reduction is this invariant's own, because the two pipelines record
+      a failed attempt differently.) **This invariant is the interim reader: #996 stays the
+      proper fix, a verdict folded directly into the heartbeat the way
+      `stage_health`/`updater`/`doctor` already are** — without it, a
+      review pipeline stalled or failing on every attempt looks identical,
+      from `--status`, the dashboard, and every heartbeat, to one that
+      simply has no repository due; this invariant closes that gap only
+      from a peer's own union-log vantage, not by adding the verdict itself.
+    - **`dashboard-unreadable`** (owner-only). Fires when a row's
+      `dashboard_fetch: {seconds, parsed}` field — a fact no node can
+      observe about itself — names a fetch slower than
+      `pager_dashboard_fetch_seconds` (default 30 s) or one that failed to
+      parse. This field is the contract #1283's own viewer-vantage probe is
+      expected to fold into `fleet_nodes_json` the same way `doctor` was
+      folded in for `verdict-unanimous` (#1278); until #1283 lands and
+      populates it, every row's `dashboard_fetch` is absent and this
+      invariant never fires — the same null-until-populated convention
+      `doctor`/`updater`/`stage_health` already use for a peer row built
+      from a heartbeat that predates the check, never a false negative from
+      a producer that does not exist yet.
+
+    Configuration for the five: `pager_stale_file_after_minutes` (default
+    180 min, `node-stale`'s own filing-hysteresis override) and
+    `pager_dashboard_fetch_seconds` (default 30 s, `dashboard-unreadable`'s
+    fetch-time tolerance) are new; `firing-missed`, `updater-stuck` and
+    `review-pipeline-failing` reuse `schedule.cycle_interval_minutes`,
+    `updater_stuck_after_minutes` and a fixed, un-schema-backed 3
+    respectively, needing no key of their own.
+
     `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
     evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
     page-rendering section documents the `pager-firing` banner and node-card
@@ -19565,55 +19743,88 @@ oblige anyone to edit a test.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
    `test/lint-shell.test.sh` passes.
-1g-i. **A script too large to lint in the memory available is degraded,
-   never skipped and never allowed to kill the cycle.** What "too large"
-   measures is the **union `-x` actually parses** — the file plus every file
-   it names in a `# shellcheck source=` directive, transitively, each counted
-   once (`analysed_lines`, `scripts/lint-shell.sh`) — and never the file's own
-   length. #771 is why the distinction matters: splitting `agent-cycle.sh`
-   moved its bulk into the `lib/*.sh` modules it sources, and `-x` re-inlines
-   every one of them, so the file's own `wc -l` fell from 10,136 to 2,865
-   while the union it costs stayed at 26,262. A guard reading the file's own
-   length would have declared the problem solved and gone on to OOM-kill the
-   node it ran on. The unions in this tree are 26,262 lines for
-   `agent-cycle.sh` and 7,522 for the next largest,
-   `scripts/publish-dashboard.sh`, so `LINT_SHELL_LARGE_LINES` (10,000) picks
-   out one file and only one.
+1g-i. **A script too large to lint in the memory available is degraded, or —
+   where not even that fits — skipped, and never allowed to kill the cycle;
+   and this is judged against every file, not only ones above some fixed line
+   count (agent-ops#1305).** What "too large" measures is the **union `-x` actually
+   parses** — the file plus every file it names in a `# shellcheck source=`
+   directive, transitively, each counted once (`analysed_lines`,
+   `scripts/lint-shell.sh`) — and never the file's own length. #771 is why
+   the distinction matters: splitting `agent-cycle.sh` moved its bulk into
+   the `lib/*.sh` modules it sources, and `-x` re-inlines every one of them,
+   so the file's own `wc -l` fell from 10,136 to 2,865 while the union it
+   costs stayed at 26,262. A guard reading the file's own length would have
+   declared the problem solved and gone on to OOM-kill the node it ran on.
+   The largest unions in this tree are 35,674 lines for `agent-cycle.sh`,
+   12,953 for `scripts/publish-dashboard.sh`, 9,367 for `scripts/doctor.sh`
+   and 7,196 for `review-cycle.sh` — every one of them a whole entry point's
+   worth of `lib/*.sh`, and every one of them growing with the tree, which is
+   the reason the guard costs a union rather than compares it to a constant.
    The GHC runtime shellcheck is built on ignores `+RTS -M` (the release
    binary is not linked with `-rtsopts`) and reserves a 1 TB address space, so
    neither a heap cap nor `ulimit -v` can bound it; the only thing that can is
-   not running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
-   ceiling and `MemAvailable`, and for a file at or above
-   `LINT_SHELL_LARGE_LINES` it follows sources when at least
-   `LINT_SHELL_FOLLOW_MIB` (6,144) is free, and otherwise — down to
-   `LINT_SHELL_PLAIN_MIB` (1,024) — drops `-x` and suppresses SC1091, SC2154
-   and SC2034 for that file. All three are artefacts of the degradation rather
-   than findings about the code: without `-x` shellcheck sees none of the
-   modules the file sources, so a `source` line raises SC1091 and every
-   variable crossing the boundary reads as unassigned (SC2154) or as assigned
-   and never read (SC2034), which after #771 is 25 of them in `agent-cycle.sh`
-   with nothing wrong with any of them. Below `LINT_SHELL_PLAIN_MIB` the file
-   is not linted at all — reachable in principle, and after #771 no longer
-   reachable in practice: `agent-cycle.sh` without `-x` completes in 634 MiB,
-   comfortably inside a scheduler container's entire 1,536 MiB ceiling, where
-   before the split it was killed at that ceiling and skipped outright. What
-   the split cannot buy is following the sources *inside* that ceiling, and
-   nothing else can either: a 172-line entry point over the same modules —
-   23,569 lines of union — already costs 1,983 MiB, against `agent-cycle.sh`'s
-   own 26,262 passing 4,543 MiB before the kernel stops it. The cost is the
+   not running it. So `scripts/lint-shell.sh` reads the smallest of its own
+   cgroup ceiling, the *parent* cgroup's `memory.high`
+   (`LINT_SHELL_PARENT_HIGH_FILE`, defaulting to `/run/cgroup-parent/
+   memory.high` — the same read-only window `deploy/docker/compose.yaml`
+   mounts for `lib/memory.sh`'s own parent-ceiling reads) and `MemAvailable`,
+   names whichever of the three actually bound it, and estimates **every**
+   file's own cost to follow with `-x` by interpolating/extrapolating between
+   three measured points (`estimated_follow_mib`: 4,945 union lines at 396
+   MiB, 23,569 at 1,983 MiB, 26,262 at 4,543 MiB, the last of these a floor
+   rather than a peak since that run never finished) rather than gating on a
+   fixed line count first. This is what closes agent-ops#1305's own reading of
+   the guard: a line count picked to isolate one file says nothing about what
+   the node running it can afford, and the former 10,000-line gate let
+   everything below it follow sources unconditionally, whatever the budget.
+   `scripts/doctor.sh` is the clearest case — 9,367 union lines, under that
+   gate, and an estimated 772 MiB to follow, against the 768 MiB a parented
+   node actually has. That is an uncosted `shellcheck -x` sized at the
+   incident's own first measured kill (964 MB anon-rss), on a node the guard
+   was reporting nothing about. A file whose estimate fits the budget follows with `-x`; one whose
+   estimate exceeds it but whose budget is still at least `LINT_SHELL_PLAIN_MIB`
+   (1,024, a roughly constant cost regardless of the file's own size) is linted
+   without `-x`, suppressing SC1091, SC2154 and SC2034 for that file — all
+   three artefacts of the degradation rather than findings about the code:
+   without `-x` shellcheck sees none of the modules the file sources, so a
+   `source` line raises SC1091 and every variable crossing the boundary reads
+   as unassigned (SC2154) or as assigned and never read (SC2034), which after
+   #771 is 25 of them in `agent-cycle.sh` with nothing wrong with any of them.
+   Below `LINT_SHELL_PLAIN_MIB` the file is not linted at all, and which of
+   the two reduced modes a node lands in is a property of that node's budget
+   rather than of the file. An un-parented scheduler container has its whole
+   1,536 MiB, which is above `LINT_SHELL_PLAIN_MIB`, so nothing there is ever
+   skipped: `agent-cycle.sh` without `-x` completes in 634 MiB, comfortably
+   inside that ceiling, where before #771's split it was killed at that
+   ceiling and skipped outright. A **parented** node has the parent's
+   `memory.high` instead — 768 MiB at `scripts/cgroup-parent-setup.sh`'s own
+   default, which is *below* `LINT_SHELL_PLAIN_MIB` — so on one of those the
+   skip path is reached in practice, for every file whose estimate exceeds
+   the budget: `agent-cycle.sh`, `scripts/publish-dashboard.sh` and
+   `scripts/doctor.sh` as the tree stands. That is the trade agent-ops#1305
+   accepted deliberately — reduced local coverage, announced on stderr, is
+   strictly better than an invocation the node cannot afford — and it is
+   another reason the skip does not fail the run: CI has the memory and
+   checks all three in full. What no local ceiling can buy is following the
+   sources *inside* it, and nothing else can either: a 172-line entry point
+   over the same modules — 23,569 lines of union — already costs 1,983 MiB,
+   against `agent-cycle.sh`'s 26,262-line union at the time of that
+   measurement passing 4,543 MiB before the kernel stops it. The cost is the
    union, the union is this pipeline's whole codebase, and following it from
-   an entry point is a CI-sized job by construction. So the guard's degraded
-   mode is permanent for the two entry points rather than a stage on the way
-   to something better, and the checks it gives up are recovered in CI rather
-   than one day locally.
+   an entry point is a CI-sized job by construction. So the guard's reduced
+   modes are permanent for the largest entry points rather than a stage on
+   the way to something better, and the checks they give up are recovered in
+   CI rather than one day locally.
    Degrading and skipping are both announced on stderr naming the file, its
-   own length, its union and the shortfall, because silence would read as
-   coverage that did not happen; a skip alone does not fail the run, since CI
-   has the memory and does check it — `.github/workflows/shellcheck.yml` sets
-   `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and the
-   gate's coverage does not quietly track how much memory a runner happens to
-   have, which is also what keeps the three suppressed checks checked in full
-   on every pull request.
+   own length, its union, the estimated cost, and which ceiling bound the
+   budget, because silence would read as coverage that did not happen; a skip
+   alone does not fail the run, since CI has the memory and does check it —
+   `.github/workflows/shellcheck.yml` sets `LINT_SHELL_FOLLOW_MIB: 0`, which
+   disables the guard outright (every file follows with `-x` whatever the
+   estimate says) rather than merely raising a threshold, so the gate's
+   coverage does not quietly track how much memory a runner happens to have,
+   which is also what keeps the three suppressed checks checked in full on
+   every pull request.
 1g-ii. **Every GraphQL document this repository sends still validates
    against GitHub's live schema, checked nightly rather than at merge time.**
    `.github/workflows/graphql-drift.yml` runs
@@ -20175,22 +20386,44 @@ oblige anyone to edit a test.
    at or above it; `memory_describe` names both the available MiB and the
    floor; `memory_cgroup_verdict` reads `unbounded` for a real `memory.max`
    with `memory.high` unset on both this cgroup and its parent, `bounded`
-   once `memory.high` is set on this cgroup, `parented` when this cgroup's is
-   unset but the mounted parent window carries a real one, `unlimited`
-   when there is no ceiling at all, and `unknown` — never a verdict — when
-   the cgroup files cannot be read; a parent window that is absent, empty
-   (the `/dev/null` default), itself `max`, or at or above `memory.max` leaves
-   the verdict `unbounded` rather than `parented` — so neither an un-opted-in
+   once `memory.high` is set on this cgroup, `unlimited` when there is no
+   ceiling at all, and `unknown` — never a verdict — when the cgroup files
+   cannot be read; a parent window that is absent, empty (the `/dev/null`
+   default), itself `max`, or at or above `memory.max` leaves the verdict
+   `unbounded` rather than any of the three below — so neither an un-opted-in
    node nor one whose parent ceiling sits at the hard limit and would reclaim
-   nothing before it is ever reported bounded. `parented` is the only verdict
-   here that reads `[ ok ]` on a container with a real `memory.max`, which is
-   why it is the one carrying that guard; `bounded` warns either way. `test/memory-wiring.test.sh` passes
+   nothing before it is ever reported anything but plainly unbounded.
+   Where this cgroup's own `memory.high` is unset but the mounted parent
+   window carries a real one below `memory.max`, the verdict depends on the
+   parent's *own* `memory.max` (agent-ops#1305, read via the
+   `AGENT_OPS_SCHEDULER_CGROUP_MAX` mount, `MEMORY_CGROUP_PARENT_MAX`):
+   `parented` when the parent's own `memory.max` is a real ceiling above the
+   parent's `memory.high` (a hard wall exists somewhere, so `memory.high`'s
+   throttling eventually disengages); `livelocked` when the parent's own
+   `memory.max` is `max` (no wall anywhere, so throttling never disengages —
+   the exact band that wedged `ockham-container` for 75 minutes with 2,788,595
+   throttle events); `unconfirmed` when the parent's own `memory.max` window
+   cannot be read (an un-migrated `compose.yaml`, or a node that has not
+   re-run `cgroup-parent-setup.sh` since it started mounting that window) —
+   never reported `parented` on an unmeasured guess. `parented` is the only
+   one of these three that reads `[ ok ]`; `livelocked` and `unconfirmed` both
+   warn, exactly as `bounded` does, and for the same reason: a state that
+   might not still be true tomorrow — or was never actually measured — is not
+   a healthy one to report as such. `test/memory-wiring.test.sh` passes
    against the block lifted verbatim from `lib/standdown.sh`: memory below
    the floor exits 0 without falling through to the rest of the cycle, the
    logged `stand-down` event carries `cause: "memory-low"` and both the
    available and total KiB; memory at or above the floor, an unreadable
    `/proc/meminfo`, and `min_free_memory_bytes: 0` all fall through
-   untouched, standing nothing down.
+   untouched, standing nothing down. `test/doctor.test.sh` passes: the
+   container-memory line always reports one of these verdicts' own wording;
+   and, separately, a rising delta in the parent's own `memory.events` `high`
+   counter (`MEMORY_CGROUP_PARENT_EVENTS`, persisted between runs at
+   `state_dir/.doctor-memory-events-high`) warns naming the delta and the
+   elapsed time since the prior sample, a flat delta reads `[ ok ]`, and a
+   first sample establishes the baseline silently — this check needs no
+   ceiling to be correctly configured first, so it still fires on a
+   `livelocked` or `unconfirmed` node.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
@@ -23938,8 +24171,37 @@ oblige anyone to edit a test.
     unanimity; `page-outlived-item` fires when a stubbed `gh issue
     list`/`gh pr view` shows an open page's own linked PR merged or closed,
     and its remedy closes exactly the pages found outlived, none still
-    open. `scripts/lint-shell.sh` is clean on every file this requirement
-    touches.
+    open. The same file also drives agent-ops#1282's five peer-vantage
+    invariants against fixture union logs and heartbeat sets:
+    `firing-missed` fires on an active node whose newest `cycle-start` or
+    `cycle-skipped` is past 2× a configured interval with no lock held, but
+    not on a node that recently cycled, not on one whose heartbeat is itself
+    stale, not on one whose own last event is an unmatched `cycle-start`
+    (still holds its lock) however old, and not on one whose long-running
+    cycle-start is trailed by a recent `cycle-skipped` — proof its scheduler
+    kept ticking and correctly deferred — even though that skip is not
+    itself a lock hold — with evidence carrying the firing node's own
+    cycle-duration histogram; `node-stale` fires only on a row whose
+    `heartbeat_age_s` exceeds 2× the configured threshold; `updater-stuck`
+    fires only on an active row reporting `updater.status: "stuck"` past 2×
+    the configured threshold, never a stale row's; `review-pipeline-failing`
+    fires on a per-node streak of 3 or more failed review runs *each of
+    which ends in a `review-end` reporting `exit_code: 0`* — the shape
+    `review-cycle.sh` actually writes, and the one a reader reducing over
+    raw events would silence itself on — resets on a run that completed a
+    review, is left untouched by a stood-down run between two failures, and
+    its evidence names #996 and counts runs rather than events;
+    `dashboard-unreadable` fires
+    on a row whose `dashboard_fetch` names a slow fetch or a failed parse,
+    never on a row carrying no probe result at all. Each of the five also
+    proves it never fires with its own threshold unconfigured (an empty
+    `PAGER_EVAL_*` variable). `test/pager.test.sh` additionally proves
+    `pager_register`'s new, optional fifth argument records against the key
+    (empty when omitted) and that a key registered with an override ignores
+    `pager_evaluate`'s own shared `MIN_FIRING_MINUTES` entirely. `scripts/
+    render-config-table.sh --check` passes with `pager_stale_file_after_
+    minutes`/`pager_dashboard_fetch_seconds` added. `scripts/lint-shell.sh`
+    is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

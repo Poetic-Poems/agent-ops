@@ -1066,6 +1066,32 @@
         }
       }
     },
+    "pager_stale_file_after_minutes": {
+      "description": "Minutes lib/pager-invariants.sh's `node-stale` invariant waits, continuously firing, before filing its tracking issue — a per-key override of `pager_min_firing_minutes` (agent-ops#1282, lib/pager.sh's `pager_register`, fifth argument), since the fact behind this key (a publication age already past `2 × node_stale_after_minutes`) is itself slow-forming and a node gone dark deserves a page (agent-ops#1279's own notification channel, once it lands) far sooner than a GitHub issue.",
+      "type": "number",
+      "minimum": 0,
+      "default": 180,
+      "x-docs": {
+        "readme": "Minutes. How long the dashboard's `node-stale` pager invariant waits, continuously firing, before opening a tracking issue — longer than `pager_min_firing_minutes` on purpose: the underlying fact (a node's publication age already past twice `node_stale_after_minutes`) is itself slow to form.",
+        "spec": "`node-stale`'s own per-key override of requirement 51's `pager_min_firing_minutes` hysteresis (agent-ops#1282): the fact this invariant evaluates is already slow-forming (a publication age past `2 × node_stale_after_minutes`), so filing waits far longer than the framework's own blip-sized default.",
+        "value": {
+          "spec": "180 min"
+        }
+      }
+    },
+    "pager_dashboard_fetch_seconds": {
+      "description": "Seconds lib/pager-invariants.sh's `dashboard-unreadable` invariant tolerates a viewer's fetch of a node's data.js taking (agent-ops#1282) before treating it as unreadable from that viewer's vantage — the same tolerance a failed parse trips regardless of how fast it answered. Reads the `dashboard_fetch: {seconds, parsed}` field agent-ops#1283's own viewer-vantage probe is expected to fold into every fleet node's row; until that lands, no row carries the field and this invariant never fires.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 30,
+      "x-docs": {
+        "readme": "Seconds. How long a viewer may take fetching a node's `data.js` before the dashboard's `dashboard-unreadable` pager invariant treats it as unreadable from that viewer's vantage — a failed parse trips it regardless of how fast it answered.",
+        "spec": "`dashboard-unreadable`'s own tolerance (agent-ops#1282) for how long a viewer's fetch of a node's `data.js` (agent-ops#1283's own viewer-vantage probe) may take before this invariant fires; a failed parse fires regardless of the elapsed time.",
+        "value": {
+          "spec": "30 s"
+        }
+      }
+    },
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",

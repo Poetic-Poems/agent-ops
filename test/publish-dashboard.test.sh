@@ -1337,6 +1337,24 @@ assert_contains "the cost and the backoff are logged, not left to top" "pacing: 
 run_paced 20 6 1
 assert_eq "a tick the window cannot fit is not started" "1" "$(grep -c . "$pace_log")"
 
+# The computed backoff itself is capped to what the window has left, never to
+# whatever last_cost_ms * duty_divisor comes to unclamped (agent-ops#1305). A
+# node livelocked by a memory cgroup's throttling measured a 4,511,835 ms
+# tick, which this loop turned into a logged "next tick in 40606s" (11.3
+# hours) — harmless there only because the window's own `endat` guard broke
+# the loop first, and worth clamping regardless, since that guard is a
+# coincidence of this incident's numbers, not a property the backoff itself
+# ever had to respect before. A one-second tick at a deliberately inflated
+# 1:50 duty divisor reproduces the same shape without waiting for the real
+# defect or a five-minute window.
+run_paced 20 1 50
+assert_eq "a hugely inflated backoff still starts only the one tick the window can fit" \
+  "1" "$(grep -c . "$pace_log")"
+logged_backoff_s="$(grep -oE 'next tick in [0-9]+s' "$pace_home/.local/state/poetic-agents/dashboard.log" | \
+  tail -n1 | grep -oE '[0-9]+')"
+assert_eq "…and the logged backoff never claims more seconds than the window itself has" \
+  "1" "$(( logged_backoff_s <= 20 ))"
+
 # --- ...and the reserve is per tick kind, across windows (#807) ---------------
 # The reserve above was taken against `last_cost_ms` — the previous tick, of
 # whichever kind. That held only while every tick was expensive. #804 made the

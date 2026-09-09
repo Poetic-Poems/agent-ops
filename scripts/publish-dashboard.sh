@@ -190,6 +190,12 @@ pager_repo="$(cfg '.pager_repo')"
 [[ -n "$pager_repo" ]] || pager_repo="$(cfg '.crash_loop_repo')"
 pager_min_firing_minutes="$(cfg '.pager_min_firing_minutes')"
 [[ "$pager_min_firing_minutes" =~ ^[0-9]+$ ]] || pager_min_firing_minutes=15
+# agent-ops#1282's own two keys: `node-stale`'s per-key filing-hysteresis
+# override, and `dashboard-unreadable`'s fetch-time tolerance.
+pager_stale_file_after_minutes="$(cfg '.pager_stale_file_after_minutes')"
+[[ "$pager_stale_file_after_minutes" =~ ^[0-9]+$ ]] || pager_stale_file_after_minutes=180
+pager_dashboard_fetch_seconds="$(cfg '.pager_dashboard_fetch_seconds')"
+[[ "$pager_dashboard_fetch_seconds" =~ ^[0-9]+$ ]] || pager_dashboard_fetch_seconds=30
 enabler_assignee="$(cfg '.enabler_assignee')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 escalation_webhook_url="$(cfg '.escalation_webhook_url')"
@@ -284,6 +290,12 @@ stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
 # types the key `number`, and bash arithmetic cannot evaluate a fractional
 # one at all.
 updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
+# The raw minutes value, alongside the seconds derivation above: lib/pager-
+# invariants.sh's own `updater-stuck` (agent-ops#1282) reads `.updater.seconds`
+# directly off each row rather than an age it would have to derive itself, so
+# it needs the *minutes* threshold, unconverted, the same way `node_stale_
+# after_minutes` below is read raw for `node-stale`.
+updater_stuck_after_minutes_raw="$(cfg '.updater_stuck_after_minutes')"
 # The bound on a legitimate defer streak — see scripts/state-sync.sh's
 # identical derivation for why it is the longer of the two lock staleness
 # windows, read the same simple way watchtower-pre-update.sh's own held_by()
@@ -295,6 +307,11 @@ updater_defer_stuck_after_seconds="$(cfg \
 # identically to a peer's row and to this node's own below — minutes → seconds
 # for the same reason updater_stuck_after_seconds converts above.
 node_stale_after_seconds="$(cfg '.node_stale_after_minutes * 60 | floor')"
+# The raw minutes value, alongside the seconds derivation above: lib/pager-
+# invariants.sh's own `node-stale` (agent-ops#1282) compares against 2× this
+# many minutes, so it needs the unconverted value the same way `updater_
+# stuck_after_minutes_raw` above does for `updater-stuck`.
+node_stale_after_minutes_raw="$(cfg '.node_stale_after_minutes')"
 # The fleet-wide transient-refusal verdict (lib/crash-loop.sh, issue #1073):
 # a `crash_loop_verdict` run whose `escalate` is `false` — every failure it
 # counted was the API being unreachable, not refusing a request — never
@@ -2421,13 +2438,23 @@ if (( WITH_GITHUB )); then
   # WITH_GITHUB-gated, not merely FULL: firing/clearing may create or close a
   # GitHub issue, which a --no-github (test or local-only) tick must never do.
   if [[ "$pager_enabled" == "true" ]]; then
-    pager_register_builtin_invariants
+    pager_register_builtin_invariants "$pager_stale_file_after_minutes"
     export CLAIM_GH="$DASHBOARD_GH_CMD"
     export PAGER_GH="$DASHBOARD_GH_CMD"
+    # review-log.jsonl's own fleet union, for `review-pipeline-failing`
+    # (agent-ops#1282) alone — fleet-replicated like log.jsonl
+    # (scripts/state-sync.sh does not exclude it) but not part of the
+    # implementation union log every other invariant reads.
+    pager_review_union="$work_tmp/pager-review-union.jsonl"
+    fleet_logs "$state_dir" "$peers_dir" review-log.jsonl > "$pager_review_union" 2>/dev/null \
+      || : > "$pager_review_union"
     pager_evaluate "$SCRIPT_DIR/lib/claim.sh" "$pager_repo" "pw::pager" \
       "$enabler_escalation_label" "$enabler_assignee" "$escalation_webhook_url" \
       "$pager_min_firing_minutes" "$state_dir/log.jsonl" "$events_jsonl" "$fleet_nodes_json" \
-      "$self_node" "publisher-$self_node-$now_epoch" || true
+      "$self_node" "publisher-$self_node-$now_epoch" \
+      "$github_budget_cycle_interval_minutes" "$node_stale_after_minutes_raw" \
+      "$updater_stuck_after_minutes_raw" "$pager_dashboard_fetch_seconds" \
+      "$pager_review_union" || true
     # Re-read the union: pager_evaluate may just have appended to this node's
     # own log.jsonl, which $events_jsonl (built before this block) cannot
     # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs

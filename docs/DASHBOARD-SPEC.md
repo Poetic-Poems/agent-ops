@@ -1129,6 +1129,21 @@ both without a second fetch of either. `pager_enabled` (default `true`)
 gates the whole call; `false` skips it outright, the same as `--no-github`
 does structurally.
 
+One invariant needs a third artefact, which this block therefore assembles
+itself: `review-pipeline-failing` (agent-ops#1282) reads the review
+pipeline's own log, not the implementation one, so the block runs
+`fleet_logs` a second time over `review-log.jsonl` — fleet-replicated like
+`log.jsonl`, and excluded from neither — and hands the result to
+`pager_evaluate` as `REVIEW_UNION_LOG_FILE`. It is assembled here rather
+than alongside `events_jsonl` above because it has exactly one reader, on a
+path already gated to `WITH_GITHUB`: an ordinary tick never pays for it.
+The block also reads the two config keys agent-ops#1282 added —
+`pager_stale_file_after_minutes`, passed to
+`pager_register_builtin_invariants` as `node-stale`'s own per-key filing
+hysteresis, and `pager_dashboard_fetch_seconds` — along with the raw
+(unconverted-to-seconds) `node_stale_after_minutes` and
+`updater_stuck_after_minutes` those invariants compare against directly.
+
 Because `pager_evaluate` may itself append `pager-*` transition events to
 this node's own `log.jsonl`, the payload's own `pager` array is read from a
 *fresh* re-union of the fleet log — `fleet_logs` run again, after
@@ -2197,6 +2212,18 @@ number's twins elsewhere on the page.
   quiet system. `.dashboard-tick-cost` is launcher bookkeeping: it is excluded
   from the fingerprint under **The no-op tick** and from replication, so
   writing it cannot invalidate the skip it exists beside.
+  The backoff computed from a tick's own cost (`last_cost_ms * duty_divisor`)
+  is itself **clamped to what the window has left** (`endat - tick_margin`,
+  floored at zero) before it is either slept against or logged (agent-ops#1305):
+  a node livelocked by a parent memory cgroup's throttling (see `scripts/
+  cgroup-parent-setup.sh` and `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement
+  2n-i) measured a 4,511,835 ms tick, which the unclamped arithmetic turned into
+  a `pacing:` line reading "next tick in 40606s" (11.3 hours) — harmless there
+  only because the loop's own end-of-window check breaks out before sleeping
+  that long, and a coincidence of that incident's numbers rather than a
+  property the backoff itself ever had to respect. The `pacing:` line always
+  reports the clamped figure, never the raw product, so the log cannot claim a
+  backoff longer than the window it is inside of.
   A healthy window ends `exit 0` — its exit status is explicit, not
   whatever the final tick's lock bookkeeping happened to return
   (`LAUNCHER_WINDOW` shortens the window, `LAUNCHER_PUBLISH_CMD` swaps in a
