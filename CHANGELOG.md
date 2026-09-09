@@ -461,6 +461,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   minting only when `GH_TOKEN` is already empty, so an explicit token (a
   human's own, or the Approver's) always passes through untouched.
 
+- **The livelock band between a parent cgroup's `memory.high` and an
+  unbounded `memory.max` no longer has no escape** (issue #1305, following
+  #1296). A parent ceiling that only sets `memory.high`, with `memory.max`
+  left at `max`, throttles the whole hierarchy without ever disengaging: the
+  cgroup sits above the soft ceiling and below both cgroups' hard ones,
+  nothing anywhere reclaims past or kills, and every allocating task parks in
+  uninterruptible `D` state. `ockham-container` wedged 75 minutes in exactly
+  this band on 2026-09-09 — 2,788,595 throttle events climbing at
+  ~96/second, `docker exec` itself hanging — while `doctor.sh`'s `parented`
+  verdict reported it `[ ok ]` throughout. `scripts/cgroup-parent-setup.sh`
+  now also sets the parent's `memory.max` (`--max`, default `1536m`, the sum
+  of what runs under it) and `memory.swap.max` (`--swap`, default `0` — the
+  same incident took 100% of host swap on a memory-capped VM), and `--check`
+  exits 2 for a parent whose `memory.high` is set but whose `memory.max` is
+  not. Two new read-only mounts (`AGENT_OPS_SCHEDULER_CGROUP_MAX`,
+  `AGENT_OPS_SCHEDULER_CGROUP_EVENTS`) let `lib/memory.sh`'s
+  `memory_cgroup_verdict` tell a closed band (`parented`) apart from an open
+  one (`livelocked`) or an unmeasured one (`unconfirmed`, never guessed as
+  `parented`), and let `doctor.sh` warn on a rising delta in the parent's own
+  `memory.events` `high` counter — a signal that fires even on a
+  `livelocked` or `unconfirmed` node, since it needs no ceiling correctly
+  configured first. Separately, `scripts/lint-shell.sh`'s memory budget now
+  reads the parent cgroup window too and costs *every* file's estimated
+  `shellcheck -x` memory against it, not only files above a fixed line-count
+  threshold. A line count picked to isolate one file says nothing about what
+  a node can afford: `scripts/doctor.sh`'s 9,367-line union sat under the old
+  10,000-line gate and so followed its sources unconditionally, at an
+  estimated 772 MiB against the 768 MiB a parented node actually has — a
+  ceiling its own container-only budget reading never saw. On such a node
+  `agent-cycle.sh`, `scripts/publish-dashboard.sh` and `scripts/doctor.sh`
+  are now skipped rather than linted, which is the announced trade: CI has
+  the memory and still checks all three in full.
+  `scripts/publish-dashboard-launcher.sh`'s pacing backoff is now
+  clamped to what its window has left, so a tick costing minutes rather than
+  seconds — this incident's own symptom of the wedge — cannot compute or log
+  a backoff of hours.
+
 - **`state-sync.sh` now redacts tokens and home paths before pushing state**
   (issue #966): its push committed `log.jsonl`, `review-log.jsonl`, cron
   logs, and cycle/review transcripts to the private state-mirror

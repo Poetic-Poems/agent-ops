@@ -136,6 +136,17 @@ stub_cgroup() {
   printf '%s\n' "786432000" > "$MEMORY_CGROUP_ROOT/memory.current"
   MEMORY_CGROUP_PARENT_HIGH="$fixture_dir/parent-memory.high"
   printf '%s' "${3-}" > "$MEMORY_CGROUP_PARENT_HIGH"
+  # Fourth arg, when passed, stubs the parent's own memory.max window; when
+  # omitted the window is left unset (pointed at a path that does not exist)
+  # rather than written empty, so a test can tell "read empty" apart from
+  # "never read at all" the same way `stub_cgroup`'s own callers do for
+  # MEMORY_CGROUP_PARENT_HIGH via the unset-vs-empty-string distinction on $3.
+  if (( $# >= 4 )); then
+    MEMORY_CGROUP_PARENT_MAX="$fixture_dir/parent-memory.max"
+    printf '%s' "$4" > "$MEMORY_CGROUP_PARENT_MAX"
+  else
+    MEMORY_CGROUP_PARENT_MAX="$fixture_dir/no-such-parent-max"
+  fi
 }
 
 stub_cgroup max 1610612736
@@ -163,8 +174,8 @@ assert_eq "an unreadable cgroup is unknown, never a verdict" \
 # can act on, `parented` in the case below is a node quietly ratcheting while
 # doctor calls it healthy.
 
-stub_cgroup max 1610612736 805306368
-assert_eq "a ceiling on the parent is parented, not unbounded" \
+stub_cgroup max 1610612736 805306368 1610612736
+assert_eq "a ceiling on the parent, itself hard-ceilinged, is parented" \
   "parented" "$(memory_cgroup_verdict)"
 
 stub_cgroup max 1610612736 max
@@ -192,6 +203,55 @@ MEMORY_CGROUP_PARENT_HIGH="$fixture_dir/no-such-parent-window"
 assert_eq "a missing parent window is unbounded, never parented" \
   "unbounded" "$(memory_cgroup_verdict)"
 
+# --- memory_cgroup_verdict: the livelock band (agent-ops#1305) ---------------
+#
+# A ceiling on the parent closes the band only if the parent itself has a
+# real memory.max somewhere above it. Without one, memory.high throttles
+# forever and nothing ever kills anything — the exact state that wedged
+# ockham-container for 75 minutes while doctor.sh reported this as `parented`
+# and `[ ok ]`.
+
+stub_cgroup max 1610612736 805306368 max
+assert_eq "a parent high with the parent's own max unbounded is livelocked" \
+  "livelocked" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 805306368
+assert_eq "a parent high with the parent's own max unreadable is unconfirmed, not parented" \
+  "unconfirmed" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 805306368 3221225472
+assert_eq "a parent high with a real parent max above it stays parented" \
+  "parented" "$(memory_cgroup_verdict)"
+
+# --- memory_cgroup_parent_max -------------------------------------------------
+
+stub_cgroup max 1610612736 805306368 max
+assert_eq "memory_cgroup_parent_max reads 'max' verbatim, not collapsed to empty" \
+  "max" "$(memory_cgroup_parent_max)"
+
+stub_cgroup max 1610612736 805306368 1610612736
+assert_eq "memory_cgroup_parent_max reads a real ceiling" \
+  "1610612736" "$(memory_cgroup_parent_max)"
+
+stub_cgroup max 1610612736 805306368
+assert_eq "memory_cgroup_parent_max is empty when the window cannot be read" \
+  "" "$(memory_cgroup_parent_max)"
+
+# --- memory_cgroup_parent_events_high -----------------------------------------
+
+stub_events() {
+  MEMORY_CGROUP_PARENT_EVENTS="$fixture_dir/parent-memory.events"
+  printf 'low 0\nhigh %s\nmax 0\noom 0\noom_kill 0\n' "$1" > "$MEMORY_CGROUP_PARENT_EVENTS"
+}
+
+stub_events 2788595
+assert_eq "memory_cgroup_parent_events_high reads the 'high' field" \
+  "2788595" "$(memory_cgroup_parent_events_high)"
+
+MEMORY_CGROUP_PARENT_EVENTS="$fixture_dir/no-such-parent-events"
+assert_eq "memory_cgroup_parent_events_high is empty when the window cannot be read" \
+  "" "$(memory_cgroup_parent_events_high)"
+
 # --- memory_cgroup_describe --------------------------------------------------
 
 stub_cgroup max 1610612736
@@ -213,6 +273,24 @@ assert_contains "memory_cgroup_parent_describe names what is held now" \
   "750 MiB" "$desc"
 assert_contains "memory_cgroup_parent_describe says it survives a roll" \
   "after a roll" "$desc"
+
+# --- memory_cgroup_livelock_describe ------------------------------------------
+
+stub_cgroup max 1610612736 805306368 max
+desc="$(memory_cgroup_livelock_describe)"
+assert_contains "memory_cgroup_livelock_describe names the parent's high" "768 MiB" "$desc"
+assert_contains "memory_cgroup_livelock_describe names the hard ceiling" "1536 MiB" "$desc"
+assert_contains "memory_cgroup_livelock_describe names what is held now" "750 MiB" "$desc"
+assert_contains "memory_cgroup_livelock_describe points at the fix" \
+  "cgroup-parent-setup.sh" "$desc"
+
+# --- memory_cgroup_unconfirmed_describe ---------------------------------------
+
+desc="$(memory_cgroup_unconfirmed_describe)"
+assert_contains "memory_cgroup_unconfirmed_describe says the state is unmeasured" \
+  "unmeasured" "$desc"
+assert_contains "memory_cgroup_unconfirmed_describe points at the fix" \
+  "cgroup-parent-setup.sh" "$desc"
 
 # --- Result ------------------------------------------------------------------
 

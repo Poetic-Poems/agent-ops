@@ -147,6 +147,19 @@ memory_describe() {
 # in it, so this container's own existence pins the parent it points at.
 : "${MEMORY_CGROUP_PARENT_HIGH:=/run/cgroup-parent/memory.high}"
 
+# MEMORY_CGROUP_PARENT_MAX and MEMORY_CGROUP_PARENT_EVENTS are the same kind
+# of read-only window, onto the parent's `memory.max` and `memory.events`
+# respectively. `memory.max` is what tells `parented` (a hard ceiling exists
+# somewhere) apart from `livelocked` (it does not, so `memory.high`'s
+# throttling never disengages — agent-ops#1305: `memory.current` sat above the
+# parent's `memory.high` and below both `memory.max`s, so neither cgroup's OOM
+# killer ever fired and every allocating task parked in `D` state for 75
+# minutes). `memory.events` is what lets a rising `high` counter be reported
+# before that wedge, rather than only after — the child's own copy cannot
+# substitute (see `memory_cgroup_parent_high` above), so this is the parent's.
+: "${MEMORY_CGROUP_PARENT_MAX:=/run/cgroup-parent/memory.max}"
+: "${MEMORY_CGROUP_PARENT_EVENTS:=/run/cgroup-parent/memory.events}"
+
 # memory_cgroup_field FIELD
 # One cgroup memory file's contents (`memory.current`, `memory.high`,
 # `memory.max`, ...), or empty when it cannot be read.
@@ -182,6 +195,36 @@ memory_cgroup_parent_high() {
   printf '%s' "$value"
 }
 
+# memory_cgroup_parent_max
+# The parent cgroup's `memory.max` verbatim — `max`, a byte count, or empty
+# when the window cannot be read (an un-migrated compose.yaml with nothing
+# mounted there, or the /dev/null default). Unlike `memory_cgroup_parent_high`,
+# `max` is deliberately **not** collapsed to empty here: a real hard ceiling
+# and "no ceiling and this container cannot tell" are exactly the two states
+# `memory_cgroup_verdict` must distinguish for the livelock band, and folding
+# them together would silently re-report a livelocked node as merely
+# unmeasured, or an unmeasured one as livelocked.
+memory_cgroup_parent_max() {
+  local value
+  value="$(cat "$MEMORY_CGROUP_PARENT_MAX" 2>/dev/null)" || return 0
+  [[ -n "$value" ]] || return 0
+  printf '%s' "$value"
+}
+
+# memory_cgroup_parent_events_high
+# The parent cgroup's `memory.events` `high` field — the running count of
+# times the kernel has throttled this hierarchy under `memory.high` — or empty
+# when the window cannot be read. Cumulative since the parent cgroup was
+# created, so a caller compares a delta between two samples, never the
+# absolute value: agent-ops#1305 measured 2,788,595 of these, climbing at
+# ~96/second, on a node `doctor.sh` was reporting `[ ok ]`.
+memory_cgroup_parent_events_high() {
+  local value
+  value="$(awk '$1 == "high" {print $2; exit}' "$MEMORY_CGROUP_PARENT_EVENTS" 2>/dev/null)" || return 0
+  [[ "$value" =~ ^[0-9]+$ ]] || return 0
+  printf '%s' "$value"
+}
+
 # memory_cgroup_verdict
 # Whether anything will reclaim this container's memory before it reaches its
 # hard ceiling:
@@ -195,16 +238,33 @@ memory_cgroup_parent_high() {
 #              proactively. This is what the one-shot operator recipe leaves
 #              behind, and it lasts until the container is next recreated.
 #   parented   this cgroup's own `memory.high` is `max`, but an ancestor
-#              carries a real one, so the kernel still reclaims before the
-#              hard limit — and unlike `bounded` it survives a roll, because
-#              the ceiling does not live on the container. Distinguished from
-#              `bounded` rather than folded into it because the two differ in
-#              exactly the property this check exists to report: whether the
-#              node will still be bounded tomorrow.
+#              carries a real `memory.high` **and** the parent's own
+#              `memory.max` is a real hard ceiling, so the kernel still
+#              reclaims before something is actually killed — and unlike
+#              `bounded` it survives a roll, because the ceiling does not live
+#              on the container. Distinguished from `bounded` rather than
+#              folded into it because the two differ in exactly the property
+#              this check exists to report: whether the node will still be
+#              bounded tomorrow.
+#   livelocked the parent carries a real `memory.high` below this cgroup's own
+#              `memory.max`, but the parent's own `memory.max` is `max` — so
+#              `memory.high` throttles the whole hierarchy and never
+#              disengages, because nothing anywhere is a hard enough ceiling
+#              to reclaim past it or to kill. agent-ops#1305: 2,788,595
+#              throttle events and a node wedged in `D` state for 75 minutes,
+#              in exactly this band.
+#   unconfirmed the parent carries a real `memory.high` below this cgroup's
+#              own `memory.max`, but the parent's own `memory.max` cannot be
+#              read — an un-migrated compose.yaml, or a node that has not
+#              re-run `cgroup-parent-setup.sh` since it started mounting that
+#              window — so whether the livelock band above is actually closed
+#              is unmeasured, not confirmed. Never reported as `parented`: a
+#              guess given as `[ ok ]` is exactly what left agent-ops#1305's
+#              node wedged while `doctor.sh` called it healthy.
 #   unlimited  no `memory.max` either; nothing to say, and nothing to fix.
 #   unknown    the files cannot be read (not cgroup v2, or not a container).
 memory_cgroup_verdict() {
-  local high max parent_high
+  local high max parent_high parent_max
   high="$(memory_cgroup_field memory.high)"
   max="$(memory_cgroup_field memory.max)"
   [[ -n "$high" && -n "$max" ]] || { printf 'unknown'; return 0; }
@@ -216,10 +276,18 @@ memory_cgroup_verdict() {
   elif [[ -n "$parent_high" ]] && (( parent_high < max )); then
     # Only below the hard ceiling. A parent set at or above `memory.max`
     # reclaims nothing before the kill and is `unbounded` in every sense that
-    # matters — and `parented` is the one verdict here that reads `[ ok ]`,
-    # so it is the one that must not be given away on an unchecked number.
-    # `bounded` needs no equivalent guard: it warns either way.
-    printf 'parented'
+    # matters — and this branch is the one that must not be given away on an
+    # unchecked number, since `parented`/`livelocked` are the only two here
+    # that can read `[ ok ]`/warn without also being `unbounded`'s own plain
+    # warning. `bounded` needs no equivalent guard: it warns either way.
+    parent_max="$(memory_cgroup_parent_max)"
+    if [[ -z "$parent_max" ]]; then
+      printf 'unconfirmed'
+    elif [[ "$parent_max" == "max" ]]; then
+      printf 'livelocked'
+    else
+      printf 'parented'
+    fi
   else
     printf 'unbounded'
   fi
@@ -253,4 +321,32 @@ memory_cgroup_parent_describe() {
   [[ "$parent_high" =~ ^[0-9]+$ ]] || parent_high=0
   printf 'memory.high is set to %d MiB on this container'"'"'s parent cgroup, so the kernel reclaims before the %d MiB hard ceiling and keeps doing so after a roll; holding %d MiB now' \
     $(( parent_high / 1048576 )) $(( max / 1048576 )) $(( current / 1048576 ))
+}
+
+# memory_cgroup_livelock_describe
+# The `livelocked` counterpart of memory_cgroup_describe: a real memory.high
+# on the parent with no hard ceiling anywhere above this container, so
+# throttling engages and never disengages — measured on agent-ops#1305 at
+# ~96 events/second for 75 minutes before the node's D-state processes could
+# no longer make progress at all.
+memory_cgroup_livelock_describe() {
+  local current max parent_high
+  current="$(memory_cgroup_field memory.current)"
+  max="$(memory_cgroup_field memory.max)"
+  parent_high="$(memory_cgroup_parent_high)"
+  [[ "$current" =~ ^[0-9]+$ ]] || current=0
+  [[ "$max" =~ ^[0-9]+$ ]] || max=0
+  [[ "$parent_high" =~ ^[0-9]+$ ]] || parent_high=0
+  printf 'this container'"'"'s parent cgroup has memory.high set to %d MiB but its own memory.max left unbounded, so nothing ever reclaims below the %d MiB ceiling this container relies on and nothing kills above it either — holding %d MiB now; re-run scripts/cgroup-parent-setup.sh to give the parent a memory.max' \
+    $(( parent_high / 1048576 )) $(( max / 1048576 )) $(( current / 1048576 ))
+}
+
+# memory_cgroup_unconfirmed_describe
+# The parent carries a real memory.high below this cgroup's own memory.max,
+# but the parent's own memory.max cannot be read from in here, so whether the
+# livelock band above is closed is unmeasured rather than confirmed — every
+# node deployed before this window was mounted lands here until it re-runs
+# cgroup-parent-setup.sh and picks up the new compose.yaml mounts.
+memory_cgroup_unconfirmed_describe() {
+  printf 'this container'"'"'s parent cgroup has a memory.high ceiling, but its memory.max cannot be read from in here, so whether a hard ceiling would ever reclaim it is unmeasured, not confirmed ok — mount the parent'"'"'s memory.max (see deploy/docker/compose.yaml) and re-run scripts/cgroup-parent-setup.sh'
 }
