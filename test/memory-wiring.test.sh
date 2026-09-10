@@ -55,7 +55,7 @@ extract_block() {
   ' "$file"
 }
 
-memory_block="$(extract_block '^# 2\.0f Free host memory' '^# 2\.1 Usage-limit cooldown' "$AGENT_CYCLE")"
+memory_block="$(extract_block '^# 2\.0f Free host memory' '^# 2\.0g Host budget' "$AGENT_CYCLE")"
 if [[ -z "$memory_block" ]]; then
   echo "FAIL - could not extract the free-memory check block from lib/standdown.sh — has it moved?" >&2
   exit 1
