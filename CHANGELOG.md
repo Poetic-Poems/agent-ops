@@ -577,6 +577,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
+  timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
+  --paginate --jq` re-runs its filter once per page and prints each page's
+  own result as its own document (TD-PPagop-26081306); `gather-unvoid-
+  requests.sh` and `gather-hand-flagged-refinements.sh` still took their
+  "latest labeled event" aggregate *inside* the filter, so an issue whose
+  timeline runs past thirty events with the label applied, removed and
+  re-applied across a page boundary resolved to a multi-line, unparseable
+  stamp rather than the single ISO-8601 one downstream code compares against
+  block and cycle timestamps to decide whether a request is fresh enough to
+  act on. Both now stream one stamp (or `{at, by}` object) per line across
+  every page and pick the latest outside the filter — `sort | tail -1` /
+  `jq -s 'sort_by(.at) | last'` — the same fix `lib/candidate-gather.sh`'s
+  own timeline read already applied (PR #823).
+
 - **The cgroupfs reboot hook no longer leaves a cgroup path Docker can poison**
   (issue #1347). On `ockham-container`, an unclean restart left the node unable
   to start **any** memory-limited container — including sidecars with no
