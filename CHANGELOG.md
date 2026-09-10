@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   state, restart counts, cgroup memory figures, and running-versus-registry
   image digest, one entry per container; `kubernetes` reads the cluster
   over a read-only Role — pods, rollout stalls, CronJob scheduling,
-  node-pressure conditions and PVC usage. Both also read the host's own
+  node-pressure conditions and PVC identity. Both also read the host's own
   disk/memory/load, the host's egress MTU against the configured
   `DOCKER_MTU`, the watchtower ledger tail and last session, and run the
   **viewer-vantage probe** (agent-ops#1286) — fetching every peer's own

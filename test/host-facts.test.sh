@@ -10,9 +10,10 @@
 #   - mtu_match is true when the configured DOCKER_MTU equals the measured
 #     egress MTU, false when it differs, and null — never guessed — when
 #     the egress MTU itself could not be measured;
-#   - the updater ledger tail reads the last N entries, oldest first, and
-#     degrades to an empty array rather than failing on a missing or
-#     malformed file;
+#   - the updater ledger tail reads the last N entries across every file in
+#     the ledger directory — never one named for the querying node, which
+#     no writer ever creates — merged oldest-first, and degrades to an empty
+#     array rather than failing on a missing directory or a malformed line;
 #   - the last-session parser reads the newest "Session done Failed=N
 #     Scanned=N Updated=N" line's own `time="…"` timestamp, never this
 #     collector's own clock, and reads null when no such line exists;
@@ -64,23 +65,49 @@ assert_eq "DOCKER_MTU falls back to 1500, the same default compose.yaml uses" \
   "1500" "$(env -u DOCKER_MTU bash -c '. "'"$SCRIPT_DIR"'/lib/host-facts.sh"; host_facts_network_json' | jq -r '.docker_mtu_configured')"
 
 # --- Updater ledger tail ------------------------------------------------------
+# Every filename here is deliberately container-ID-shaped and shares no
+# characters with any node name. That is the real shape on a compose node:
+# the ledger's only writer keys each file by the *writing container's* own
+# $HOSTNAME, never by NODE_NAME, so a reader that selects a file by node
+# name finds nothing while a populated ledger sits beside it — the defect
+# every earlier fixture hid by keying its file to the name it then queried.
 ledger_dir="$tmp_dir/updater-ledger"
 mkdir -p "$ledger_dir"
 {
-  printf '{"verdict":"allow","ts":"2026-09-08T00:00:00Z"}\n'
-  printf '{"verdict":"allow","ts":"2026-09-08T00:05:00Z"}\n'
+  printf '{"verdict":"allow","ts":"2026-09-08T00:00:00Z","service":"scheduler"}\n'
+  printf '{"verdict":"allow","ts":"2026-09-08T00:05:00Z","service":"scheduler"}\n'
   printf 'not json\n'
-  printf '{"verdict":"allow","ts":"2026-09-08T00:10:00Z"}\n'
-} > "$ledger_dir/node-a.jsonl"
+  printf '{"verdict":"allow","ts":"2026-09-08T00:10:00Z","service":"scheduler"}\n'
+} > "$ledger_dir/3f9a1c2b4d5e.jsonl"
 
-tail_json="$(host_facts_updater_ledger_tail "$ledger_dir" node-a 3)"
+tail_json="$(host_facts_updater_ledger_tail "$ledger_dir" 3)"
 assert_eq "a malformed line among the tail is skipped, not fatal to the rest" \
   "2" "$(jq 'length' <<<"$tail_json")"
 assert_eq "ledger tail is oldest-first" "2026-09-08T00:05:00Z" \
   "$(jq -r '.[0].ts' <<<"$tail_json")"
+assert_eq "the tail is read though no file is named for the querying node" \
+  "2026-09-08T00:10:00Z" "$(jq -r '.[-1].ts' <<<"$tail_json")"
 
-assert_eq "a missing ledger file degrades to an empty array" \
-  "[]" "$(host_facts_updater_ledger_tail "$ledger_dir" no-such-node)"
+# A roll's replacement writes under a fresh container ID, so one node's own
+# updater history spans files by construction: the tail is the newest
+# entries across all of them, ordered by ts rather than by filename.
+printf '{"verdict":"allow","ts":"2026-09-08T00:07:00Z","service":"scheduler"}\n' \
+  > "$ledger_dir/a1b2c3d4e5f6.jsonl"
+merged="$(host_facts_updater_ledger_tail "$ledger_dir" 5)"
+assert_eq "entries from every generation's file are merged into one tail" \
+  "4" "$(jq 'length' <<<"$merged")"
+assert_eq "the merged tail is ordered by ts, not by filename" \
+  "2026-09-08T00:00:00Z 2026-09-08T00:05:00Z 2026-09-08T00:07:00Z 2026-09-08T00:10:00Z" \
+  "$(jq -r '[.[].ts] | join(" ")' <<<"$merged")"
+assert_eq "the merged tail truncates to the newest N across all files" \
+  "2026-09-08T00:07:00Z 2026-09-08T00:10:00Z" \
+  "$(host_facts_updater_ledger_tail "$ledger_dir" 2 | jq -r '[.[].ts] | join(" ")')"
+
+mkdir -p "$tmp_dir/empty-ledger"
+assert_eq "a ledger directory holding no .jsonl file degrades to an empty array" \
+  "[]" "$(host_facts_updater_ledger_tail "$tmp_dir/empty-ledger")"
+assert_eq "a missing ledger directory degrades to an empty array" \
+  "[]" "$(host_facts_updater_ledger_tail "$tmp_dir/no-such-ledger-dir")"
 
 # --- last-session parse -------------------------------------------------------
 log_text='time="2026-09-08T09:00:00Z" level=info msg="Session done" Failed=0 Scanned=3 Updated=1
@@ -92,9 +119,14 @@ assert_eq "no Session-done line at all reads null" "null" \
   "$(host_facts_parse_last_session 'nothing relevant here')"
 assert_eq "no log text at all reads null" "null" "$(host_facts_parse_last_session)"
 
-# --- updater section: null whole when nothing exists --------------------------
+# --- updater section ----------------------------------------------------------
 assert_eq "no ledger dir and no log text: the whole updater section is null" \
-  "null" "$(host_facts_updater_json "$tmp_dir/no-such-state-dir" some-node "")"
+  "null" "$(host_facts_updater_json "$tmp_dir/no-such-state-dir" "")"
+
+# End to end through the section builder, which is where the node name used
+# to be threaded in and drop the tail on the floor.
+assert_eq "the section carries the ledger tail though no file bears this node's name" \
+  "4" "$(host_facts_updater_json "$tmp_dir" "" | jq '.ledger_tail | length')"
 
 # --- Viewer probe --------------------------------------------------------------
 ok_curl="$tmp_dir/ok-curl.sh"

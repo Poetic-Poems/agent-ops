@@ -13295,7 +13295,7 @@ implements.
     session; the host's own disk, memory and load; the host's egress MTU
     against the configured value; or, on a Kubernetes node, a pod's phase
     and restart count, a rollout's stall, a CronJob's scheduling, a
-    node-pressure condition, a PVC's usage, or either driver's own
+    node-pressure condition, a PVC's identity, or either driver's own
     viewer-vantage probe of a node's dashboard `data.js`. The fact is then
     available mechanically, from an account the installation already
     holds — the collector's own — and an `escalate` reaching for condition 7

@@ -201,7 +201,7 @@ assert_eq "a container from another repository is never compared to this one's r
 assert_eq "so its digest_match is null, never a permanent false" "null" \
   "$(jq -r '.containers[] | select(.name=="agent-ops-watchtower-1") | .image.digest_match' <<<"$section")"
 
-updater="$(host_facts_updater_json "$tmp_dir" "no-such-host" "$(jq -r '.watchtower_log_tail' <<<"$section")")"
+updater="$(host_facts_updater_json "$tmp_dir" "$(jq -r '.watchtower_log_tail' <<<"$section")")"
 assert_eq "last_session parses Failed/Scanned/Updated from the log" \
   '{"ts":"2026-09-08T10:00:00Z","failed":2,"scanned":3,"updated":0}' \
   "$(jq -c '.last_session' <<<"$updater")"

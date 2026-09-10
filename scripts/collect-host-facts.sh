@@ -152,7 +152,7 @@ case "$driver" in
     ;;
 esac
 
-updater_json="$(host_facts_updater_json "$state_dir" "$node" "$watchtower_log_tail")"
+updater_json="$(host_facts_updater_json "$state_dir" "$watchtower_log_tail")"
 
 record="$(jq -nc \
   --arg node "$node" --arg driver "$driver" --arg generated_at "$generated_at" \

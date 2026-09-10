@@ -129,7 +129,7 @@ exposes, and is not itself a fault.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `updater.ledger_tail` | array | The last five lines of this node's own `updater-ledger/<hostname>.jsonl`, parsed, oldest first — the same ledger `lib/updater-health.sh` already reads from inside the scheduler container, read here from the host/cluster side instead. Truncated, never the whole file: the ledger is unbounded within its own 7-day prune, and five entries is enough to see a streak. |
+| `updater.ledger_tail` | array | The last five entries across **every** `updater-ledger/*.jsonl` on this node, merged, ordered by each entry's own `ts`, oldest first — the same ledger `lib/updater-health.sh` already reads from inside the scheduler container, read here from the host/cluster side instead. Every file, not one named for this node: the ledger's writer keys each file by the *writing container's* `$HOSTNAME` (a container ID on this stack), which `NODE_NAME` never equals, and a roll's replacement writes under a new one — so one node's updater history is spread across files by construction. Sibling services share the directory, so read each entry's own `service` field to tell them apart. Truncated, never the whole ledger: it is unbounded within its own 7-day prune, and five entries is enough to see a streak. |
 | `updater.last_session` | object \| null | `{"ts", "failed", "scanned", "updated"}` — the newest `Session done Failed=<n> Scanned=<n> Updated=<n>` line this collector can read from the updater container's own log, `null` when no such line exists (no updater on this node, or it has not completed a scan since the container last started). |
 
 ## `viewer_probe`

@@ -110,20 +110,50 @@ host_facts_host_json() {
       network:$network}'
 }
 
-# host_facts_updater_ledger_tail LEDGER_DIR HOSTNAME [N] — the last N
-# (default 5) parsed lines of LEDGER_DIR/HOSTNAME.jsonl, oldest first, as a
-# JSON array. `-R` (raw input) so one malformed line is skipped rather than
-# aborting the whole parse — the same discipline
-# `lib/updater-health.sh`'s own line-at-a-time reads hold, and the reason
-# this is not a plain `jq -cs .` slurp. Empty array when the file is
-# missing, empty, or every line is malformed — never fatal to the caller.
+# host_facts_updater_ledger_tail LEDGER_DIR [N] — the last N (default 5)
+# parsed entries across *every* `*.jsonl` in LEDGER_DIR, merged and ordered
+# by each entry's own `ts`, oldest first, as a JSON array.
+#
+# Every file in the directory, not one named for the querying node. The
+# ledger's only writer (`deploy/docker/watchtower-pre-update.sh`) keys each
+# file by the *writing container's* own `$HOSTNAME`, which on this stack is
+# a Docker-generated container ID; this collector knows only `NODE_NAME`
+# ("poetic-1"). The two can never be equal, so reading a single
+# `<NODE_NAME>.jsonl` published `ledger_tail: []` on every compose node
+# while a populated ledger sat beside it in the same directory —
+# indistinguishable from a genuinely empty ledger, and exactly the
+# wrong-but-plausible fact `docs/HOST-FACTS-SCHEMA.md`'s "null, never
+# fabricated" contract exists to prevent. Reading the whole directory is
+# also what `lib/updater-health.sh`'s own cross-generation scan already
+# does for the same reason: a roll's replacement writes under a new
+# container ID, so one node's updater history is spread across files by
+# construction.
+#
+# The directory is this node's own `state_dir` — a peer's copy lands under
+# `<peers_dir>/<peer>/`, never here — so every file in it is this node's
+# own history. Sibling *services* do share it (the scheduler and dashboard
+# containers hold the same state volume), which is why each entry keeps its
+# own `service` field: that, not the filename, is what tells one service's
+# line from another's now that they are read together.
+#
+# `tail -q -n "$n"` per file before the merge bounds the read without
+# changing the answer: each file is append-ordered by `ts`, so the global
+# newest N is always a subset of the per-file newest N. `-R` (raw input) so
+# one malformed line is skipped rather than aborting the whole parse — the
+# same discipline `lib/updater-health.sh`'s own line-at-a-time reads hold,
+# and the reason this is not a plain `jq -cs .` slurp. Empty array when the
+# directory is missing, holds no `.jsonl` file, or every line in it is
+# malformed — never fatal to the caller.
 host_facts_updater_ledger_tail() {
-  local ledger_dir="${1:-}" host="${2:-}" n="${3:-5}" file=""
-  file="$ledger_dir/$host.jsonl"
-  [[ -s "$file" ]] || { printf '[]'; return 0; }
-  tail -n "$n" "$file" 2>/dev/null \
+  local ledger_dir="${1:-}" n="${2:-5}" f="" found=0
+  [[ -d "$ledger_dir" ]] || { printf '[]'; return 0; }
+  for f in "$ledger_dir"/*.jsonl; do
+    [[ -f "$f" ]] && { found=1; break; }
+  done
+  (( found )) || { printf '[]'; return 0; }
+  tail -q -n "$n" "$ledger_dir"/*.jsonl 2>/dev/null \
     | jq -Rc '[try fromjson catch empty]' 2>/dev/null \
-    | jq -sc 'map(.[])' 2>/dev/null \
+    | jq -sc --argjson n "$n" 'map(.[]) | sort_by(.ts // "") | .[-$n:]' 2>/dev/null \
     || printf '[]'
 }
 
@@ -153,19 +183,22 @@ host_facts_parse_last_session() {
     '{ts:$ts, failed:$failed, scanned:$scanned, updated:$updated}'
 }
 
-# host_facts_updater_json STATE_DIR HOSTNAME [LOG-TEXT] — the `updater`
-# section: the ledger tail plus, when LOG-TEXT is given, the last session
-# result parsed from it. `null` whole when neither the ledger directory nor
-# any log text exists — no updater runs on this node at all.
+# host_facts_updater_json STATE_DIR [LOG-TEXT] — the `updater` section: the
+# ledger tail plus, when LOG-TEXT is given, the last session result parsed
+# from it. `null` whole when neither the ledger directory nor any log text
+# exists — no updater runs on this node at all. Takes no node name: the
+# ledger is keyed by the writing container's hostname, never by
+# `NODE_NAME`, so there is nothing here for one to select (see
+# `host_facts_updater_ledger_tail`).
 host_facts_updater_json() {
-  local state_dir="${1:-}" host="${2:-}" log_text="${3:-}" ledger_dir=""
+  local state_dir="${1:-}" log_text="${2:-}" ledger_dir=""
   ledger_dir="$state_dir/updater-ledger"
   if [[ ! -d "$ledger_dir" && -z "$log_text" ]]; then
     printf 'null'
     return 0
   fi
   jq -nc \
-    --argjson tail "$(host_facts_updater_ledger_tail "$ledger_dir" "$host")" \
+    --argjson tail "$(host_facts_updater_ledger_tail "$ledger_dir")" \
     --argjson last "$(host_facts_parse_last_session "$log_text")" \
     '{ledger_tail:$tail, last_session:$last}'
 }
