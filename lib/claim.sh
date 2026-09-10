@@ -99,6 +99,8 @@ GH="${CLAIM_GH:-gh}"
 
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/claim-key.sh
+. "$SCRIPT_DIR/lib/claim-key.sh"
 
 # config_defaults (issue #197) is the only place a default is written: every
 # key config.schema.json declares a `default` for reads as fully populated
@@ -115,8 +117,6 @@ tech_debt_branch_prefix="$(cfg '.tech_debt_branch_prefix')"
 say() { printf 'claim: %s\n' "$*"; }
 
 usage() { sed -n '3,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
-
-san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
 registry_path() {  # <target-slug> <key> -> path inside the state repo
   printf 'claims/%s/%s.json' "$(san "$1")" "$(san "$2")"

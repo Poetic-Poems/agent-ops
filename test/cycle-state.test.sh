@@ -1074,23 +1074,31 @@ assert_eq "  ... with no stage/cycle/event/unblock_condition surviving" \
 # change in `log_event` would otherwise silently degrade on-change logging to
 # always-log without any test here noticing.
 
+# The one-liner case (`log_event() { log_event_append …; }`, issue #967) closes
+# on its own opening line; a multi-line body closes on a `}` back at column 0.
 cycle_log_event_src="$(awk '
-  /^log_event\(\) \{/ { on = 1 }
-  on                  { print }
-  on && /^}$/         { exit }
+  /^log_event\(\) \{/ { on = 1; opener = 1 }
+  on {
+    print
+    if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+    opener = 0
+  }
 ' "$SCRIPT_DIR/agent-cycle.sh")"
-if [[ "$cycle_log_event_src" != *'--argjson fields'* ]]; then
+if [[ "$cycle_log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
 
 # emit_issues_excluded <log-file> <ts> <repo> <excluded-json> — append one
-# real issues-excluded event, via the real log_event, with a caller-chosen
-# timestamp so ordering can be asserted independently of file order.
+# real issues-excluded event, via the real log_event (and the real
+# lib/log-event.sh it wraps), with a caller-chosen timestamp so ordering can
+# be asserted independently of file order.
 emit_issues_excluded() {
   local log="$1" ts="$2" repo="$3" excluded="$4"
   (
     set -euo pipefail
+    # shellcheck source=lib/log-event.sh
+    . "$SCRIPT_DIR/lib/log-event.sh"
     # shellcheck disable=SC2034  # read by the eval'd log_event body.
     cycle_id="test-cycle" node_name="test-node" log_file="$log"
     eval "$cycle_log_event_src"

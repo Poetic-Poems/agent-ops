@@ -64,6 +64,16 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# expand_home, cfg, cfg_json — shared with agent-cycle.sh so the two copies
+# can never drift (issue #967).
+# shellcheck source=lib/config-access.sh
+. "$SCRIPT_DIR/lib/config-access.sh"
+# log_event_append — the envelope logic behind this file's own log_event,
+# shared with agent-cycle.sh's (issue #967); each cycle's own id field, id
+# value and log file are the one genuine difference, and stay local to each
+# script's own log_event wrapper below.
+# shellcheck source=lib/log-event.sh
+. "$SCRIPT_DIR/lib/log-event.sh"
 # shellcheck source=lib/review-context.sh
 . "$SCRIPT_DIR/lib/review-context.sh"
 # shellcheck source=lib/metering.sh
@@ -129,11 +139,6 @@ if ! (( DRY_RUN || ONCE )) && ! role_is_active; then
 fi
 
 # --- Config ---
-expand_home() {
-  local p="$1"
-  [[ "$p" == "~"* ]] && p="$HOME${p:1}"
-  printf '%s\n' "$p"
-}
 SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 
 # The schema gate (requirement 1b), shared with agent-cycle.sh: config.json is
@@ -164,8 +169,6 @@ fi
 # key config.schema.json declares a `default` for reads as fully populated
 # below, with no `// literal` of its own to drift from the schema's.
 DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
-cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
-cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
@@ -335,26 +338,12 @@ review_dir="$state_dir/reviews/$review_id"
 mkdir -p "$review_dir"
 
 # --- Logging ---
-# Operational events go to our own review-log.jsonl (keyed by review id), so the
-# dashboard's log.jsonl parser is unaffected and the two pipelines stay separable.
-# FIELDS must be a JSON object — the same contract, coercion and `|| true` as
-# agent-cycle.sh's log_event, for the same reason: jq's `+` cannot add an
-# object and an array, and a payload mistake at one call site must cost that
-# event's shape, never the review cycle (issue #361 was the implementation
-# pipeline dying exactly this way).
-log_event() {
-  local event="$1" fields="${2:-{\}}"
-  local ts
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
-    local wrapped
-    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)" || true
-    [[ -n "$wrapped" ]] || wrapped="$(jq -nc --arg f "$fields" '{fields: $f}')"
-    fields="$wrapped"
-  fi
-  jq -nc --arg ts "$ts" --arg review "$review_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, review: $review, node: $node, event: $event} + $fields' >> "$review_log_file" || true
-}
+# Operational events go to our own review-log.jsonl (keyed by review id), so
+# the dashboard's log.jsonl parser is unaffected and the two pipelines stay
+# separable. The envelope logic itself (the FIELDS contract, issue #361/#458)
+# lives in lib/log-event.sh's log_event_append, shared with agent-cycle.sh;
+# `review` is this pipeline's own id field.
+log_event() { log_event_append "$review_log_file" review "$review_id" "$node_name" "$@"; }
 
 # The one shared signal: a usage-limit hit is written to log.jsonl in the exact
 # shape agent-cycle.sh's stand-down and the dashboard already read, so a limit

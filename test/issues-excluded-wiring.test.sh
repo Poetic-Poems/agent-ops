@@ -82,11 +82,17 @@ if [[ "$sidecar_fns_src" != *'issues_excluded_sidecar_path'* \
 fi
 
 # log_event: one top-level function, same extraction test/log-event.test.sh uses.
+# The one-liner case (`log_event() { log_event_append …; }`, issue #967) closes
+# on its own opening line; a multi-line body closes on a `}` back at column 0.
 log_event_src="$(awk '
-  index($0, "log_event() {") == 1 { on = 1 }
-  on { print; if ($0 == "}") exit }
+  index($0, "log_event() {") == 1 { on = 1; opener = 1 }
+  on {
+    print
+    if ($0 == "}" || (opener && $0 ~ /;[[:space:]]*\}[[:space:]]*$/)) exit
+    opener = 0
+  }
 ' "$SCRIPT_DIR/agent-cycle.sh")"
-if [[ "$log_event_src" != *'--argjson fields'* ]]; then
+if [[ "$log_event_src" != *'log_event_append'* ]]; then
   printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
@@ -125,6 +131,10 @@ chmod +x "$fakebin/gather-issues.sh"
 # pointed at the fake gatherer, printing its stdout.
 run_gather_issues() {
   (
+    # Local to this subshell; shellcheck's SC2030/SC2031 pairing conflates
+    # it with run_issues_excluded_cycle's unrelated, independent subshell
+    # below, which never sees this reassignment.
+    # shellcheck disable=SC2030
     SCRIPT_DIR="$tmp_dir/fakebin"
     GATHER_ISSUES_STUB_OUTPUT="$stub_output"
     export GATHER_ISSUES_STUB_OUTPUT
@@ -231,6 +241,12 @@ run_issues_excluded_cycle() {
     gather_issues() { printf '[]'; }
     # shellcheck disable=SC2317
     gather_issues_excluded() { printf '%s' "$excluded_arg"; }
+    # SCRIPT_DIR is unmodified here; shellcheck's SC2031 conflates this
+    # subshell with run_gather_issues's unrelated one above, which does
+    # reassign it in its own, independent subshell.
+    # shellcheck disable=SC2031
+    # shellcheck source=lib/log-event.sh
+    . "$SCRIPT_DIR/lib/log-event.sh"
     eval "$log_event_src"
     eval "$issues_block_src"
     printf '%s' "$latest_issues_excluded_json" > "$map_file_path"

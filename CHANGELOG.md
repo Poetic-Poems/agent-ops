@@ -369,6 +369,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`san()`, `expand_home`/`cfg`/`cfg_json`, and `log_event`'s envelope logic
+  are each defined once instead of copy-pasted** (agent-ops#967). `san()`
+  (the claim-path sanitizer) now lives in `lib/claim-key.sh`, sourced by
+  both `lib/claim.sh` and `scripts/sweep-orphan-branches.sh` in place of
+  their own identical copies — the correctness-risk case, since a drift
+  here would have let `sweep-orphan-branches.sh`'s registry lookups
+  silently miss a real claim and delete a branch a peer node still owns.
+  `expand_home`/`cfg`/`cfg_json` now live in `lib/config-access.sh`, sourced
+  by both `agent-cycle.sh` and `review-cycle.sh`. `log_event`'s envelope
+  logic (the issue #361/#458 FIELDS contract) now lives in
+  `lib/log-event.sh`'s `log_event_append`, taking the one genuine
+  difference between the two cycles' copies — the envelope's id field and
+  the target log file — as arguments; each cycle keeps its own one-line
+  `log_event` wrapper. Pure refactor, no behavioural change.
+
 - **`maybe_run_refiner` is decomposed into named helpers** (agent-ops#964,
   continuing agent-ops#771's split). The Refiner stage's 322-line function in
   `lib/refinement.sh` is now a 23-line orchestration-only sequence of calls
