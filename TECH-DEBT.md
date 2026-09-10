@@ -144,8 +144,9 @@ with `ref:` pointing at where the content moved.
 
 A tech-debt item's work order arrives today as a GitHub issue labelled
 `pw::type:tech-debt`, not as this file — every item open at the time of
-#1039's migration got one, and each such issue's body ends with a "Filed as
-`tech-debt/<id>.md`, <date>." line naming the record it corresponds to.
+#1039's migration got one, and each such issue's body's final line begins
+with a "Filed as `tech-debt/<id>.md`, <date>." phrase naming the record it
+corresponds to.
 That issue is the work-order surface a Co-Ordinator selects and an
 Implementer claims; it does not replace the register. The resolving pull
 request must do both, in the same PR: close the issue with a real closing

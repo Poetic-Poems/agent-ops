@@ -10134,11 +10134,19 @@ implements.
     closing keyword's own `N`; `filed` the issue's `created_at` date
     (already in the work order's `context`), never the day of resolution, so
     the record states when the debt was noticed rather than only when it was
-    paid off. This is a pull-request-body convention, not a file: there is no
-    register entry to flip and no `td-check.pl` to satisfy for a tech-debt
-    item any more, and the block's shape is fixed so the archive mirror and
-    later analytics can parse it (the mirror and its own retention are D15's
-    separate concern, not this requirement's).
+    paid off. Where the issue's own body's final line begins with a "Filed
+    as `tech-debt/<id>.md`, <date>." phrase — left by #1039's migration, or
+    an earlier direct filing — that file is still the permanent register
+    entry: the same pull request must also flip its frontmatter to `status:
+    resolved`, filling `resolved:` and `ref:`, exactly as `TECH-DEBT.md`'s
+    "Claiming an item" step 6 describes (PR #1313 is the precedent) —
+    closing the issue alone does not resolve it, and skipping this step is
+    what left `tech-debt/TD-PPagop-26082412.md` at `status: open` after PR
+    #1355's first round. An issue with no such line has no file to flip and
+    no `td-check.pl` to satisfy — this is a pull-request-body convention,
+    not a file, for that case only — and the block's shape is fixed so the
+    archive mirror and later analytics can parse it (the mirror and its own
+    retention are D15's separate concern, not this requirement's).
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
