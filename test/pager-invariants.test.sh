@@ -717,16 +717,17 @@ PAGER_EVAL_ESCALATION_BURST=""
 assert_eq "no configured burst threshold: never fires" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_escalation_burst "[]" "$burst_log")")"
 
-# --- digest-truncated (agent-ops#1281) --------------------------------------
+# --- digest-truncated (agent-ops#1281, ts-bound live query per agent-ops#1348) --
 
 digest_ev() { jq -nc --arg ts "$1" --arg r "$2" --argjson ok "$3" --argjson ic "$4" --argjson pc "$5" \
   '{ts: $ts, node: "n1", cycle: "c1", event: "source-state-digest", repo: $r, ok: $ok, issues_count: $ic, open_prs_count: $pc}'; }
+digest_ts="2026-01-01T00:00:00Z"
 digest_log="$WORKDIR/digest.jsonl"
-write_log "$digest_log" "$(digest_ev "$(rel -300)" o/r true 50 2)"
-STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open"]="150"
-                 ["search/issues?q=repo:o/r+type:pr+state:open"]="2")
+write_log "$digest_log" "$(digest_ev "$digest_ts" o/r true 50 2)"
+STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open+created:<=$digest_ts"]="150"
+                 ["search/issues?q=repo:o/r+type:pr+state:open+created:<=$digest_ts"]="2")
 verdict="$(pager_eval_digest_truncated "[]" "$digest_log")"
-assert_eq "the digest undercounts a live paginated total: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "the digest undercounts a live total as of the digest's own ts: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
 assert_eq "  ... evidence names the repo and both counts" "1" \
   "$(grep -c 'o/r (digest issues=50/live=150, digest open_prs=2/live=2)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
 
@@ -742,9 +743,20 @@ assert_eq "  ... logging a digest-truncation-veto event" "1" \
 assert_eq "  ... naming the affected repo" "1" \
   "$(grep -c '"repo":"o/r"' "$WORKDIR/pager-remedy.jsonl")"
 
-STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open"]="50"
-                 ["search/issues?q=repo:o/r+type:pr+state:open"]="2")
-assert_eq "a digest that matches the live count: does not fire" "false" \
+STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open+created:<=$digest_ts"]="50"
+                 ["search/issues?q=repo:o/r+type:pr+state:open+created:<=$digest_ts"]="2")
+assert_eq "a digest that matches the live count as of its own ts: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_digest_truncated "[]" "$digest_log")")"
+
+# The #1348 false positive this bound exists to prevent: the digest matches
+# the live total as of its own ts (the case just above), but ordinary
+# traffic since then has created more issues/PRs — an unbounded "right now"
+# query would see those and fire; the ts-bound query must not.
+STUB_GH_API_MAP=(["search/issues?q=repo:o/r+type:issue+state:open+created:<=$digest_ts"]="50"
+                 ["search/issues?q=repo:o/r+type:pr+state:open+created:<=$digest_ts"]="2"
+                 ["search/issues?q=repo:o/r+type:issue+state:open"]="217"
+                 ["search/issues?q=repo:o/r+type:pr+state:open"]="3")
+assert_eq "more issues/PRs exist by evaluation time than as of the digest's own ts: does not fire (the #1348 signature)" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_digest_truncated "[]" "$digest_log")")"
 
 digest_log_empty="$WORKDIR/digest-empty.jsonl"
