@@ -1002,6 +1002,22 @@ noop_json="$(jq -c '{total: length,
                      last_ts:   ((map(.last_ts) | max) // null)}' "$noop_cycles_file" 2>/dev/null)"
 [[ -n "$noop_json" ]] || noop_json='{"total":0,"standdown":0,"skipped":0,"last_ts":null}'
 
+# `overlap` (requirement 11a, agent-ops#1287): a flat count of this window's
+# own `cycle-skipped {reason: "overlap"}` events, never folded into `total`
+# above. Unlike the stand-down/lock-held pair, these are logged by the cycle
+# that held the lock throughout — the very opposite of a no-op tick, since it
+# ran real stages of its own — so grouping by `.cycle` and matching on
+# `noop_kind`'s exact three-event-type shape would never see them: that cycle
+# keeps its ordinary row regardless, and this count is additional information
+# about a row already shown, not a tick held out of the list.
+overlap_count="$(jq -c --arg re "$cycle_id_re" '
+  [ .[] | select((.cycle // "") | test($re))
+        | select(.event == "cycle-skipped" and .reason == "overlap") ]
+  | length' "$events_file" 2>/dev/null)"
+[[ "$overlap_count" =~ ^[0-9]+$ ]] || overlap_count=0
+noop_json="$(jq -c --argjson overlap "$overlap_count" '. + {overlap: $overlap}' <<<"$noop_json" 2>/dev/null)"
+[[ -n "$noop_json" ]] || noop_json="{\"total\":0,\"standdown\":0,\"skipped\":0,\"overlap\":$overlap_count,\"last_ts\":null}"
+
 # The D rows of one cycles directory: every id it holds, tagged with where it
 # came from. A glob rather than `ls`, so an id that is not a plain word cannot
 # be split or re-interpreted on its way through a pipe; the directory may not

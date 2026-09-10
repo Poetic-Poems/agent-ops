@@ -19,7 +19,7 @@
   },
   "counts": {
     "spend_today_usd": 0, "spend_total_usd": 0,
-    "failures_shown": 0, "cycles_shown": 2, "prs_reached_ready": 0,
+    "failures_shown": 0, "cycles_shown": 1, "prs_reached_ready": 0,
     "by_day": [], "by_model": [], "by_actor": []
   },
   "cycles": [
@@ -45,30 +45,9 @@
         "implementer": {"model": "claude-sonnet-5-20260101", "cost_usd": 0.80, "duration_ms": 500000,
           "num_turns": 30, "is_error": false, "terminal_reason": "end_turn"}
       }
-    },
-    {
-      "id": "20260811T200000Z-poetic-1-188",
-      "node": "poetic-1",
-      "started_at": "@ago:16h",
-      "ended_at": "@ago:16h",
-      "outcome": "none-selected",
-      "repo": null,
-      "item": null,
-      "source": null,
-      "title": null,
-      "pr_url": null,
-      "reason": "no candidate item cleared the gates this cycle",
-      "fail_detail": null,
-      "warning": null,
-      "total_cost_usd": 0.05,
-      "limit_hit": false,
-      "stages": {
-        "coordinator": {"model": "claude-haiku-5-20260101", "cost_usd": 0.05, "duration_ms": 39000,
-          "num_turns": 4, "is_error": false, "terminal_reason": "end_turn"}
-      }
     }
   ],
-  "noop_ticks": {"total": 87, "standdown": 61, "skipped": 26, "overlap": 4, "last_ts": "@ago:5m"},
+  "noop_ticks": {"total": 0, "standdown": 0, "skipped": 0, "overlap": 3, "last_ts": null},
   "blocked": [],
   "void": [],
   "github": {

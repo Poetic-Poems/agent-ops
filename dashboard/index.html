@@ -2155,13 +2155,26 @@
     // rows — and fleet-wide, so it is withheld while the list is filtered to
     // one node rather than shown against a list it does not describe.
     var agg = D.noop_ticks;
-    if (nodeFilter || !agg || !agg.total) return body;
-    var parts = [];
-    if (agg.standdown) parts.push(agg.standdown + " stood down");
-    if (agg.skipped) parts.push(agg.skipped + " lock-held skip" + (agg.skipped === 1 ? "" : "s"));
-    return el("div", {}, [body, el("div", {class:"muted", style:"margin-top:6px", text:
-      "+ " + agg.total + " no-op tick" + (agg.total === 1 ? "" : "s") + " held out of this list — " +
-      parts.join(", ") + (agg.last_ts ? "; newest " + fmtAgo(agg.last_ts) : "")})]);
+    if (nodeFilter || !agg) return body;
+    var lines = [];
+    if (agg.total) {
+      var parts = [];
+      if (agg.standdown) parts.push(agg.standdown + " stood down");
+      if (agg.skipped) parts.push(agg.skipped + " lock-held skip" + (agg.skipped === 1 ? "" : "s"));
+      lines.push("+ " + agg.total + " no-op tick" + (agg.total === 1 ? "" : "s") + " held out of this list — " +
+        parts.join(", ") + (agg.last_ts ? "; newest " + fmtAgo(agg.last_ts) : ""));
+    }
+    // Overlap drops (requirement 11a, agent-ops#1287) are not no-op ticks —
+    // logged by a cycle that ran real stages and keeps its own row above —
+    // so they get their own line rather than folding into "held out of this
+    // list", and render even when `agg.total` is 0 (a fleet whose every
+    // cycle does real work can still lose firings to one running long).
+    if (agg.overlap) lines.push(agg.overlap + " firing" + (agg.overlap === 1 ? "" : "s") +
+      " overrun by a cycle still running when its own next slot fired");
+    if (!lines.length) return body;
+    return el("div", {}, [body].concat(lines.map(function (t) {
+      return el("div", {class:"muted", style:"margin-top:6px", text: t});
+    })));
   }
 
   function cyclesTable(cycles) {

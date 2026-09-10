@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Overrun-slot skips** (issue #1287, requirement 11a): supercronic drops a
+  firing silently when the previous cycle's job is still running, logging
+  only to a container log the fleet never reads — a cycle running long lost
+  its node a whole schedule slot, or several, with no event of any kind and
+  a `--status`/dashboard reading of plain `RUNNING` the whole time. At
+  cleanup, before the lock releases, `agent-cycle.sh` now computes which of
+  its own schedule's slots fell strictly inside its own run and logs one
+  `cycle-skipped {reason: "overlap", slot_ts, held_by, elapsed_s}` per slot
+  — for the cron-fired original alone, since a chained continuation or a
+  `--once`/`--dry-run` run is not supercronic's running job, so its slots
+  really did fire and the contending tick already recorded them.
+  `scripts/publish-dashboard.sh`'s `noop_ticks` gains an `overlap` count
+  (never folded into `total`, since the cycle logging one kept its own row
+  by running real stages), and `--status` gains an `overrun: N firing(s)
+  overrun in the last 24h` line, which `check-nodes.sh` inherits for free.
+
 - **The pager: fleet-level invariant evaluation, filing and auto-close**
   (issue #1278, requirement 51): `lib/pager.sh`, a registry of named
   invariants evaluated once per Publisher GitHub tick, each a function over

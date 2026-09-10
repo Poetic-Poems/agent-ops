@@ -457,10 +457,24 @@ assert_contains "split by kind, so a scheduler stuck on its lock stays visible" 
   "61 stood down, 26 lock-held skips" "$np"
 assert_contains "and dates the newest tick — the cadence still showing itself" \
   "newest 5m ago" "$np"
+assert_contains "overlap drops get their own line, alongside the no-op summary" \
+  "4 firings overrun by a cycle still running when its own next slot fired" "$np"
 assert_not_contains "a zero aggregate renders no summary line" \
   "no-op tick" "$(render running.json)"
 assert_not_contains "nor does a data.js from before the field existed" \
   "no-op tick" "$(render finished.json)"
+
+# --- overlap-only.json: overlap drops render even with no no-op ticks at all
+# (requirement 11a, agent-ops#1287) ----------------------------------------------
+# A `cycle-skipped {reason:"overlap"}` event is logged by a cycle that ran
+# real stages of its own — never a no-op tick — so `noop_ticks.total` can be
+# 0 while `noop_ticks.overlap` is not, and the summary line must still
+# render: the old `!agg.total` gate would have hidden it entirely.
+oo="$(render overlap-only.json)" || { printf 'FAIL - overlap-only.json did not render:\n%s\n' "$oo"; exit 1; }
+assert_contains "a fleet with zero no-op ticks still surfaces its overrun count" \
+  "3 firings overrun by a cycle still running when its own next slot fired" "$oo"
+assert_not_contains "and prints no held-out-of-list line, since total is zero" \
+  "held out of this list" "$oo"
 
 # --- cycle-render-failed.json: an empty list that is not an idle fleet ----------
 # The Publisher renders the whole cycle window in one jq program, so a fault in

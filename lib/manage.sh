@@ -186,6 +186,29 @@ decisions_status_report() {
   printf 'decisions: %s taken in the last 24h\n' "$count"
 }
 
+# The `--status` line counting this node's own overrun-slot skips in the last
+# 24h (requirement 11a, agent-ops#1287) — `check-nodes.sh` (external to this
+# repository) already prints `--status` per node, so a new line here reaches
+# it for free, the same way requirement 2.8's `stages:` section does. Unlike
+# `decisions_status_report` above, this reads `$log_file` — this node's own
+# log — rather than the fleet-wide union: a `cycle-skipped {reason:
+# "overlap"}` event names the schedule this node's own cron fires, not a
+# fleet-wide fact, and a peer's own overrun count belongs on its own
+# `--status`, not folded into this one's.
+overlap_status_report() {
+  local count now_iso
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  count="$(jq -sc --arg now "$now_iso" '
+      ($now | fromdateiso8601) as $now_s
+      | ($now_s - 86400) as $from_s
+      | [ .[] | select(.event == "cycle-skipped" and .reason == "overlap")
+              | select(((.ts // "") | length) > 0
+                       and (try (.ts | fromdateiso8601) catch 0) >= $from_s) ]
+      | length' "$log_file" 2>/dev/null)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf 'overrun:  %s firing(s) overrun in the last 24h\n' "$count"
+}
+
 # run_manage_command — the `--disable`/`--enable`/`--status`/`--clear-limit`/
 # `--kill-merge-autonomy` handling itself, called once from `agent-cycle.sh`
 # in place of the inline block it replaces (#771). Returns without doing
@@ -211,6 +234,7 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       merge_autonomy_status_report
       stage_health_status_report
       decisions_status_report
+      overlap_status_report
       exit 0
       ;;
     disable)

@@ -504,6 +504,16 @@ transition is reached — which is why `agent-cycle.sh` logs that one just
 after `acquire_lock` rather than beside `cycle-start`, and `review-cycle.sh`
 just after the implementation-cycle check rather than beside `review-start`.
 
+A fourth event shares `cycle-skipped`'s own name without being a fourth
+site: `cycle-skipped {reason: "overlap", …}` (requirement 11a of
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, agent-ops#1287) is logged by the
+cycle that *held* the lock throughout, at its own cleanup, for a schedule
+slot supercronic silently dropped while that cycle was still running — the
+opposite case from the one above, where the tick that logs `cycle-skipped`
+is the one that found the lock held. It never calls
+`suppress_node_state_transitions`: the seconds it describes already belong
+to the logging cycle's own node-state timeline, finalized moments before.
+
 Six further `review-stand-down` sites are *conditionally* that, and are
 silent on the same terms whenever the condition holds. The
 implementation-cycle check is the last ending in `review-cycle.sh` that can
