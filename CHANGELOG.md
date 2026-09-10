@@ -604,6 +604,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`digest-truncated`'s live GitHub search no longer false-positives on a
+  digest that is merely a few minutes old** (issue #1348). The invariant
+  (`pager_eval_digest_truncated`, `lib/pager-invariants.sh`) compared each
+  repo's most recent `source-state-digest` event against a freshly fetched,
+  unbounded "right now" `gh api search/issues` total, even though the digest
+  event's own `ts` was already available — so a repository that creates
+  issues/PRs quickly enough between the digest's capture and the invariant's
+  next evaluation (this pipeline's own traffic, several per cycle) always
+  read as truncated, vetoing that cycle's work-gone clearances for no real
+  reason. The live query now carries a `created:<=<ts>` qualifier bound to
+  the matched digest event's own `ts`, so it only ever compares like for
+  like.
+
 - **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
   timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
   --paginate --jq` re-runs its filter once per page and prints each page's

@@ -16721,8 +16721,14 @@ with the Reviewer's own.
       extra `gh` call on that cheap per-cycle path) still claiming `ok:
       true` undercounts a live total this invariant fetches itself via
       GitHub's search API, once per evaluation window rather than once per
-      node per cycle. Caught: #1165 — requirement 34i read absence-from-
-      digest as "closed" and false-cleared every block older than the
+      node per cycle. That live query carries a `created:<=<ts>` qualifier
+      bound to the matched digest event's own `ts` (every `log_event` write
+      already carries one), rather than reading an unbounded "right now"
+      total — without the bound, a repo that creates issues/PRs quickly
+      (this pipeline's own traffic, several per cycle) under-reads its own
+      live total against a digest only a few minutes old, which is drift,
+      not truncation (#1348). Caught: #1165 — requirement 34i read absence-
+      from-digest as "closed" and false-cleared every block older than the
       newest hundred; #1165 already fixed the root cause
       (`api_json_paged`'s own full pagination in `scripts/gather-source-
       state.sh`), so this invariant is a regression watchdog for the same
@@ -24572,11 +24578,16 @@ oblige anyone to edit a test.
     the count threshold, with evidence naming the reflagged item, but not
     when that same pair of pages sits outside the trailing 24h; and
     `digest-truncated` fires when a `source-state-digest` event's own counts
-    fall short of a stubbed `gh api search/issues` total, not when the two
-    agree, its remedy logs a `digest-truncation-veto` event naming the
-    affected repo (parsed from the evidence's own repo token, never
-    re-deriving the live counts), and it never fires against a union log
-    carrying no `source-state-digest` event at all.
+    fall short of a stubbed `gh api search/issues` total bound to that
+    event's own `ts` via a `created:<=<ts>` qualifier, not when the two
+    agree as of that same `ts`, and not when a live total only exceeds the
+    digest in an unbound "right now" query while matching it as of the
+    digest's own `ts` — the #1348 false-positive the bound exists to
+    prevent, where ordinary traffic created more issues/PRs after the
+    digest was captured; its remedy logs a `digest-truncation-veto` event
+    naming the affected repo (parsed from the evidence's own repo token,
+    never re-deriving the live counts), and it never fires against a union
+    log carrying no `source-state-digest` event at all.
 
     The same file also drives agent-ops#1280's three landing/approval
     invariants, a `pr list` case added to the shared `gh` stub, answering per

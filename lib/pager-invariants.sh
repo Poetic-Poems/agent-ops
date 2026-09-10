@@ -1112,6 +1112,14 @@ pager_eval_escalation_burst() {
 # source-state.sh's own already-paginated fetch runs. The agent-ops#1165
 # signature (requirement 34i read absence-from-digest as "closed" and
 # false-cleared blocks past the newest hundred) recurring.
+#
+# The live query is bound to the matched digest row's own `ts` (a
+# `created:<=<ts>` qualifier, GitHub search's date-range syntax) rather than
+# an unbounded "right now" total: every `log_event` write already carries a
+# `ts`, and without this bound a repo that creates issues/PRs quickly enough
+# — this pipeline's own traffic, several per cycle — under-reads its own
+# "live" total against a digest that is merely a few minutes old, which is
+# drift, not truncation (agent-ops#1348).
 pager_eval_digest_truncated() {
   local _fleet_nodes_json="$1" union_log_file="$2"
   [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
@@ -1123,16 +1131,19 @@ pager_eval_digest_truncated() {
     | group_by(.repo) | map(sort_by(.ts) | last)
   ' < "$union_log_file" 2>/dev/null)"
   [[ -n "$latest" && "$latest" != "null" ]] || { printf '{"firing":false}'; return 0; }
-  local row repo digest_issues digest_prs live_issues live_prs
+  local row repo digest_issues digest_prs live_issues live_prs ts created_qualifier
   local hits=()
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     repo="$(jq -r '.repo' <<<"$row")"
     digest_issues="$(jq -r '.issues_count // 0' <<<"$row")"
     digest_prs="$(jq -r '.open_prs_count // 0' <<<"$row")"
+    ts="$(jq -r '.ts // empty' <<<"$row")"
     [[ -n "$repo" ]] || continue
-    live_issues="$("$gh" api "search/issues?q=repo:$repo+type:issue+state:open" --jq '.total_count' 2>/dev/null)"
-    live_prs="$("$gh" api "search/issues?q=repo:$repo+type:pr+state:open" --jq '.total_count' 2>/dev/null)"
+    created_qualifier=""
+    [[ -n "$ts" ]] && created_qualifier="+created:<=$ts"
+    live_issues="$("$gh" api "search/issues?q=repo:$repo+type:issue+state:open${created_qualifier}" --jq '.total_count' 2>/dev/null)"
+    live_prs="$("$gh" api "search/issues?q=repo:$repo+type:pr+state:open${created_qualifier}" --jq '.total_count' 2>/dev/null)"
     [[ "$live_issues" =~ ^[0-9]+$ ]] || live_issues=""
     [[ "$live_prs" =~ ^[0-9]+$ ]] || live_prs=""
     if { [[ -n "$live_issues" ]] && (( live_issues > digest_issues )); } \
