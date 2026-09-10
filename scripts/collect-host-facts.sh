@@ -44,6 +44,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/disk-space.sh"
 # shellcheck source=lib/host-facts.sh
 . "$SCRIPT_DIR/lib/host-facts.sh"
+# shellcheck source=lib/host-budget.sh
+. "$SCRIPT_DIR/lib/host-budget.sh"
 # shellcheck source=lib/host-facts-compose.sh
 . "$SCRIPT_DIR/lib/host-facts-compose.sh"
 # shellcheck source=lib/host-facts-kubernetes.sh
@@ -146,6 +148,20 @@ case "$driver" in
     driver_section="$(host_facts_compose_section "")"
     watchtower_log_tail="$(jq -r '.watchtower_log_tail // ""' <<<"$driver_section" 2>/dev/null)"
     driver_section="$(jq -c '{containers: (.containers // [])}' <<<"$driver_section" 2>/dev/null || printf '{"containers":[]}')"
+    # host.budget (issue #757): the sum of every *running* container's own
+    # declared ceiling on this Docker socket — every container on the host,
+    # not only this compose project's own three services, which is exactly
+    # what lets one collector see a sibling project's ceilings too, with no
+    # cross-project sync needed. mem_total_bytes/cpu_count come straight
+    # back out of host_json rather than re-read, so the two can never
+    # disagree about the host's own totals.
+    mem_total_bytes="$(jq -r '.mem_total_bytes // empty' <<<"$host_json")"
+    cpu_count="$(jq -r '.cpu_count // empty' <<<"$host_json")"
+    budget_json="$(host_budget_summary_json "$mem_total_bytes" "$cpu_count" \
+      "$(jq -c '.containers // []' <<<"$driver_section")")"
+    driver_section="$(jq -c --argjson b "$budget_json" \
+      '{containers: (.containers // []), budget: $b}' <<<"$driver_section" \
+      || printf '{"containers":[],"budget":%s}' "$budget_json")"
     ;;
   kubernetes)
     driver_section="$(host_facts_kubernetes_section "")"

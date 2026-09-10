@@ -33,6 +33,36 @@ host_facts_mem_available_bytes() {
   printf '%s' $(( kb * 1024 ))
 }
 
+# host_facts_mem_total_bytes — `MemTotal` from /proc/meminfo, in bytes, or
+# empty when unreadable. Not namespaced (the same property
+# `host_facts_mem_available_bytes` and lib/memory.sh's own `memory_total_kb`
+# already rest on, verified on the ockham node 2026-09-04) — a container
+# reads the real host's total, which is what lib/host-budget.sh needs to
+# judge the sum of every container's declared ceiling against, not this
+# container's own cgroup limit.
+host_facts_mem_total_bytes() {
+  local kb=""
+  kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+  [[ "$kb" =~ ^[0-9]+$ ]] || return 0
+  printf '%s' $(( kb * 1024 ))
+}
+
+# host_facts_cpu_count — the host's own CPU count, from the number of
+# `processor` lines in /proc/cpuinfo, or empty when unreadable. Read from
+# /proc rather than `nproc` for the same D20 reason
+# lib/host-facts-compose.sh's header gives for reading the Docker API over
+# `curl` rather than the `docker` CLI: no new base-image package for a
+# control-plane question still open at Phase 2. /proc/cpuinfo carries the
+# same not-namespaced property /proc/meminfo does — a container sees the
+# host's own CPUs, not a cpuset-restricted subset, absent an explicit
+# `--cpuset-cpus` this stack never sets.
+host_facts_cpu_count() {
+  local n=""
+  n="$(grep -c '^processor[[:space:]]*:' /proc/cpuinfo 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) || return 0
+  printf '%s' "$n"
+}
+
 # host_facts_load_json — {"1m","5m","15m"} from /proc/loadavg, or the JSON
 # literal `null` when it cannot be read.
 host_facts_load_json() {
@@ -95,17 +125,26 @@ host_facts_network_json() {
 }
 
 # host_facts_host_json STATE_DIR WORKSPACE_ROOT — the shared `host` section:
-# memory, load, disk on both named paths, and network.
+# memory (available and total), CPU count, load, disk on both named paths,
+# and network. `mem_total_bytes`/`cpu_count` are what lib/host-budget.sh
+# compares the compose driver's declared-ceiling sum against (issue #757) —
+# carried here, not in the compose-only `budget` section, because they are
+# facts about the host itself, true under either driver, unlike the sum
+# they bound.
 host_facts_host_json() {
-  local state_dir="${1:-}" workspace_root="${2:-}" mem=""
+  local state_dir="${1:-}" workspace_root="${2:-}" mem="" mem_total="" cpu_count=""
   mem="$(host_facts_mem_available_bytes)"
+  mem_total="$(host_facts_mem_total_bytes)"
+  cpu_count="$(host_facts_cpu_count)"
   jq -nc \
     --argjson mem "$( [[ "$mem" =~ ^[0-9]+$ ]] && printf '%s' "$mem" || printf 'null' )" \
+    --argjson mem_total "$( [[ "$mem_total" =~ ^[0-9]+$ ]] && printf '%s' "$mem_total" || printf 'null' )" \
+    --argjson cpu_count "$( [[ "$cpu_count" =~ ^[0-9]+$ ]] && printf '%s' "$cpu_count" || printf 'null' )" \
     --argjson load "$(host_facts_load_json)" \
     --argjson state_disk "$(host_facts_disk_entry "$state_dir")" \
     --argjson workspace_disk "$(host_facts_disk_entry "$workspace_root")" \
     --argjson network "$(host_facts_network_json)" \
-    '{mem_available_bytes:$mem, load:$load,
+    '{mem_available_bytes:$mem, mem_total_bytes:$mem_total, cpu_count:$cpu_count, load:$load,
       disk:{state_dir:$state_disk, workspace_root:$workspace_disk},
       network:$network}'
 }
