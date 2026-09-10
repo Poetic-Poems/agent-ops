@@ -24541,13 +24541,14 @@ oblige anyone to edit a test.
     unconfigured.
     `landing-refused-unknown` fires when a trailing-24h window's
     `landing-refused` events are at least half class `unknown` (split on the
-    reason's own first colon) with at least five, not below either bound,
-    and not on a window of five `unknown` refusals out of eleven total (55%
-    but only five of a smaller total is still tested as a pass — the two
-    bounds are independent); its remedy files a stubbed `pw::type:tech-debt`
-    issue. `pr-unreviewed` fires on a stubbed `pr list` naming a ready,
+    reason's own first colon) with at least five; it does not fire when
+    either bound alone is missed — four `unknown` of six total is at or
+    above half but under the five-event floor, five of eleven clears the
+    floor but is under half, so the two bounds are exercised independently —
+    nor on the same qualifying shape dated outside the trailing 24h at all;
+    its remedy files a stubbed `pw::type:tech-debt` issue. `pr-unreviewed` fires on a stubbed `pr list` naming a ready,
     non-draft, `pr_label` pull request older than
-    `PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS` with a null
+    `PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS` with an empty
     `reviewDecision` and no `approver-verdict`/`approver-unreviewed-engaged`/
     matching `warning` event in the union log; does not fire on a draft, on
     one younger than the cutoff, on one whose `reviewDecision` already names
