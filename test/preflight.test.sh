@@ -135,6 +135,76 @@ assert_eq "an unreadable comparison decides nothing" \
 assert_eq "missing arguments decide nothing" \
   "" "$(PREFLIGHT_GH="$stub_dir/gh" preflight_branch_merged_reason "" main agent/245)"
 
+# --- preflight_review_feedback_reason (issue #1360) --------------------------------
+# `gh` is a stub on PATH via PREFLIGHT_GH; no network. It only ever answers
+# `api repos/<slug>/pulls/<n>/reviews --paginate --jq <filter>`, applying the
+# filter it was actually given to PREFLIGHT_STUB_REVIEWS (or failing outright
+# when PREFLIGHT_STUB_FAIL=1) — the same "run the real filter against a
+# fixture" discipline test/review-feedback.test.sh's own stub uses, so a
+# filter this function changes gets caught here too, not just diagnosed by
+# reading the source.
+cat > "$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ "${PREFLIGHT_STUB_FAIL:-0}" == "1" ]] && exit 1
+filter=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == "--jq" ]]; then
+    filter="${args[$((i + 1))]}"
+    break
+  fi
+done
+jq -c "$filter" <<<"${PREFLIGHT_STUB_REVIEWS:-[]}"
+STUB
+chmod +x "$stub_dir/gh"
+
+# Warwick-Allen's blocking review (id 5163386654) has since been superseded by
+# their own later APPROVED — the exact shape of issue #1360's own incident: a
+# reviewer (there, a bot identity) who answers `CHANGES_REQUESTED` with
+# `APPROVED` later in the same reviews list.
+superseded_reviews='[
+  {"id": 5163386654, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-10T06:18:03Z",
+   "user": {"login": "Warwick-Allen"}},
+  {"id": 5163400000, "state": "APPROVED", "submitted_at": "2026-09-10T08:27:10Z",
+   "user": {"login": "Warwick-Allen"}}
+]'
+assert_eq "a review answered by the same reviewer's later APPROVED no longer blocks" \
+  "the review no longer blocks the pull request" \
+  "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_REVIEWS="$superseded_reviews" \
+     preflight_review_feedback_reason o/a pr-1355-review-5163386654)"
+
+still_blocking_reviews='[
+  {"id": 5163386654, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-10T06:18:03Z",
+   "user": {"login": "Warwick-Allen"}}
+]'
+assert_eq "a review still standing as CHANGES_REQUESTED is still live work" \
+  "" "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_REVIEWS="$still_blocking_reviews" \
+        preflight_review_feedback_reason o/a pr-1355-review-5163386654)"
+
+superseded_by_other_reviewer='[
+  {"id": 5163386654, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-10T06:18:03Z",
+   "user": {"login": "Warwick-Allen"}},
+  {"id": 5163500000, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-10T09:00:00Z",
+   "user": {"login": "another-reviewer"}}
+]'
+assert_eq "a newer round from a different reviewer means this ref no longer names the blocking review" \
+  "the review no longer blocks the pull request" \
+  "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_REVIEWS="$superseded_by_other_reviewer" \
+     preflight_review_feedback_reason o/a pr-1355-review-5163386654)"
+
+assert_eq "a non-review-feedback item shape decides nothing (no gh call)" \
+  "" "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_FAIL=1 \
+        preflight_review_feedback_reason o/a 125)"
+assert_eq "a finishing source's other pr-<n>-… shapes decide nothing here either" \
+  "" "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_FAIL=1 \
+        preflight_review_feedback_reason o/a pr-9-abandoned-abc123)"
+assert_eq "an unreadable reviews read decides nothing" \
+  "" "$(PREFLIGHT_GH="$stub_dir/gh" PREFLIGHT_STUB_FAIL=1 \
+        preflight_review_feedback_reason o/a pr-1355-review-5163386654)"
+assert_eq "missing arguments decide nothing" \
+  "" "$(PREFLIGHT_GH="$stub_dir/gh" preflight_review_feedback_reason "" pr-1355-review-5163386654)"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

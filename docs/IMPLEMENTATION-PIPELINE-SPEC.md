@@ -12713,19 +12713,51 @@ implements.
     missed hit costs an Implementer engagement that discovers the same
     thing, never a wrong void).
 
-    A hit from either done-signal logs `item-void` (stage `preflight`) with
-    the reason `work_gone_clearances` or
-    `preflight_branch_merged_reason` gives, releases the claim (requirement
-    17a's release rules) and ends the cycle — no Implementer engagement
-    spent. Neither needs a corroboration guard of its own (requirement 34d
-    exists to catch a model's fabricated citation, and there is no model in
-    this path to fabricate one): the evidence is read directly off
-    `gh`/the register file/the cycle's own pre-claim digest, the same ground
-    truth requirement 34d's guard checks a citation against. And both are
-    safe to make terminal for the same reason the 34i signals are: each
-    fact, once true, stays true — the staleness of a pre-claim digest can
-    only delay such a fact's arrival, never assert one that later becomes
-    false.
+    A third done-signal runs alongside the other two, scoped narrower still:
+    **the claimed item's own blocking review has already been superseded**
+    (`lib/preflight.sh`'s `preflight_review_feedback_reason`, issue #1360).
+    `work_gone_clearances`'s PR-shaped clearance answers "is the pull
+    request itself closed or merged?" for every `pr-<n>-…` shape alike, a
+    `review-feedback` item's `pr-<n>-review-<id>` included — but a review
+    round can be answered, and the same reviewer's `CHANGES_REQUESTED`
+    superseded by their own later `APPROVED`, with the pull request staying
+    open throughout, so that clearance never fires for it. Run only for
+    `review-feedback`, the one source whose item names a specific review:
+    one live `gh api repos/<slug>/pulls/<n>/reviews` call, recomputing
+    "the review currently blocking" exactly as `scripts/gather-review-
+    feedback.sh` does when deciding whether to offer the candidate at all
+    (requirement 34a's one shared definition — the same standing-position-
+    per-reviewer rule, deliberately without a bot filter, since a bot
+    reviewer's own `APPROVED` is exactly the signal that answers its
+    `CHANGES_REQUESTED` in the first place) — a hit is the ref's own review
+    id no longer matching that recomputed blocking review, whether because
+    it now stands answered or because a newer round from another reviewer
+    has taken its place. This exists because the Script's own gather can go
+    stale between when a round is answered and when the item is dispatched:
+    requirement 48's `expensive-gather` cache reads `review_feedback` fresh
+    for only one configured repository per cycle, per node, and every other
+    repository/node replays its own last-cached raw gather unverified —
+    `work_gone_clearances` and requirement 34j's dependency reconciliation
+    both already narrow to the repos a cycle read fresh for exactly this
+    reason, but a `review-feedback` item is never a member of the *blocked*
+    set either narrowing operates over, so neither one ever saw it. This one
+    live call, paid once per claim, closes that gap at the point closest to
+    the engagement it would otherwise waste, regardless of which cache or
+    race produced the stale ref.
+
+    A hit from any of the three done-signals logs `item-void` (stage
+    `preflight`) with the reason `work_gone_clearances`,
+    `preflight_branch_merged_reason` or `preflight_review_feedback_reason`
+    gives, releases the claim (requirement 17a's release rules) and ends the
+    cycle — no Implementer engagement spent. None needs a corroboration
+    guard of its own (requirement 34d exists to catch a model's fabricated
+    citation, and there is no model in this path to fabricate one): the
+    evidence is read directly off `gh`/the register file/the cycle's own
+    pre-claim digest, the same ground truth requirement 34d's guard checks a
+    citation against. And all three are safe to make terminal for the same
+    reason the 34i signals are: each fact, once true, stays true — the
+    staleness of a pre-claim digest can only delay such a fact's arrival,
+    never assert one that later becomes false.
 
     **An open pull request already carrying the just-claimed branch defers
     the claim instead of voiding it** (`preflight_defer_reason`, agent-ops
@@ -17638,10 +17670,14 @@ What exists, and the requirements each part answers to:
    is the gate that scopes it to the four sources whose branch predates the
    claim (review-feedback, merge-conflicts, dequeued, abandoned-drafts) — see
    requirement 34m for why an ordinary claim's freshly created branch cannot
-   use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
-   pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
-   whose function `preflight_done_reason` wraps. Unit-tested
-   (`test/preflight.test.sh`); must pass `shellcheck`.
+   use this check. `preflight_review_feedback_reason` is the third done-signal
+   (requirement 34m, issue #1360), scoped to `review-feedback` items alone:
+   one live `gh api pulls/<n>/reviews` call, recomputing the blocking review
+   the way `scripts/gather-review-feedback.sh` (3c) already does and voiding
+   when the item's own review id no longer names it. `preflight_done_reason`
+   and `preflight_open_pr_reason` are pure — they read nothing themselves —
+   sourced after `lib/work-gone.sh`, whose function `preflight_done_reason`
+   wraps. Unit-tested (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*`, `<branch_prefix>*` and
    `td-record/*` ref — the last unconditionally, never gated by
@@ -22344,7 +22380,15 @@ oblige anyone to edit a test.
    comparison as deciding nothing; `preflight_existing_branch_source` is true
    for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
    false for every other source (including one that merely contains one of
-   those names as a substring).
+   those names as a substring). `preflight_review_feedback_reason` (issue
+   #1360), against a stubbed `gh api pulls/<n>/reviews`, reads the item's own
+   review id as still blocking when it is the standing `CHANGES_REQUESTED`
+   the recomputed blocking-review rule names, and as no longer blocking
+   (voided) both when that same reviewer's later review is `APPROVED` and
+   when a different reviewer's later `CHANGES_REQUESTED` has taken its
+   place; it decides nothing for an item not shaped `pr-<n>-review-<id>`, and
+   nothing for an unreadable reviews read, without calling `gh` at all for
+   the former.
 8o. **A void that is both actioned and old drops out of the extract; every
    other one does not (requirement 34n).** `test/cycle-state.test.sh`'s
    `retire_void_items` section passes: an entry whose `{repo, item}` is in
