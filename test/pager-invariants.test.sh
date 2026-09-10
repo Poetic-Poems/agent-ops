@@ -939,6 +939,17 @@ assert_eq "no PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS configured: neve
   "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"
 PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
 
+# issue #1353: a fractional engage cutoff is schema-legal (type: number), but
+# GNU date's relative parser this used to rely on rejects "1.5 hours ago"
+# outright, which failed the cutoff closed and would have made this
+# invariant a silent no-op right alongside the sweep it exists to watch.
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="1.5"
+verdict="$(pager_eval_pr_unreviewed "[]" "$pru_log")"
+assert_eq "a fractional engage cutoff (1.5h) still fires for the same stale candidate" \
+  "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... naming #10" "1" "$(grep -c 'o/r#10' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

@@ -1532,7 +1532,8 @@ _approver_restale_sweep_repo() {
           "Dismissed by the autonomous pipeline (requirement 46, agent-ops#682): a commit was authored after this review, but a fresh re-review could not be attempted this cycle." || true
       fi
     else
-      cutoff="$(date -u -d "${approver_restale_escalate_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+      cutoff="$(jq -n -r --arg h "$approver_restale_escalate_after_hours" \
+        '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
       [[ -n "$cutoff" && "$review_at" < "$cutoff" ]] || continue
       _approver_restale_escalate "$slug" "$pr_url" "$number" "$item_ref" "$review_at"
     fi
@@ -1540,7 +1541,8 @@ _approver_restale_sweep_repo() {
 
   # --- The unreviewed trigger (agent-ops#890) — see the header above. -------
   local unreviewed engage_cutoff escalate_cutoff claimed_prs prior first_engaged_at last_result
-  engage_cutoff="$(date -u -d "${approver_unreviewed_engage_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  engage_cutoff="$(jq -n -r --arg h "$approver_unreviewed_engage_after_hours" \
+    '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
   [[ -n "$engage_cutoff" ]] || return 0
   unreviewed="$(jq -c --arg cutoff "$engage_cutoff" '[.[] | select(.isDraft | not)
     | select((.reviewDecision // "") != "CHANGES_REQUESTED")
@@ -1580,7 +1582,8 @@ _approver_restale_sweep_repo() {
     prior="$(approver_unreviewed_prior_engagement "$union_log" "$pr_url" "$head")"
     if [[ -n "$prior" ]]; then
       IFS=$'\t' read -r first_engaged_at last_result <<<"$prior"
-      escalate_cutoff="$(date -u -d "${approver_restale_escalate_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+      escalate_cutoff="$(jq -n -r --arg h "$approver_restale_escalate_after_hours" \
+        '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
       if [[ -n "$escalate_cutoff" && -n "$first_engaged_at" && "$first_engaged_at" < "$escalate_cutoff" ]]; then
         _approver_unreviewed_escalate "$slug" "$pr_url" "$number" \
           "pr-${number}-approver-unreviewed-${head}" "$first_engaged_at"
