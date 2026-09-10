@@ -619,6 +619,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `jq -s 'sort_by(.at) | last'` — the same fix `lib/candidate-gather.sh`'s
   own timeline read already applied (PR #823).
 
+- **`deploy/docker/Dockerfile` pins the `claude-code` CLI install instead of
+  floating on `latest`** (issue #968, TD-PPagop-26082412). The image already
+  pinned and checksum-verified `supercronic` and `shellcheck` — binaries with
+  no package-manager-provided integrity check — but installed
+  `@anthropic-ai/claude-code` via `ARG CLAUDE_CODE_VERSION=latest`, on the
+  reasoning that CI rebuilds the image on every merge. That left two builds
+  of the same commit, days apart, able to produce different images if
+  Anthropic published a new release in between, and `claude-code` is the
+  dependency with the deepest reach on a node — the same tool/token access
+  the pipeline itself has — so a bad release would have reached every
+  subsequently-built node with no local pin to fall back to. The `ARG` now
+  pins a specific version (`2.1.267`), bumped deliberately in its own PR. The
+  OS-package layer below it (`jq`, `curl`, `python3`, `perl`, `git`, ...) is
+  left floating on Ubuntu's own apt repository by design — documented in a
+  comment beside `FROM ubuntu:24.04` — since it carries none of
+  supercronic/shellcheck's risk and a floating layer picks up security
+  updates within a rebuild cycle rather than sitting stale behind a pin.
+
 - **The cgroupfs reboot hook no longer leaves a cgroup path Docker can poison**
   (issue #1347). On `ockham-container`, an unclean restart left the node unable
   to start **any** memory-limited container — including sidecars with no

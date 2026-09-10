@@ -13,7 +13,15 @@
 # version of agent-ops: a node updates by pulling a new image, never by pulling
 # a git branch. Nothing here is host-specific and nothing is secret — tokens
 # and Claude credentials arrive at run time (see entrypoint.sh).
-
+#
+# The base image and the OS packages installed from it below (jq, curl,
+# python3, perl, git, ...) are left floating on Ubuntu's own apt repository
+# rather than pinned to a digest: CI rebuilds this image on every merge, so a
+# security update lands within a cycle rather than sitting stale behind a pin
+# someone has to remember to bump, and the OS layer carries none of
+# supercronic/shellcheck's risk (a binary with no package-manager-provided
+# integrity check). `claude-code` below is pinned instead, since a bad
+# release there reaches every subsequently-built node with no local fallback.
 FROM ubuntu:24.04
 
 # TARGETARCH is one of buildx's predefined build args (amd64, arm64, ...) for
@@ -40,10 +48,11 @@ ARG SUPERCRONIC_SHA1SUM_ARM64=93323899ddca3f1198f1796a4bf4418ed1e7982e
 ARG SHELLCHECK_VERSION=v0.10.0
 ARG SHELLCHECK_SHA256_AMD64=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
 ARG SHELLCHECK_SHA256_ARM64=324a7e89de8fa2aed0d0c28f3dab59cf84c6d74264022c00c22af665ed1a09bb
-# `latest` at build time rather than a pin: CI rebuilds on every merge, the
-# CLI moves fast, and a stale claude is a broken pipeline sooner than a
-# surprising one. Pin it here if a release ever breaks a cycle.
-ARG CLAUDE_CODE_VERSION=latest
+# Pinned, like supercronic/shellcheck above: it is the dependency with the
+# deepest reach on a node (the same tool/token access the pipeline itself
+# has), so a bad release must not reach every subsequently-built node with no
+# local pin to fall back to. Bump deliberately, in its own PR.
+ARG CLAUDE_CODE_VERSION=2.1.267
 # The container user's ids. They matter because the state, workspace and
 # Claude-config volumes outlive the container: mounting a host directory owned
 # by a different uid is the classic way to make a persistent volume read-only
