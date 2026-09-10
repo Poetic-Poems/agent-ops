@@ -152,14 +152,26 @@ stub_gh_label_of() {  # stub_gh_label_of ARGS... -> the value after --label
   done
   return 0
 }
+stub_gh_repo_of() {  # stub_gh_repo_of ARGS... -> the value after -R
+  local a next=""
+  for a in "$@"; do
+    [[ "$next" == "repo" ]] && { printf '%s' "$a"; return 0; }
+    [[ "$a" == "-R" ]] && next="repo"
+  done
+  return 0
+}
 # agent-ops#1281's own three stub knobs: STUB_GH_EDIT_OK (issue edit's own
 # exit status, for blocked-label-orphaned's remedy), STUB_GH_API_MAP (path
 # -> value, for digest-truncated's live search/issues counts), and
 # STUB_GH_COMMENT_OK (issue comment's own exit status, for
-# claim-unreconciled's remedy).
+# claim-unreconciled's remedy). agent-ops#1280's own:
+# STUB_GH_PR_LIST_BY_REPO (repo -> `gh pr list` JSON array, answered per the
+# `-R` repository the call actually names, mirroring `issue list`'s own
+# per-label answering above), for pr-unreviewed's own listing.
 STUB_GH_EDIT_OK=1
 declare -A STUB_GH_API_MAP=()
 STUB_GH_COMMENT_OK=1
+declare -A STUB_GH_PR_LIST_BY_REPO=()
 gh() {
   printf '%s\n' "$*" >> "$GH_CALLS_FILE"
   if [[ "$1" == "api" ]]; then
@@ -174,6 +186,10 @@ gh() {
       else
         printf '%s' "$STUB_GH_LIST_OPEN"
       fi
+      return 0 ;;
+    "pr list")
+      local repo; repo="$(stub_gh_repo_of "$@")"
+      printf '%s' "${STUB_GH_PR_LIST_BY_REPO[$repo]:-[]}"
       return 0 ;;
     "issue create") printf 'created: %s\n' "$STUB_GH_CREATE_URL"; return 0 ;;
     "issue close") return 0 ;;
@@ -735,6 +751,181 @@ digest_log_empty="$WORKDIR/digest-empty.jsonl"
 : > "$digest_log_empty"
 assert_eq "no source-state-digest events at all: never fires" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_digest_truncated "[]" "$digest_log_empty")")"
+
+# --- landing-never-armed (agent-ops#1280) -----------------------------------
+
+landing_ev() {  # landing_ev TS EVENT REPO [REASON]
+  jq -nc --arg ts "$1" --arg ev "$2" --arg r "$3" --arg reason "${4:-}" \
+    '{ts: $ts, node: "n1", cycle: "c1", event: $ev, repo: $r}
+     + (if $reason == "" then {} else {reason: $reason} end)'
+}
+
+lna_log="$WORKDIR/landing-never-armed.jsonl"
+write_log "$lna_log" \
+  "$(landing_ev "$(rel -500000)" landing-refused o/r "unknown:could not establish o/r#1's changed-file list")" \
+  "$(landing_ev "$(rel -400000)" landing-refused o/r "ineligible:complexity high")" \
+  "$(landing_ev "$(rel -300000)" landing-refused human/repo "ineligible:complexity high")"
+
+PAGER_EVAL_REPOS_JSON='[{"slug":"o/r","merge_autonomy":"agent-merges-routine"},
+  {"slug":"human/repo","merge_autonomy":"human"},
+  {"slug":"idle/repo","merge_autonomy":"agent-merges-all"}]'
+PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS=7
+verdict="$(pager_eval_landing_never_armed "[]" "$lna_log")"
+assert_eq "a repo at agent-merges-routine with refusals and zero armings in the window: fires" \
+  "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the repo and its refusal count" "1" \
+  "$(grep -c 'o/r (2 refusal' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... a repo at human is excluded despite the same refusal pattern" "0" \
+  "$(grep -c 'human/repo' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... a repo with no landing-refused activity in the window never fires" "0" \
+  "$(grep -c 'idle/repo' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+: > "$GH_CALLS_FILE"
+PAGER_REMEDY_REPO="reader/repo"
+outcome="$(pager_remedy_landing_never_armed landing-never-armed "$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "the remedy reports what it filed" "1" "$(grep -c 'reader/repo#701' <<<"$outcome")"
+assert_eq "  ... labelled pw::type:tech-debt" "1" \
+  "$(grep '^issue create' "$GH_CALLS_FILE" | grep -c 'pw::type:tech-debt')"
+
+lna_log_armed="$WORKDIR/landing-never-armed-armed.jsonl"
+write_log "$lna_log_armed" \
+  "$(landing_ev "$(rel -500000)" landing-refused o/r "unknown:could not establish o/r#1's changed-file list")" \
+  "$(landing_ev "$(rel -300000)" landing-armed o/r)"
+assert_eq "a landing-armed event inside the window: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_never_armed "[]" "$lna_log_armed")")"
+
+PAGER_EVAL_REPOS_JSON_SAVE="$PAGER_EVAL_REPOS_JSON"
+PAGER_EVAL_REPOS_JSON=""
+assert_eq "no PAGER_EVAL_REPOS_JSON configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_never_armed "[]" "$lna_log")")"
+PAGER_EVAL_REPOS_JSON="$PAGER_EVAL_REPOS_JSON_SAVE"
+PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS=""
+assert_eq "no PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_never_armed "[]" "$lna_log")")"
+PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS=7
+
+# --- landing-refused-unknown (agent-ops#1280) -------------------------------
+
+refused_ev() { jq -nc --arg ts "$1" --arg reason "$2" \
+  '{ts: $ts, node: "n1", cycle: "c1", event: "landing-refused", repo: "o/r", reason: $reason}'; }
+
+lru_log="$WORKDIR/landing-refused-unknown.jsonl"
+{
+  for i in 1 2 3 4 5 6; do refused_ev "$(rel -300)" "unknown:could not establish o/r#$i's changed-file list"; done
+  for i in 1 2 3 4; do refused_ev "$(rel -300)" "ineligible:complexity high"; done
+} > "$lru_log"
+verdict="$(pager_eval_landing_refused_unknown "[]" "$lru_log")"
+assert_eq "6 of 10 landing-refused events are class unknown (>= half, >= 5): fires" \
+  "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names the count" "1" "$(grep -c '6 of 10' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+: > "$GH_CALLS_FILE"
+PAGER_REMEDY_REPO="reader/repo"
+outcome="$(pager_remedy_landing_refused_unknown landing-refused-unknown "$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "the remedy reports what it filed" "1" "$(grep -c 'reader/repo#701' <<<"$outcome")"
+assert_eq "  ... labelled pw::type:tech-debt" "1" \
+  "$(grep '^issue create' "$GH_CALLS_FILE" | grep -c 'pw::type:tech-debt')"
+
+lru_log_below_floor="$WORKDIR/landing-refused-unknown-floor.jsonl"
+{
+  for i in 1 2 3 4; do refused_ev "$(rel -300)" "unknown:could not establish o/r#$i's changed-file list"; done
+  for i in 1 2; do refused_ev "$(rel -300)" "ineligible:complexity high"; done
+} > "$lru_log_below_floor"
+assert_eq "4 of 6 are unknown (>= half, but below the 5-event floor): does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_refused_unknown "[]" "$lru_log_below_floor")")"
+
+lru_log_below_half="$WORKDIR/landing-refused-unknown-half.jsonl"
+{
+  for i in 1 2 3 4 5; do refused_ev "$(rel -300)" "unknown:could not establish o/r#$i's changed-file list"; done
+  for i in 1 2 3 4 5 6; do refused_ev "$(rel -300)" "ineligible:complexity high"; done
+} > "$lru_log_below_half"
+assert_eq "5 of 11 are unknown (above the floor, but below half): does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_refused_unknown "[]" "$lru_log_below_half")")"
+
+lru_log_old="$WORKDIR/landing-refused-unknown-old.jsonl"
+{
+  for i in 1 2 3 4 5 6; do refused_ev "$(rel -176000)" "unknown:could not establish o/r#$i's changed-file list"; done
+} > "$lru_log_old"
+assert_eq "the same shape, but outside the trailing 24h: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_landing_refused_unknown "[]" "$lru_log_old")")"
+
+# --- pr-unreviewed (agent-ops#1280) -----------------------------------------
+
+pr_row() {  # pr_row NUMBER URL IS_DRAFT REVIEW_DECISION CREATED_AT HEAD
+  jq -nc --argjson n "$1" --arg u "$2" --argjson d "$3" --arg rd "$4" --arg c "$5" --arg h "$6" \
+    '{number: $n, url: $u, isDraft: $d, reviewDecision: $rd, createdAt: $c, headRefOid: $h}'
+}
+pr_created_old="2020-01-01T00:00:00Z"
+pr_created_recent="$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+# #10 ready, no standing review, never touched: the one candidate. #11 is a
+# draft. #12 already carries a standing (APPROVED) decision. #13 is younger
+# than the engage cutoff. #14/#15/#16 are each excluded by one of the three
+# disqualifying union-log events below, one apiece.
+STUB_GH_PR_LIST_BY_REPO=(
+  [o/r]="$(jq -sc '.' <<PR_ROWS
+$(pr_row 10 "https://github.com/o/r/pull/10" false ""         "$pr_created_old"    "sha10")
+$(pr_row 11 "https://github.com/o/r/pull/11" true  ""         "$pr_created_old"    "sha11")
+$(pr_row 12 "https://github.com/o/r/pull/12" false "APPROVED" "$pr_created_old"    "sha12")
+$(pr_row 13 "https://github.com/o/r/pull/13" false ""         "$pr_created_recent" "sha13")
+$(pr_row 14 "https://github.com/o/r/pull/14" false ""         "$pr_created_old"    "sha14")
+$(pr_row 15 "https://github.com/o/r/pull/15" false ""         "$pr_created_old"    "sha15")
+$(pr_row 16 "https://github.com/o/r/pull/16" false ""         "$pr_created_old"    "sha16")
+PR_ROWS
+)"
+)
+
+pru_log="$WORKDIR/pr-unreviewed.jsonl"
+write_log "$pru_log" \
+  "$(jq -nc '{ts:"2026-01-01T00:00:00Z", node:"n1", cycle:"c1", event:"approver-unreviewed-engaged",
+    pr_url:"https://github.com/o/r/pull/14", repo:"o/r", head:"sha14", result:"unavailable"}')" \
+  "$(jq -nc '{ts:"2026-01-01T00:00:00Z", node:"n1", cycle:"c1", event:"approver-verdict",
+    pr_url:"https://github.com/o/r/pull/15", repo:"o/r", verdict:"changes-requested"}')" \
+  "$(jq -nc '{ts:"2026-01-01T00:00:00Z", node:"n1", cycle:"c1", event:"warning",
+    pr_url:"https://github.com/o/r/pull/16",
+    detail:"could not read the Approver App'\''s own login — no App review was posted"}')"
+
+PAGER_EVAL_REPOS_JSON='[{"slug":"o/r"}]'
+PAGER_EVAL_PR_LABEL="autonomous-agent"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
+verdict="$(pager_eval_pr_unreviewed "[]" "$pru_log")"
+assert_eq "a ready pull request with no standing review and no engagement history at all: fires" \
+  "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... evidence names exactly #10" "1" "$(grep -c 'o/r#10' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the draft (#11) is excluded" "0" "$(grep -c 'o/r#11' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the already-decided review (#12) is excluded" "0" "$(grep -c 'o/r#12' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the too-young pull request (#13) is excluded" "0" "$(grep -c 'o/r#13' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the already-engaged pull request (#14) is excluded" "0" "$(grep -c 'o/r#14' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the already-verdicted pull request (#15) is excluded" "0" "$(grep -c 'o/r#15' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... the already-warned pull request (#16) is excluded" "0" "$(grep -c 'o/r#16' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+pager_remedy_pr="$WORKDIR/pager-remedy-pr.jsonl"
+: > "$pager_remedy_pr"
+PAGER_REMEDY_LOG_FILE="$pager_remedy_pr"
+PAGER_REMEDY_UNION_LOG_FILE="$pru_log"
+PAGER_REMEDY_NODE="n1"
+PAGER_REMEDY_CYCLE="c9"
+outcome="$(pager_remedy_pr_unreviewed pr-unreviewed "irrelevant, re-derived live")"
+assert_eq "the remedy enqueues exactly the one candidate" \
+  "enqueued 1 ready pull request(s) into requirement 46's own retry/escalate memory (approver-unreviewed-engaged, result: unavailable)" \
+  "$outcome"
+assert_eq "  ... logging a fresh approver-unreviewed-engaged event for #10" "1" \
+  "$(grep -c '\"pr_url\":\"https://github.com/o/r/pull/10\"' "$pager_remedy_pr")"
+assert_eq "  ... result unavailable, never claiming a real review was posted" "1" \
+  "$(grep -c '\"result\":\"unavailable\"' "$pager_remedy_pr")"
+
+PAGER_EVAL_REPOS_JSON=""
+assert_eq "no PAGER_EVAL_REPOS_JSON configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"
+PAGER_EVAL_REPOS_JSON='[{"slug":"o/r"}]'
+PAGER_EVAL_PR_LABEL=""
+assert_eq "no PAGER_EVAL_PR_LABEL configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"
+PAGER_EVAL_PR_LABEL="autonomous-agent"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=""
+assert_eq "no PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS configured: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
 
 printf '\n'
 if (( failures )); then

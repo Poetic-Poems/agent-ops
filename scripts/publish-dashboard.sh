@@ -230,6 +230,22 @@ pager_repair_rate_percent="$(cfg '.pager_repair_rate_percent')"
 [[ "$pager_repair_rate_percent" =~ ^[0-9]+$ ]] || pager_repair_rate_percent=20
 pager_escalation_burst="$(cfg '.pager_escalation_burst')"
 [[ "$pager_escalation_burst" =~ ^[0-9]+$ ]] || pager_escalation_burst=10
+# agent-ops#1280's own landing/approval class: landing-never-armed's
+# days-since-armed window, and pr-unreviewed's reuse of requirement 46's own
+# unreviewed-trigger cutoff (never a separate key — see that invariant's own
+# header in lib/pager-invariants.sh).
+pager_landing_armed_within_days="$(cfg '.pager_landing_armed_within_days')"
+[[ "$pager_landing_armed_within_days" =~ ^[0-9]+([.][0-9]+)?$ ]] || pager_landing_armed_within_days=7
+approver_unreviewed_engage_after_hours="$(cfg '.approver_unreviewed_engage_after_hours')"
+[[ "$approver_unreviewed_engage_after_hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || approver_unreviewed_engage_after_hours=2
+# landing-never-armed's own repository/merge_autonomy list (also
+# pr-unreviewed's repo list) — the configured level alone, on the identical
+# D18 WI-6 approximation `config_json`'s own back-pressure card makes further
+# down this script: a live effective-level read needs a per-repository
+# merge-budget-freeze check neither invariant pays for on every evaluation.
+pager_repos_merge_autonomy_json="$(jq -c --arg top "$(cfg '.merge_autonomy')" \
+  '[.[] | {slug, merge_autonomy: (.merge_autonomy // $top)}]' <<<"$repos_json" 2>/dev/null)"
+[[ -n "$pager_repos_merge_autonomy_json" ]] || pager_repos_merge_autonomy_json='[]'
 enabler_assignee="$(cfg '.enabler_assignee')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 escalation_webhook_url="$(cfg '.escalation_webhook_url')"
@@ -2515,7 +2531,8 @@ if (( WITH_GITHUB )); then
       "$github_budget_cycle_interval_minutes" "$node_stale_after_minutes_raw" \
       "$updater_stuck_after_minutes_raw" "$pager_dashboard_fetch_seconds" \
       "$pager_review_union" "$pager_idle_cycles" "$pager_repair_rate_percent" \
-      "$pager_escalation_burst" || true
+      "$pager_escalation_burst" "$pager_repos_merge_autonomy_json" "$pr_label" \
+      "$approver_unreviewed_engage_after_hours" "$pager_landing_armed_within_days" || true
     # Re-read the union: pager_evaluate may just have appended to this node's
     # own log.jsonl, which $events_jsonl (built before this block) cannot
     # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs

@@ -6,9 +6,11 @@
 # FETCH_SECONDS/PAGER_EVAL_REVIEW_UNION_LOG_FILE, and agent-ops#1281's
 # PAGER_EVAL_IDLE_CYCLES/PAGER_EVAL_REPAIR_RATE_PERCENT/PAGER_EVAL_ESCALATION_
 # BURST/PAGER_REMEDY_LOG_FILE/PAGER_REMEDY_UNION_LOG_FILE/PAGER_REMEDY_NODE/
-# PAGER_REMEDY_CYCLE, are set here for a dynamically-invoked EVAL_FN/remedy
-# function to read (see this file's own header) — real, load-bearing reads
-# this tool cannot see across an indirect call by name.
+# PAGER_REMEDY_CYCLE, and agent-ops#1280's PAGER_EVAL_REPOS_JSON/PAGER_EVAL_
+# PR_LABEL/PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS/PAGER_EVAL_
+# LANDING_ARMED_WITHIN_DAYS, are set here for a dynamically-invoked EVAL_FN/
+# remedy function to read (see this file's own header) — real, load-bearing
+# reads this tool cannot see across an indirect call by name.
 # SC2016: every backtick inside a single-quoted printf format string below is
 # literal — deliberate Markdown code-span syntax for the issue body it
 # builds, never a shell expansion shellcheck's heuristic mistakes it for.
@@ -469,16 +471,21 @@ Retired automatically by lib/pager.sh (issue #1278)."
 #                     [CYCLE_INTERVAL_MINUTES] [NODE_STALE_AFTER_MINUTES] \
 #                     [UPDATER_STUCK_AFTER_MINUTES] [DASHBOARD_FETCH_SECONDS] \
 #                     [REVIEW_UNION_LOG_FILE] [IDLE_CYCLES] \
-#                     [REPAIR_RATE_PERCENT] [ESCALATION_BURST]
+#                     [REPAIR_RATE_PERCENT] [ESCALATION_BURST] [REPOS_JSON] \
+#                     [PR_LABEL] [APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS] \
+#                     [LANDING_ARMED_WITHIN_DAYS]
 # The five trailing parameters through REVIEW_UNION_LOG_FILE exist for
 # agent-ops#1282's peer-vantage invariants; the three after them
 # (IDLE_CYCLES/REPAIR_RATE_PERCENT/ESCALATION_BURST) are agent-ops#1281's own
-# selection/ledger thresholds — see PAGER_EVAL_CYCLE_INTERVAL_MINUTES and its
-# siblings, set just below, and this file's own header for why they travel as
-# plain variables rather than through EVAL_FN's two-argument contract. Every
-# call site before #1282, and every existing test, omits them; an omitted
-# trailing bash positional parameter reads as empty, which every EVAL_FN that
-# reads one treats as "nothing configured — never fire".
+# selection/ledger thresholds; the four after those
+# (REPOS_JSON/PR_LABEL/APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS/LANDING_ARMED_
+# WITHIN_DAYS) are agent-ops#1280's own landing/approval class — see
+# PAGER_EVAL_CYCLE_INTERVAL_MINUTES and its siblings, set just below, and
+# this file's own header for why they travel as plain variables rather than
+# through EVAL_FN's two-argument contract. Every call site before #1282, and
+# every existing test, omits them; an omitted trailing bash positional
+# parameter reads as empty, which every EVAL_FN that reads one treats as
+# "nothing configured — never fire".
 _pager_evaluate_one() {
   local key="$1" claim_script="$2" pager_repo="$3" label="$4" \
         escalation_label="$5" assignee="$6" webhook_url="$7" min_firing_minutes="$8" \
@@ -486,7 +493,9 @@ _pager_evaluate_one() {
         cycle_interval_minutes="${14:-}" node_stale_after_minutes="${15:-}" \
         updater_stuck_after_minutes="${16:-}" dashboard_fetch_seconds="${17:-}" \
         review_union_log_file="${18:-}" idle_cycles="${19:-}" \
-        repair_rate_percent="${20:-}" escalation_burst="${21:-}"
+        repair_rate_percent="${20:-}" escalation_burst="${21:-}" \
+        repos_json="${22:-}" pr_label="${23:-}" \
+        approver_unreviewed_engage_after_hours="${24:-}" landing_armed_within_days="${25:-}"
   local eval_fn remedy_class remedy_arg window claim_key claim_rc
   eval_fn="${PAGER_EVAL_FN[$key]}"
   remedy_class="${PAGER_REMEDY_CLASS[$key]}"
@@ -536,6 +545,14 @@ _pager_evaluate_one() {
   PAGER_EVAL_IDLE_CYCLES="$idle_cycles"
   PAGER_EVAL_REPAIR_RATE_PERCENT="$repair_rate_percent"
   PAGER_EVAL_ESCALATION_BURST="$escalation_burst"
+  # agent-ops#1280's own four: landing-never-armed's configured-repo/merge_
+  # autonomy list (also pr-unreviewed's own repo list) and days-since-armed
+  # window, pr-unreviewed's pr_label and approver_unreviewed_engage_after_
+  # hours cutoff — the identical documented-exception pattern above.
+  PAGER_EVAL_REPOS_JSON="$repos_json"
+  PAGER_EVAL_PR_LABEL="$pr_label"
+  PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="$approver_unreviewed_engage_after_hours"
+  PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS="$landing_armed_within_days"
   # A pipeline-act remedy that needs to log its own union-log event (rather
   # than merely call `gh` directly, the way verdict-unanimous/page-outlived-
   # item's remedies do) has no other way to reach LOG_FILE/NODE/CYCLE: REMEDY_ARG's
@@ -591,10 +608,14 @@ _pager_evaluate_one() {
 #                FLEET_NODES_JSON NODE CYCLE [CYCLE_INTERVAL_MINUTES] \
 #                [NODE_STALE_AFTER_MINUTES] [UPDATER_STUCK_AFTER_MINUTES] \
 #                [DASHBOARD_FETCH_SECONDS] [REVIEW_UNION_LOG_FILE] \
-#                [IDLE_CYCLES] [REPAIR_RATE_PERCENT] [ESCALATION_BURST]
-# The eight trailing, optional parameters are agent-ops#1282's and
-# agent-ops#1281's own — see _pager_evaluate_one's own header for why they
-# exist and why omitting them (every call site before #1282) is safe.
+#                [IDLE_CYCLES] [REPAIR_RATE_PERCENT] [ESCALATION_BURST] \
+#                [REPOS_JSON] [PR_LABEL] \
+#                [APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS] \
+#                [LANDING_ARMED_WITHIN_DAYS]
+# The twelve trailing, optional parameters are agent-ops#1282's,
+# agent-ops#1281's and agent-ops#1280's own — see _pager_evaluate_one's own
+# header for why they exist and why omitting them (every call site before
+# #1282) is safe.
 # Evaluates every registered invariant once, in registration order. One bad
 # EVAL_FN or one lost claim never stops the rest — each invariant's own
 # failure is contained to itself, the same isolation crash_loop_verdict's own
