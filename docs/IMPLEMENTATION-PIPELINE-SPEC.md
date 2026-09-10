@@ -20943,6 +20943,24 @@ oblige anyone to edit a test.
    and a stubbed POST failure (a `403` from the fence) logs `notify-failed`
    and `notify_post` still returns 0 — a down or misconfigured webhook must
    never propagate into the caller it is notifying on behalf of.
+
+   `test/enabler-notify-wiring.test.sh` covers the other half — that
+   `create_escalation_issue` calls it, on the right paths, without changing
+   what it returns to the three routes that file through it. It passes
+   against `create_escalation_issue` and `escalation_webhook_notify` lifted
+   verbatim from `lib/enabler.sh` with `lib/notify.sh` sourced whole: a
+   filing failure posts `escalation-unfiled`
+   exactly once, keyed `<repo>#<item>`, carrying the failed issue's own title
+   and body — and still returns 1, still printing nothing, so a notification
+   can never read as a filing; a fresh create posts `escalation-filed`
+   carrying the new issue's URL, and still prints `<number>\t<url>` unchanged,
+   which is what every caller parses back; the duplicate-guard path posts
+   nothing at all, because a fault already escalated is not a fresh page; an
+   installation with `escalation` absent from `notify_events` posts nothing
+   and logs nothing, not even a suppression; and a POST that fails logs
+   `notify-failed` naming the key while leaving the verdict on both paths
+   exactly as it was — 1 for the failed filing, 0 and the issue URL for the
+   successful one.
 2n. **A cycle does not start work the host has no room to finish (requirement
    2.0c, agent-ops#756).** `test/disk-space.test.sh` passes:
    `disk_space_free_kb` reads a directory's free KiB and is empty (never `0`)
@@ -26196,6 +26214,20 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   than something the alias could have absorbed — which is why the CHANGELOG
   entry states the field-level change alongside the rename rather than leaving
   an operator to infer it from the key still working.
+
+  The webhook's own test coverage split along the same seam as the code.
+  `test/escalation-webhook.test.sh` tested one thing through one path — the
+  filing-failure POST, reached only through `create_escalation_issue` — so a
+  single file could cover both the channel and its wiring. With three classes
+  reached from four files, the channel's own behaviour (the classes, the
+  alias, the per-`(event, key)` rate limit) is `test/notify.test.sh`'s, and
+  what `lib/enabler.sh` does with it is `test/enabler-notify-wiring.test.sh`'s.
+  The second is deliberately not a subset of the first: the assertions worth
+  keeping from before this rewrite are the ones about `create_escalation_issue`'s
+  own return value and stdout, which no test of `notify_post` in isolation can
+  make, and which matter more now than they did — the success path gained a
+  notification, and it sits immediately before the `printf` every caller
+  parses back.
 - **`notify_min_interval_seconds` coalesces per `(event, key)` pair, not per
   notify class and not per key alone.** A coarser bucket (one shared key per
   class) would suppress a genuine second escalation about a *different* item
