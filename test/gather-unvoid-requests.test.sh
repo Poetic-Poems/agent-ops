@@ -66,6 +66,16 @@ case "$path" in
     n="${path#repos/*/issues/}"; n="${n%%/*}"
     f="$STUB_DIR/timeline-$n.json"
     body="$([[ -f "$f" ]] && cat "$f" || echo '[]')"
+    # A second page, when the fixture has one: `gh api --paginate` re-runs
+    # `--jq` once per page and concatenates each page's own output, so a
+    # multi-page timeline is modelled here by applying the filter twice and
+    # printing both results, exactly as the real client would.
+    f2="$STUB_DIR/timeline-$n-page2.json"
+    if [[ -f "$f2" ]]; then
+      jq -rc "$filter" <<<"$body"
+      jq -rc "$filter" < "$f2"
+      exit 0
+    fi
     ;;
   repos/*/pulls/*)
     n="${path##*/pulls/}"
@@ -116,6 +126,30 @@ assert_eq "  ... kind is pr" "pr" "$(jq -r '.kind' <<<"$req92")"
 
 assert_eq "results are sorted by labelled_at" '[52,92]' \
   "$(jq -c '[.[].number]' <<<"$out")"
+
+# --- A multi-page timeline: the aggregate must not be taken inside --jq ----
+# --- (TD-PPagop-26082701) ---------------------------------------------------
+# `gh api --paginate` re-runs its `--jq` filter once per page and prints each
+# page's own result as its own document. The timeline endpoint pages at
+# thirty, so an issue whose label was applied, removed and re-applied across
+# a page boundary must still resolve to the *latest* application's stamp
+# alone — not a multi-line value formed by concatenating both pages' own
+# "latest on this page" answers.
+cat > "$STUB_HITS" <<'EOF'
+[{"number": 150, "title": "TD26072114", "body": "", "html_url": "https://github.com/o/r/issues/150"}]
+EOF
+cat > "$STUB_DIR/timeline-150.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "unvoided"}, "created_at": "2026-07-20T08:00:00Z"}]
+EOF
+cat > "$STUB_DIR/timeline-150-page2.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "unvoided"}, "created_at": "2026-08-01T12:00:00Z"}]
+EOF
+multi_page_out="$("$GATHER" o/r)"
+assert_eq "a multi-page timeline still yields exactly one request" "1" \
+  "$(jq 'length' <<<"$multi_page_out")"
+assert_eq "  ... with a single-line labelled_at, the later page's stamp" \
+  "2026-08-01T12:00:00Z" "$(jq -r '.[0].labelled_at' <<<"$multi_page_out")"
+rm -f "$STUB_DIR/timeline-150.json" "$STUB_DIR/timeline-150-page2.json"
 
 # --- No timeline event: no request, guessing a timestamp is refused --------
 cat > "$tmp_dir/hits-no-timeline.json" <<'EOF'

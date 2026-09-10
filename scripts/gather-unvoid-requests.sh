@@ -125,10 +125,20 @@ while IFS= read -r hit; do
   # issue itself carries the label but not when it arrived — and the *latest*
   # application is the one that counts: a human who removes and re-applies a
   # label is asking again, about everything up to now.
+  #
+  # The aggregate is taken out here, not inside `--jq`: `gh api --paginate`
+  # re-runs its filter once per page and prints each page's result as its own
+  # document (TD-PPagop-26081306), and this endpoint pages at thirty, so a
+  # `sort_by | last` inside the filter yields one stamp per matching page on
+  # any issue with a timeline longer than that — an unparseable multi-line
+  # value that reads as "unknown" and defers the request for good. So the
+  # read streams one ISO-8601 stamp per line across every page and the latest
+  # is taken with `sort | tail -1`: a lexical sort is a time sort for these
+  # stamps.
   labelled_at="$(gh api --paginate "repos/$slug/issues/$number/timeline" \
-                   --jq "[.[] | select(.event == \"labeled\" and .label.name == \"$label\")]
-                         | sort_by(.created_at) | last | .created_at // empty" \
-                 2>/dev/null || true)"
+                   --jq ".[] | select(.event == \"labeled\" and .label.name == \"$label\")
+                         | .created_at // empty" \
+                 2>/dev/null | sort | tail -1)" || labelled_at=""
   # No timeline, no request. Guessing a timestamp here would defeat the one test
   # that stops a stale label clearing tomorrow's voids.
   [[ -n "$labelled_at" ]] || continue
