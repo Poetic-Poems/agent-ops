@@ -20835,6 +20835,14 @@ oblige anyone to edit a test.
      `pager_close` (`lib/pager.sh`, requirement 51) themselves, guarded by
      `declare -F notify_post` so that file stays sourceable without
      `lib/notify.sh` alongside it (`test/pager.test.sh` sources it standalone).
+     `pager_evaluate` gains two more trailing, optional parameters for this —
+     `NOTIFY_EVENTS_JSON` and `NOTIFY_MIN_INTERVAL`, after #1281's own three
+     — threaded through to `pager_file`/`pager_close`, and `pager_file`/
+     `pager_close` each gain the same pair plus the webhook URL and the union
+     log to read. Omitted, as every call site before this and every existing
+     test leaves them, they read as empty, which `notify_post` treats as "no
+     notify channel configured" exactly as it treats an unset
+     `notify_webhook_url`.
    - `fleet-standdown` — `fleet-standdown-begin`/`fleet-standdown-end` for
      each of the three fleet-wide stand-downs a switch someone set can leave
      silently in force: the usage-limit cooldown (`lib/standdown.sh`'s own
