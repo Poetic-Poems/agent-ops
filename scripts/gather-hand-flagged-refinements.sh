@@ -107,11 +107,21 @@ while IFS= read -r hit; do
   # history — and the *latest* application is the one that counts: a human who
   # removes and re-applies the label is asking again, about everything up to
   # now.
+  #
+  # The aggregate is taken out here, not inside `--jq`: `gh api --paginate`
+  # re-runs its filter once per page and prints each page's result as its own
+  # document (TD-PPagop-26081306), and this endpoint pages at thirty, so a
+  # `sort_by | last` inside the filter yields one `{at, by}` object per
+  # matching page on any issue with a timeline longer than that — a
+  # multi-document value whose `.at` prints one line per document, which
+  # `[[ -n "$at" ]]` below would wrongly accept. So the read streams one
+  # `{at, by}` object per line across every page (`gh api --jq` already emits
+  # compact JSON, one result per line) and the latest is picked outside with
+  # `jq -s 'sort_by(.at) | last'`.
   labelled="$(gh api --paginate "repos/$slug/issues/$number/timeline" \
-                --jq "[.[] | select(.event == \"labeled\" and .label.name == \"$label\")]
-                      | sort_by(.created_at) | last
+                --jq ".[] | select(.event == \"labeled\" and .label.name == \"$label\")
                       | {at: (.created_at // \"\"), by: (.actor.login // \"\")}" \
-              2>/dev/null || true)"
+              2>/dev/null | jq -sc 'sort_by(.at) | last // empty')" || labelled=""
   # No timeline entry, no request: guessing a timestamp here would defeat the
   # one test (requirement 34g, mirroring 34f) that stops a stale reading of the
   # label reopening or reclosing something it was never aimed at.

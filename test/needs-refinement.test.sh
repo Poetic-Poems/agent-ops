@@ -1211,6 +1211,69 @@ assert_eq "and does not swallow jq's own reason for failing" "0" \
 assert_eq "  ... while still returning the accumulator it already had" "[]" \
   "$(run_hand_flag_fold '[]' 'not json' 2>/dev/null)"
 
+# --- scripts/gather-hand-flagged-refinements.sh's timeline read: a multi- ------
+# --- page issue must not resolve to a multi-line labelled_at ------------------
+# --- (TD-PPagop-26082701) -------------------------------------------------------
+# `gh api --paginate` re-runs its `--jq` filter once per page and prints each
+# page's own result as its own document; the timeline endpoint pages at
+# thirty. This runs the shipped script end to end against a `gh` stub on
+# PATH — the same technique test/gather-unvoid-requests.test.sh uses for its
+# sibling script — to prove the fix holds for the real script, not just the
+# accumulator fold pinned above.
+hf_tmp="$(mktemp -d)"
+hf_bin="$hf_tmp/bin"; hf_fixtures="$hf_tmp/fixtures"
+mkdir -p "$hf_bin" "$hf_fixtures"
+hf_hits="$hf_tmp/hits.json"
+cat > "$hf_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
+shift
+path=""
+filter='.'
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --jq) filter="$2"; shift 2 ;;
+    --paginate) shift ;;
+    -*) shift ;;
+    *) path="$1"; shift ;;
+  esac
+done
+case "$path" in
+  repos/*/issues\?labels=*) jq -rc "$filter" <"$HF_STUB_HITS" ;;
+  repos/*/issues/*/timeline)
+    n="${path#repos/*/issues/}"; n="${n%%/*}"
+    f="$HF_STUB_DIR/timeline-$n.json"
+    [[ -f "$f" ]] && jq -rc "$filter" <"$f"
+    f2="$HF_STUB_DIR/timeline-$n-page2.json"
+    [[ -f "$f2" ]] && jq -rc "$filter" <"$f2"
+    exit 0
+    ;;
+  *) echo "stub gh: unexpected path: $path" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$hf_bin/gh"
+
+cat > "$hf_hits" <<'EOF'
+[{"number": 300, "html_url": "https://github.com/o/r/issues/300", "state": "open"}]
+EOF
+cat > "$hf_fixtures/timeline-300.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "needs-refinement"}, "created_at": "2026-08-01T09:00:00Z", "actor": {"login": "warwick"}}]
+EOF
+cat > "$hf_fixtures/timeline-300-page2.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "needs-refinement"}, "created_at": "2026-08-02T10:30:00Z", "actor": {"login": "warwick"}}]
+EOF
+
+hf_out="$(HF_STUB_HITS="$hf_hits" HF_STUB_DIR="$hf_fixtures" PATH="$hf_bin:$PATH" \
+  "$SCRIPT_DIR/scripts/gather-hand-flagged-refinements.sh" o/r)"
+assert_eq "a multi-page timeline still yields exactly one entry" "1" \
+  "$(jq 'length' <<<"$hf_out")"
+assert_eq "  ... with a single-line labelled_at, the later page's stamp" \
+  "2026-08-02T10:30:00Z" "$(jq -r '.[0].labelled_at' <<<"$hf_out")"
+assert_eq "  ... and the later page's own actor" \
+  "warwick" "$(jq -r '.[0].by' <<<"$hf_out")"
+rm -rf "$hf_tmp"
+
 # --- Robustness at the call sites -------------------------------------------------
 # agent-cycle.sh calls all of this from a cycle running under `set -euo pipefail`,
 # and the verdict half of it from inside the exit trap, where an unguarded
