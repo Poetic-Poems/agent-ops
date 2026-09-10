@@ -64,6 +64,22 @@ fi
 assert_eq "DOCKER_MTU falls back to 1500, the same default compose.yaml uses" \
   "1500" "$(env -u DOCKER_MTU bash -c '. "'"$SCRIPT_DIR"'/lib/host-facts.sh"; host_facts_network_json' | jq -r '.docker_mtu_configured')"
 
+# --- host.mem_total_bytes / host.cpu_count (issue #757) ----------------------
+# Both read real, unfixtured system files (/proc/meminfo, /proc/cpuinfo, the
+# same files host_facts_mem_available_bytes already reads without an
+# override) — a readable-happy-path smoke test only, the same "unreadable is
+# empty, never a guessed 0" contract left to lib/memory.sh's own
+# already-tested memory_total_kb rather than duplicated here (see
+# docs/IMPLEMENTATION-PIPELINE-SPEC.md's 2n-ii acceptance check).
+mem_total="$(host_facts_mem_total_bytes)"
+assert_eq "mem_total_bytes reads a positive integer on this host" \
+  "yes" "$(if [[ "$mem_total" =~ ^[0-9]+$ ]] && (( mem_total > 0 )); then echo yes; else echo no; fi)"
+cpu_count="$(host_facts_cpu_count)"
+assert_eq "cpu_count reads a positive integer on this host" \
+  "yes" "$(if [[ "$cpu_count" =~ ^[0-9]+$ ]] && (( cpu_count > 0 )); then echo yes; else echo no; fi)"
+assert_eq "host_facts_host_json carries mem_total_bytes and cpu_count" \
+  "true" "$(host_facts_host_json /tmp /tmp | jq -r '(.mem_total_bytes | type == "number") and (.cpu_count | type == "number")')"
+
 # --- Updater ledger tail ------------------------------------------------------
 # Every filename here is deliberately container-ID-shaped and shares no
 # characters with any node name. That is the real shape on a compose node:
