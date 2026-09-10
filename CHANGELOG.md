@@ -88,9 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every fleet-wide stand-down beginning or ending (a usage-limit cooldown,
   the fleet switch, the merge-autonomy kill switch), gated per class by
   `notify_events` (default all three: `escalation`, `pager`,
-  `fleet-standdown`) and coalesced per key by `notify_min_interval_seconds`
-  (default 600s) so a burst of the same fact repeating arrives as one
-  message and a count. `escalation_webhook_url` — previously only a
+  `fleet-standdown`) and coalesced per `(event, key)` pair by
+  `notify_min_interval_seconds` (default 600s) so a burst of the same fact
+  repeating arrives as one message and a count, while the `end` of a
+  transition never disappears behind the `begin` that shares its key. `escalation_webhook_url` — previously only a
   filing-failure fallback — is accepted as an alias for `notify_webhook_url`
   for one release; `scripts/doctor.sh` warns on the old name and gains a
   live reachability check of the resolved webhook host through the egress

@@ -2051,11 +2051,24 @@ else
   # any completed HTTP response (even a 404/405 from the receiver) proves
   # the fence let the connection through, which is all this checks — never
   # POSTs, so no receiver ever sees a synthetic notification from this run.
+  #
+  # The warn names the *host*, never the URL: a webhook secret ordinarily
+  # lives in the URL's own path (`https://hooks.slack.com/services/T…/B…/…`),
+  # and lib/redact.sh's pattern set matches token *shapes* (`gh*_`,
+  # `github_pat_`, `sk-`, `Bearer`), none of which catch one carried that way
+  # — while every warn message is copied verbatim into
+  # state_dir/.doctor-status.json, which scripts/state-sync.sh pushes to the
+  # state-mirror repository and scripts/publish-dashboard.sh renders. The host
+  # is also all the message's own advice needs, since EGRESS_EXTRA_ALLOW is
+  # keyed on exactly that.
   if [[ -n "$notify_webhook_url_resolved" ]]; then
+    notify_webhook_host="${notify_webhook_url_resolved#*://}"
+    notify_webhook_host="${notify_webhook_host%%/*}"   # strip path, query, fragment
+    notify_webhook_host="${notify_webhook_host##*@}"   # strip any userinfo
     if curl -sS --max-time 10 -o /dev/null "$notify_webhook_url_resolved" 2>/dev/null; then
-      ok "the notify webhook host answers through the egress fence"
+      ok "the notify webhook host ($notify_webhook_host) answers through the egress fence"
     else
-      warn "the notify webhook ($notify_webhook_url_resolved) does not answer through the egress fence — add its host to this node's EGRESS_EXTRA_ALLOW (.env), or notify_post will silently fail every time"
+      warn "the notify webhook host ($notify_webhook_host) does not answer through the egress fence — add it to this node's EGRESS_EXTRA_ALLOW (.env), or notify_post will silently fail every time"
     fi
   fi
 fi

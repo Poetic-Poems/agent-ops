@@ -853,7 +853,7 @@ and the schema must carry every one of them.
 | `escalation_webhook_url` | *(unset)* | An alias for `notify_webhook_url` (requirement 2m), accepted for one release when `notify_webhook_url` is itself empty. `scripts/doctor.sh` warns whenever this key is set. Empty contributes nothing. |
 | `notify_webhook_url` | *(unset)* | The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own...[continued below](#extended-notes-notify_webhook_url) |
 | `notify_events` | `["escalation", "pager", "fleet-standdown"]` | Which of the three notify classes (requirement 2m) `notify_post` sends: `escalation`, `pager`, `fleet-standdown`. Default is all three. An event whose class is absent here is dropped before `notify_webhook_url` is read — never sent, never logged as suppressed. |
-| `notify_min_interval_seconds` | `600` | Per-key minimum gap between two `notify_post` POSTs (requirement 2m) — a burst on the same key coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between. `0` disables coalescing: every eligible event posts. |
+| `notify_min_interval_seconds` | `600` | Minimum gap between two `notify_post` POSTs of the same event on the same key (requirement 2m) — a burst of one repeating fact coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between, while the other half of a transition pair sharing that key (`fleet-standdown-end`, `pager-cleared`) still posts. `0` disables coalescing: every eligible event posts. |
 | `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
 | `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
@@ -20846,7 +20846,9 @@ oblige anyone to edit a test.
      `key` distinguishes the four instances (`standdown:usage-limit`,
      `standdown:node-switch:<node>`, `standdown:fleet-switch`,
      `standdown:merge-autonomy-kill`) so the coalescing below is per
-     stand-down, not one bucket for all of them.
+     stand-down, not one bucket for all of them — and each instance's
+     `begin` and `end` share that one key, which is why the coalescing
+     below keys on the event too.
 
    An event whose class is not a member of `notify_events` is dropped before
    `notify_webhook_url` is even read — never sent, never logged. Every
@@ -20858,13 +20860,24 @@ oblige anyone to edit a test.
    --max-time`).
 
    **`notify_min_interval_seconds` (default 600) coalesces a burst per
-   `key`**, event-sourced over the log rather than a cache: a POST inside the
-   interval since that key's last `notify-sent` logs `notify-suppressed`
-   instead of sending, and the next allowed send folds every suppressed one
-   since into its own `count` field — the thirty escalations in 48h of
-   2026-08-28 (issues #933–#938), one dead credential re-filing
-   `escalation-unfiled` every cycle for two days, arrives as one message and
-   a count rather than thirty. The read side prefers the fleet-wide union log
+   `(event, key)` pair**, event-sourced over the log rather than a cache: a
+   POST inside the interval since that pair's last `notify-sent` logs
+   `notify-suppressed` instead of sending, and the next allowed send folds
+   every suppressed one since into its own `count` field — the thirty
+   escalations in 48h of 2026-08-28 (issues #933–#938), one dead credential
+   re-filing `escalation-unfiled` every cycle for two days, arrives as one
+   message and a count rather than thirty. The event is half of the key
+   because the two halves of a transition pair share one `key` by
+   construction — `fleet-standdown-begin`/`-end` on `standdown:usage-limit`
+   and its three siblings, `pager-fired`/`pager-cleared` on the pager's own
+   key — and a stand-down in force re-posts its `begin` every cycle, so
+   keying on `key` alone would hold that key's last `notify-sent`
+   permanently younger than the interval and suppress the `end` an operator
+   is actually waiting on. A read log this node has not written yet is
+   ordinary rather than an error (a freshly provisioned node, before its
+   first cycle): the read falls back to `/dev/null`, so nothing is found and
+   nothing is suppressed, rather than failing a redirect and aborting a
+   caller running under `set -e`. The read side prefers the fleet-wide union log
    (`${union_log:-$log_file}`) so two nodes racing the same key still
    coalesce — `lib/manage.sh`'s management commands, which run before that
    union exists, fall back to this node's own log, the same degradation
@@ -20887,19 +20900,31 @@ oblige anyone to edit a test.
    (`curl`, no `-f`, same idiom as the section's other three canary checks) —
    a `warn` naming the host when it does not answer, so a silently
    misconfigured channel is a doctor finding, not a discovery the day an
-   escalation needed it.
+   escalation needed it. **The host, never the URL**: a webhook secret
+   ordinarily rides in the URL's own path
+   (`https://hooks.slack.com/services/T…/B…/…`), which `lib/redact.sh`'s
+   token-shaped patterns do not match, and every `warn` message is copied
+   verbatim into `state_dir/.doctor-status.json`, which `scripts/state-sync.sh`
+   pushes to the state-mirror repository and `scripts/publish-dashboard.sh`
+   renders. The host is also all the message's own advice needs, since
+   `EGRESS_EXTRA_ALLOW` is keyed on exactly that.
 
    `test/notify.test.sh` passes against `notify_post` and its helpers lifted
    verbatim from `lib/notify.sh`: each of the three classes posts only when
    `notify_events` lists it and is silently dropped otherwise; the alias
    (`escalation_webhook_url` feeding `notify_webhook_url` only when the
    latter is empty, `notify_webhook_url` always winning when both are set);
-   the rate limit (a second POST for the same key inside
+   the rate limit (a second POST of the same event on the same key inside
    `notify_min_interval_seconds` logs `notify-suppressed` and sends nothing,
-   and the next allowed send's payload carries the accumulated `count`); and
-   a stubbed POST failure (a `403` from the fence) logs `notify-failed` and
-   `notify_post` still returns 0 — a down or misconfigured webhook must never
-   propagate into the caller it is notifying on behalf of.
+   and the next allowed send's payload carries the accumulated `count`, while
+   an unrelated key and — on the same key — the *other* half of a transition
+   pair both still send: a `fleet-standdown-begin` 30s old suppresses neither
+   `fleet-standdown-end` on `standdown:fleet-switch` nor `pager-cleared` on a
+   key whose `pager-fired` has just gone out); a read log that does not exist
+   (`notify_post` returns 0 and still POSTs, under a caller running `set -e`);
+   and a stubbed POST failure (a `403` from the fence) logs `notify-failed`
+   and `notify_post` still returns 0 — a down or misconfigured webhook must
+   never propagate into the caller it is notifying on behalf of.
 2n. **A cycle does not start work the host has no room to finish (requirement
    2.0c, agent-ops#756).** `test/disk-space.test.sh` passes:
    `disk_space_free_kb` reads a directory's free KiB and is empty (never `0`)
@@ -26139,15 +26164,23 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   the old key into an alerting receiver keeps working through the
   transition; `scripts/doctor.sh` warns on it so the rename is visible
   rather than silently indefinite.
-- **`notify_min_interval_seconds` coalesces per notify key, not per notify
-  class.** A coarser bucket (one shared key per class) would suppress a
-  genuine second escalation about a *different* item behind an unrelated
-  first one — a distinct fact is a distinct page. Keying per instance
-  (`repo#item` for an escalation, the pager's own `key`, one static key per
-  stand-down kind) means the coalescing this key exists for — the same fact
-  repeating, the 2026-08-28 burst (#933–#938) — still collapses, because a
-  repeating fact is by construction the same key every time, while two
-  unrelated facts arriving close together both still post.
+- **`notify_min_interval_seconds` coalesces per `(event, key)` pair, not per
+  notify class and not per key alone.** A coarser bucket (one shared key per
+  class) would suppress a genuine second escalation about a *different* item
+  behind an unrelated first one — a distinct fact is a distinct page. Keying
+  per instance (`repo#item` for an escalation, the pager's own `key`, one
+  static key per stand-down kind) means the coalescing this key exists for —
+  the same fact repeating, the 2026-08-28 burst (#933–#938) — still
+  collapses, because a repeating fact is by construction the same key every
+  time, while two unrelated facts arriving close together both still post.
+  The event has to be the other half of that pair for the same reason: a
+  transition's two halves share one key by construction
+  (`fleet-standdown-begin`/`-end`, `pager-fired`/`pager-cleared`), and the
+  `begin` half re-posts every cycle for as long as the stand-down holds — so
+  keying on the key alone kept that key's last send permanently inside the
+  interval and suppressed the `end`, which is the half an operator is
+  waiting on. "Began" and "ended" are two distinct facts, so by this entry's
+  own rule they are two pages.
 
 ## Gotchas
 

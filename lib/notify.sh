@@ -22,7 +22,7 @@
 # Event-sourced, like every other dedup/retry state this codebase keeps: no
 # state file of its own. `notify-sent`/`notify-suppressed`/`notify-failed`
 # land in the ordinary log.jsonl, and `notify_min_interval_seconds`'s
-# per-key coalescing is a read over that log (READ_LOG, ordinarily
+# per-(event, key) coalescing is a read over that log (READ_LOG, ordinarily
 # `${union_log:-$log_file}` — fleet-wide where a union exists, so two nodes
 # racing the same key still coalesce), not a cache.
 
@@ -67,27 +67,36 @@ _notify_log_event() {
     >> "$log_file" 2>/dev/null || true
 }
 
-# _notify_last_sent_ts KEY < READ_LOG
-# The `ts` of the most recent `notify-sent` event for KEY, or nothing.
+# _notify_last_sent_ts EVENT KEY < READ_LOG
+# The `ts` of the most recent `notify-sent` event for this (EVENT, KEY) pair,
+# or nothing. Both halves matter: `fleet-standdown-begin` and
+# `fleet-standdown-end` share one key by design (`standdown:usage-limit` and
+# its three siblings), and a stand-down in force re-posts its `begin` every
+# cycle — so keying on KEY alone would leave that key's last `notify-sent`
+# permanently younger than the interval, and the `end` an operator is waiting
+# on would be suppressed almost every time. `pager-fired`/`pager-cleared`
+# collide the same way.
 _notify_last_sent_ts() {
-  local key="$1"
-  jq -r -R -n --arg k "$key" '
+  local event="$1" key="$2"
+  jq -r -R -n --arg e "$event" --arg k "$key" '
     [ inputs | select(length > 0) | (fromjson? // empty)
-      | select(.event == "notify-sent" and (.key // "") == $k) ]
+      | select(.event == "notify-sent" and (.notify_event // "") == $e
+               and (.key // "") == $k) ]
     | sort_by(.ts) | last | (.ts // empty)
   ' 2>/dev/null || true
 }
 
-# _notify_suppressed_count_since KEY SINCE_TS < READ_LOG
-# How many `notify-suppressed` events KEY has logged since SINCE_TS
-# (exclusive; every one of them, when SINCE_TS is empty — no prior send).
-# The count folded into the next allowed POST's `count` field, so a burst
-# coalesces into one message and a number rather than N identical ones.
+# _notify_suppressed_count_since EVENT KEY SINCE_TS < READ_LOG
+# How many `notify-suppressed` events this (EVENT, KEY) pair has logged since
+# SINCE_TS (exclusive; every one of them, when SINCE_TS is empty — no prior
+# send). The count folded into the next allowed POST's `count` field, so a
+# burst coalesces into one message and a number rather than N identical ones.
 _notify_suppressed_count_since() {
-  local key="$1" since="${2:-}"
-  jq -n -R --arg k "$key" --arg since "$since" '
+  local event="$1" key="$2" since="${3:-}"
+  jq -n -R --arg e "$event" --arg k "$key" --arg since "$since" '
     [ inputs | select(length > 0) | (fromjson? // empty)
-      | select(.event == "notify-suppressed" and (.key // "") == $k) ]
+      | select(.event == "notify-suppressed" and (.notify_event // "") == $e
+               and (.key // "") == $k) ]
     | (if $since == "" then . else map(select(.ts > $since)) end)
     | length
   ' 2>/dev/null || printf '0'
@@ -98,10 +107,10 @@ _notify_suppressed_count_since() {
 # POSTs `{event, key, title, url, repo, node, ts, detail}` (plus `count` when
 # a suppressed burst preceded this send) to WEBHOOK_URL — a no-op, always
 # returning 0, when: WEBHOOK_URL is empty; EVENT's class
-# (`notify_event_class`) is not a member of EVENTS_JSON; or KEY's last
-# `notify-sent` (read from READ_LOG) is younger than MIN_INTERVAL seconds,
-# in which case a `notify-suppressed` event is logged instead and the next
-# allowed send folds this one into its own `count`.
+# (`notify_event_class`) is not a member of EVENTS_JSON; or this (EVENT, KEY)
+# pair's last `notify-sent` (read from READ_LOG) is younger than MIN_INTERVAL
+# seconds, in which case a `notify-suppressed` event is logged instead and the
+# next allowed send folds this one into its own `count`.
 #
 # Requirement 2m's guarantees, unchanged from `escalation_webhook_notify`:
 # credential-independent (no `gh`/`GH_TOKEN` anywhere in this path),
@@ -120,10 +129,16 @@ notify_post() {
   [[ -n "$class" ]] || return 0
   jq -e --arg c "$class" 'index($c) != null' <<<"$events_json" >/dev/null 2>&1 || return 0
   [[ "$min_interval" =~ ^[0-9]+$ ]] || min_interval=600
+  # A read log that does not exist yet is an ordinary state for a freshly
+  # provisioned node, not an error: without this the redirect below fails,
+  # and because every caller runs under `set -e` that failure would abort the
+  # cycle from inside the one path requirement 2m promises never blocks it.
+  # No prior send is readable, so no send is suppressed — fail open.
+  [[ -r "$read_log" ]] || read_log=/dev/null
 
   local now last_sent_ts last_sent_epoch
   now="$(date -u +%s)"
-  last_sent_ts="$(_notify_last_sent_ts "$key" < "$read_log")"
+  last_sent_ts="$(_notify_last_sent_ts "$event" "$key" < "$read_log")"
   if [[ -n "$last_sent_ts" ]]; then
     last_sent_epoch="$(date -u -d "$last_sent_ts" +%s 2>/dev/null || printf '0')"
     if (( now - last_sent_epoch < min_interval )); then
@@ -134,7 +149,7 @@ notify_post() {
   fi
 
   local suppressed_count count ts payload
-  suppressed_count="$(_notify_suppressed_count_since "$key" "$last_sent_ts" < "$read_log")"
+  suppressed_count="$(_notify_suppressed_count_since "$event" "$key" "$last_sent_ts" < "$read_log")"
   [[ "$suppressed_count" =~ ^[0-9]+$ ]] || suppressed_count=0
   count=$(( suppressed_count + 1 ))
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

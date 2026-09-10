@@ -1062,13 +1062,13 @@
       }
     },
     "notify_min_interval_seconds": {
-      "description": "The minimum gap, per notify key, between two POSTs to `notify_webhook_url` (requirement 2m) — a burst of the same fact repeating (the thirty escalations in 48h of 2026-08-28, issue #933–#938, filed every cycle for as long as a dead credential persisted) coalesces into one message and a count rather than arriving as thirty. A POST suppressed within the interval logs a local `notify-suppressed` event instead; the next allowed POST for that key folds every suppressed one since the last send into its own `count` field.",
+      "description": "The minimum gap, per `(event, key)` pair, between two POSTs to `notify_webhook_url` (requirement 2m) — a burst of the same fact repeating (the thirty escalations in 48h of 2026-08-28, issue #933–#938, filed every cycle for as long as a dead credential persisted) coalesces into one message and a count rather than arriving as thirty. A POST suppressed within the interval logs a local `notify-suppressed` event instead; the next allowed POST for that pair folds every suppressed one since the last send into its own `count` field. The event is half of the coalescing key because the two halves of a transition pair share one `key` by construction (`fleet-standdown-begin`/`-end`, `pager-fired`/`pager-cleared`) and the `begin` half re-posts every cycle a stand-down holds — keying on the key alone would suppress the `end` an operator is waiting on.",
       "type": "integer",
       "minimum": 0,
       "default": 600,
       "x-docs": {
-        "readme": "How long, per notify key, between two pushes — so a fact that keeps repeating (the same dead-credential escalation refiling every cycle) arrives as one message and a count, not one per cycle. `0` disables coalescing outright: every eligible event posts.",
-        "spec": "Per-key minimum gap between two `notify_post` POSTs (requirement 2m) — a burst on the same key coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between. `0` disables coalescing: every eligible event posts.",
+        "readme": "How long, per notify event *and* key, between two pushes — so a fact that keeps repeating (the same dead-credential escalation refiling every cycle) arrives as one message and a count, not one per cycle, while the `end` of a stand-down is never swallowed by the `begin` that shares its key. `0` disables coalescing outright: every eligible event posts.",
+        "spec": "Minimum gap between two `notify_post` POSTs of the same event on the same key (requirement 2m) — a burst of one repeating fact coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between, while the other half of a transition pair sharing that key (`fleet-standdown-end`, `pager-cleared`) still posts. `0` disables coalescing: every eligible event posts.",
         "value": "`600`"
       }
     },

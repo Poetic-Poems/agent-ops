@@ -131,12 +131,13 @@ assert_eq "payload node" "test-node" "$(jq -r '.node' <<<"$payload")"
 assert_eq "payload detail" "GitHub said: Bad credentials" "$(jq -r '.detail' <<<"$payload")"
 assert_eq "payload has no count on a first send" "null" "$(jq -r '.count' <<<"$payload")"
 
-# --- notify_post: the rate limit (notify_min_interval_seconds), per key -----
+# --- notify_post: the rate limit (notify_min_interval_seconds), per (event, key)
 
 reset_fixtures
 now_epoch="$(date -u +%s)"
 recent_ts="$(date -u -d "@$(( now_epoch - 30 ))" +%Y-%m-%dT%H:%M:%SZ)"
-printf '{"ts":"%s","event":"notify-sent","key":"pager:x"}\n' "$recent_ts" > "$tmp_dir/read.jsonl"
+printf '{"ts":"%s","event":"notify-sent","notify_event":"pager-fired","key":"pager:x"}\n' \
+  "$recent_ts" > "$tmp_dir/read.jsonl"
 CURL_MODE=succeed notify_post "pager-fired" "pager:x" "title" "" "" "detail" \
   "https://notify.example.test/hook" '["pager"]' 600 \
   "$tmp_dir/read.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
@@ -149,9 +150,9 @@ old_ts="$(date -u -d "@$(( now_epoch - 900 ))" +%Y-%m-%dT%H:%M:%SZ)"
 suppressed_ts_1="$(date -u -d "@$(( now_epoch - 500 ))" +%Y-%m-%dT%H:%M:%SZ)"
 suppressed_ts_2="$(date -u -d "@$(( now_epoch - 400 ))" +%Y-%m-%dT%H:%M:%SZ)"
 {
-  printf '{"ts":"%s","event":"notify-sent","key":"pager:x"}\n' "$old_ts"
-  printf '{"ts":"%s","event":"notify-suppressed","key":"pager:x"}\n' "$suppressed_ts_1"
-  printf '{"ts":"%s","event":"notify-suppressed","key":"pager:x"}\n' "$suppressed_ts_2"
+  printf '{"ts":"%s","event":"notify-sent","notify_event":"pager-fired","key":"pager:x"}\n' "$old_ts"
+  printf '{"ts":"%s","event":"notify-suppressed","notify_event":"pager-fired","key":"pager:x"}\n' "$suppressed_ts_1"
+  printf '{"ts":"%s","event":"notify-suppressed","notify_event":"pager-fired","key":"pager:x"}\n' "$suppressed_ts_2"
 } > "$tmp_dir/read.jsonl"
 CURL_MODE=succeed notify_post "pager-fired" "pager:x" "title" "" "" "detail" \
   "https://notify.example.test/hook" '["pager"]' 600 \
@@ -162,12 +163,78 @@ assert_eq "past the interval: the coalesced count folds in every suppressed send
 assert_eq "past the interval: notify-sent is logged" "notify-sent" "$(jq -r '.event' "$tmp_dir/write.jsonl")"
 
 reset_fixtures
-printf '{"ts":"%s","event":"notify-sent","key":"pager:other-key"}\n' \
+printf '{"ts":"%s","event":"notify-sent","notify_event":"pager-fired","key":"pager:other-key"}\n' \
   "$(date -u -d "@$(( now_epoch - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" > "$tmp_dir/read.jsonl"
 CURL_MODE=succeed notify_post "pager-fired" "pager:unrelated-key" "title" "" "" "detail" \
   "https://notify.example.test/hook" '["pager"]' 600 \
   "$tmp_dir/read.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
 assert_eq "the rate limit is per key, not global: an unrelated key still sends" \
+  "1" "$(wc -l < "$tmp_dir/curl_calls" | tr -d ' ')"
+
+# The other half of the same rule: `begin`/`end` (and `fired`/`cleared`) share
+# one key by design, and a stand-down in force re-posts its `begin` every
+# cycle — so keying on the key alone would suppress the "it ended" half of
+# every transition pair almost every time it mattered.
+reset_fixtures
+printf '{"ts":"%s","event":"notify-sent","notify_event":"fleet-standdown-begin","key":"standdown:fleet-switch"}\n' \
+  "$(date -u -d "@$(( now_epoch - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" > "$tmp_dir/read.jsonl"
+CURL_MODE=succeed notify_post "fleet-standdown-end" "standdown:fleet-switch" \
+  "Fleet switch cleared by hand" "" "" "cleared by hand" \
+  "https://notify.example.test/hook" '["fleet-standdown"]' 600 \
+  "$tmp_dir/read.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
+assert_eq "a recent -begin on the same key never suppresses the -end that follows" \
+  "1" "$(wc -l < "$tmp_dir/curl_calls" | tr -d ' ')"
+assert_eq "…and the -end is what was POSTed" \
+  "fleet-standdown-end" "$(jq -r '.event' "$tmp_dir/curl_payload")"
+
+reset_fixtures
+printf '{"ts":"%s","event":"notify-sent","notify_event":"pager-fired","key":"pager:x"}\n' \
+  "$(date -u -d "@$(( now_epoch - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" > "$tmp_dir/read.jsonl"
+CURL_MODE=succeed notify_post "pager-cleared" "pager:x" "Pager: x" "" "" "cleared" \
+  "https://notify.example.test/hook" '["pager"]' 600 \
+  "$tmp_dir/read.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
+assert_eq "a recent pager-fired never suppresses the pager-cleared for the same key" \
+  "1" "$(wc -l < "$tmp_dir/curl_calls" | tr -d ' ')"
+
+# …while the coalescing the interval exists for is untouched: the same event
+# on the same key inside the interval is still suppressed, whatever else that
+# key has sent recently.
+reset_fixtures
+{
+  printf '{"ts":"%s","event":"notify-sent","notify_event":"fleet-standdown-end","key":"standdown:fleet-switch"}\n' \
+    "$(date -u -d "@$(( now_epoch - 700 ))" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","event":"notify-sent","notify_event":"fleet-standdown-begin","key":"standdown:fleet-switch"}\n' \
+    "$(date -u -d "@$(( now_epoch - 30 ))" +%Y-%m-%dT%H:%M:%SZ)"
+} > "$tmp_dir/read.jsonl"
+CURL_MODE=succeed notify_post "fleet-standdown-begin" "standdown:fleet-switch" \
+  "Fleet switch set" "" "" "fleet switch: set by hand" \
+  "https://notify.example.test/hook" '["fleet-standdown"]' 600 \
+  "$tmp_dir/read.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
+assert_eq "the same event repeating on the same key inside the interval still coalesces" \
+  "0" "$(wc -l < "$tmp_dir/curl_calls" | tr -d ' ')"
+assert_eq "…logging notify-suppressed" \
+  "notify-suppressed" "$(jq -r '.event' "$tmp_dir/write.jsonl")"
+
+# --- notify_post: a read log that does not exist yet -------------------------
+#
+# A freshly provisioned node has no log.jsonl until its first cycle writes
+# one. Every caller runs under `set -e`, so an unguarded redirect from that
+# path would abort the cycle from inside the one code path requirement 2m
+# promises never blocks it.
+
+reset_fixtures
+rm -f "$tmp_dir/set_e_probe"
+(
+  set -e
+  CURL_MODE=succeed notify_post "escalation-filed" "acme/repo#42" "title" "" "acme/repo" "detail" \
+    "https://notify.example.test/hook" '["escalation"]' 600 \
+    "$tmp_dir/does-not-exist.jsonl" "$tmp_dir/write.jsonl" "n1" "c1"
+  # Only reached if `set -e` did not abort the subshell at the call above.
+  printf 'survived' > "$tmp_dir/set_e_probe"
+)
+assert_eq "a missing read log never aborts a caller running under set -e" \
+  "survived" "$(cat "$tmp_dir/set_e_probe" 2>/dev/null)"
+assert_eq "a missing read log means no prior send is readable — the POST still goes out" \
   "1" "$(wc -l < "$tmp_dir/curl_calls" | tr -d ' ')"
 
 # --- notify_post: a fence failure (403) is best-effort ----------------------
