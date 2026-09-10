@@ -1460,6 +1460,45 @@
         }
       }
     },
+    "host_budget_enforce": {
+      "description": "Whether requirement 2.0g's host-budget check refuses to start a cycle when the declared container ceilings on this host overcommit it (issue #757), or only reports the figures. `false` (the default): the check always runs and the sum is always published in the host-facts record, but nothing stands down on it — an operator who knowingly overcommits a development box need not fight this key to keep working. `true`: an overcommit stands the cycle down with cause `host-overcommit`, the same as `min_free_workspace_bytes`/`min_free_memory_bytes` already do for disk and memory.",
+      "type": "boolean",
+      "default": false,
+      "x-docs": {
+        "readme": "Whether requirement 2.0g's host-budget check (issue #757) refuses to start a cycle when the declared container ceilings on this host overcommit it, or only publishes the figures. `false` by default — advisory, not enforced; set `true` once an installation has confirmed the declared sum actually fits.",
+        "spec": "Whether requirement 2.0g's host-budget check refuses to start a cycle when the sum of every running container's declared memory/CPU ceiling on this host overcommits it (issue #757). `false` (the default): the check still runs every cycle and `lib/host-budget.sh`'s summary is still published in the host-facts record (docs/HOST-FACTS-SCHEMA.md's `budget` section), but nothing stands the cycle down on it — advisory-by-default, per the issue's own \"an operator who knowingly overcommits a development box should be able to say so once\". `true`: an overcommit in either dimension stands the cycle down with cause `host-overcommit`, arithmetic included in the `reason`, the same shape `min_free_workspace_bytes`/`min_free_memory_bytes` already use for disk and memory.",
+        "value": {
+          "readme": "*(unset, defaults to `false`)*",
+          "spec": "`false`"
+        }
+      }
+    },
+    "host_budget_reserved_memory_bytes": {
+      "description": "Memory margin requirement 2.0g's host-budget check holds back for the host/VM itself, on top of the sum of every running container's own declared ceiling. The same headroom `deploy/docker/compose.yaml`'s own D14 comment already reasons about by hand for the two-nodes-one-host layout, made a number this check actually adds in. Only consulted when `host_budget_enforce` is `true`.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 536870912,
+      "x-docs": {
+        "readme": "Bytes. Memory margin the host-budget check (issue #757) holds back for the host/VM itself, beyond the sum of every running container's declared ceiling. Only matters when `host_budget_enforce` is `true`.",
+        "spec": "The memory margin requirement 2.0g's host-budget check reserves for the host/VM itself: an overcommit is declared when the sum of every running container's own `memory.max_bytes` (docs/HOST-FACTS-SCHEMA.md's `budget.mem_declared_bytes`) plus this margin exceeds `host.mem_total_bytes`. The same default as `min_free_memory_bytes` (512 MiB) because both describe the same kind of headroom, one against the live figure and one against the declared sum. Only consulted when `host_budget_enforce` is `true`; `0` removes the margin without turning the check itself off (that is `host_budget_enforce`'s job).",
+        "value": {
+          "spec": "512 MiB"
+        }
+      }
+    },
+    "host_budget_reserved_cpus": {
+      "description": "CPU-core margin requirement 2.0g's host-budget check holds back for the host itself, on top of the sum of every running container's own declared `cpus:` ceiling. `0` by default: unlike memory, CPU is time-sliced and legitimate oversubscription is ordinary, so this check holds containers to the host's own core count exactly rather than assuming a margin is wanted. Only consulted when `host_budget_enforce` is `true`.",
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "x-docs": {
+        "readme": "CPU cores. Margin the host-budget check (issue #757) holds back for the host itself, beyond the sum of every running container's declared `cpus:` ceiling. `0` by default. Only matters when `host_budget_enforce` is `true`.",
+        "spec": "The CPU-core margin requirement 2.0g's host-budget check reserves for the host itself: an overcommit is declared when the sum of every running container's own `cpu.limit_nanos` (docs/HOST-FACTS-SCHEMA.md's `budget.cpu_declared_nanos`) plus this margin (converted to nanocpus) exceeds `host.cpu_count`. Defaults to `0`, not `min_free_memory_bytes`'s pattern of a real margin: CPU is time-sliced, so a host running more declared cores than it has is not automatically a fault the way overcommitted memory is — enabling this check at all (`host_budget_enforce`) is already the operator's explicit choice; this key only widens or narrows it. Only consulted when `host_budget_enforce` is `true`.",
+        "value": {
+          "spec": "0"
+        }
+      }
+    },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" is 4 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
