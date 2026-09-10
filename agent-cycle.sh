@@ -2952,11 +2952,24 @@ if [[ "$selected_source" == "tech-debt" ]]; then
 fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
   "$source_states_json" "$preflight_register_json")"
-# The ancestry check is the one live `gh` call in this section (lib/preflight.sh's
-# header explains why it is gated to the four sources whose branch predates the
-# claim), so it only runs when the cheaper, pure checks above found nothing.
+# The ancestry check is one of the two live `gh` calls in this section
+# (lib/preflight.sh's header explains why it is gated to the four sources
+# whose branch predates the claim), so it only runs when the cheaper, pure
+# checks above found nothing.
 if [[ -z "$preflight_reason" ]] && preflight_existing_branch_source "$selected_source"; then
   preflight_reason="$(preflight_branch_merged_reason "$selected_repo" "$selected_default_branch" "$selected_branch")"
+fi
+# The other live call (issue #1360): a `pr-<n>-review-<id>` item's blocking
+# review may already be superseded — most often because this cycle's own
+# `review_feedback` band was replayed from a non-selected node's
+# `expensive-gather` cache (requirement 48) rather than read fresh — and
+# `work_gone_clearances` above cannot see that, since the pull request itself
+# stays open throughout. Gated to `review-feedback` the same way the ancestry
+# check above is gated to its own four sources: `preflight_review_feedback_reason`
+# itself no-ops on any other source's item shape, but there is no reason to pay
+# the call for one.
+if [[ -z "$preflight_reason" && "$selected_source" == "review-feedback" ]]; then
+  preflight_reason="$(preflight_review_feedback_reason "$selected_repo" "$selected_item")"
 fi
 if [[ -n "$preflight_reason" ]]; then
   log_item_void "preflight" "$preflight_reason" \

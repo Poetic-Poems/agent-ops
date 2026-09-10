@@ -54,6 +54,25 @@
 # create — are the only ones an ancestry check can mean anything for, and
 # `preflight_existing_branch_source` is that gate.
 #
+# `preflight_review_feedback_reason` is a third named done-signal, and the
+# reason `work_gone_clearances`'s own PR-shaped clearance is not enough for a
+# `pr-<n>-review-<id>` item (issue #1360): that clearance only asks whether
+# the pull request itself has left the open-PR digest, never whether the
+# *specific* review round this ref names is still the reviewer's standing
+# position. A `CHANGES_REQUESTED` review answered and then superseded by an
+# `APPROVED` from the same reviewer — including a bot reviewer, whose own
+# approval is exactly the case requirement 34a's own `gather-review-
+# feedback.sh` comment describes as unreachable any other way — leaves the
+# pull request itself open throughout, so `work_gone_clearances` never fires,
+# and a claim of the same stale ref (most often replayed from a non-selected
+# node's `expensive-gather` cache, requirement 48, which is not re-verified
+# before a claim proceeds) would otherwise burn a full Implementer engagement
+# on a round that is already closed. Like `preflight_branch_merged_reason`,
+# it is impure — one live `gh api` read of the pull request's own reviews —
+# and gated to the same `review-feedback` source for the same reason: it
+# costs one call, paid once, for the single freshly claimed item, immediately
+# before the engagement it would otherwise waste.
+#
 # Sourced, never executed: this file sets no shell options, because
 # agent-cycle.sh runs under `set -euo pipefail`. `preflight_done_reason`
 # depends on `work_gone_clearances` (lib/work-gone.sh), sourced first.
@@ -143,4 +162,48 @@ preflight_branch_merged_reason() {
   case "$status" in
     identical|behind) printf 'the branch is already merged into %s' "$default_branch" ;;
   esac
+}
+
+# `pr-<n>-review-<id>`: `gather-review-feedback.sh`'s own review-feedback ref
+# shape, narrower than `lib/work-gone.sh`'s `WORK_GONE_PR_RE` (which matches
+# every `pr-<n>-…` shape alike) because this one additionally names the
+# specific review the ref was minted for.
+PREFLIGHT_REVIEW_FEEDBACK_ITEM_RE='^pr-([0-9]+)-review-([0-9]+)$'
+
+# preflight_review_feedback_reason SLUG ITEM — the review-feedback item's own
+# blocking review has been superseded: re-fetch the pull request's reviews and
+# recompute "the review currently blocking" exactly as `gather-review-
+# feedback.sh` does when deciding whether to offer the candidate at all (the
+# same standing-position-per-reviewer rule, deliberately without
+# `_handoff_blocking_reviewers`'s bot filter — see that script's own comment
+# on why a bot's `APPROVED` must count here). ITEM is the claimed item's own
+# ref; anything not shaped like `pr-<n>-review-<id>` decides nothing.
+#
+# Environment: PREFLIGHT_GH overrides `gh` (tests stub it).
+#
+# Always prints nothing rather than fail: an unreadable read, or a ref this
+# function cannot parse, decides nothing — the same direction every other
+# signal here already fails safe in.
+preflight_review_feedback_reason() {
+  local slug="$1" item="$2" gh="${PREFLIGHT_GH:-gh}" number review_id reviews
+  [[ -n "$slug" && -n "$item" ]] || return 0
+  [[ "$item" =~ $PREFLIGHT_REVIEW_FEEDBACK_ITEM_RE ]] || return 0
+  number="${BASH_REMATCH[1]}"
+  review_id="${BASH_REMATCH[2]}"
+
+  reviews="$("$gh" api "repos/$slug/pulls/$number/reviews" --paginate \
+              --jq '.[] | select(.submitted_at != null)
+                        | {id, state, at: .submitted_at, who: .user.login}' \
+              2>/dev/null)" || return 0
+  reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)" || return 0
+  jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || return 0
+
+  jq -r --arg rid "$review_id" '
+    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+     | group_by(.who) | map(last)) as $latest_per_reviewer
+    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) as $blocking
+    | if $blocking == null then "the review no longer blocks the pull request"
+      elif ($blocking.id | tostring) != $rid
+      then "the review no longer blocks the pull request"
+      else "" end' <<<"$reviews" 2>/dev/null || true
 }

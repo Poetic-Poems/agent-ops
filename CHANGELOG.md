@@ -624,6 +624,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A review-feedback item whose blocking review has already been answered
+  no longer burns a full Implementer/Reviewer/Approver round** (issue
+  #1360). `lib/work-gone.sh`'s PR-shaped clearance only asked whether a
+  `pr-<n>-review-<id>` item's *pull request* was closed or merged, never
+  whether the *specific* review the ref names was still the reviewer's
+  standing position — so once a `CHANGES_REQUESTED` review was answered and
+  superseded by an `APPROVED` from the same reviewer (bot or human), the
+  pull request stayed open throughout and that clearance never fired,
+  leaving a stale ref dispatchable for as long as a non-selected node kept
+  replaying its own last-cached `review_feedback` band (requirement 48's
+  `expensive-gather` cache is refreshed for only one repository per cycle,
+  per node). `lib/preflight.sh`'s new `preflight_review_feedback_reason`
+  adds a third pre-flight done-signal, scoped to `review-feedback` claims
+  alone: one live re-check of the pull request's reviews, recomputing "the
+  review currently blocking" exactly as `scripts/gather-review-feedback.sh`
+  already does when deciding whether to offer the candidate at all, run
+  immediately before the Implementer engagement it would otherwise waste.
+
 - **`digest-truncated`'s live GitHub search no longer false-positives on a
   digest that is merely a few minutes old** (issue #1348). The invariant
   (`pager_eval_digest_truncated`, `lib/pager-invariants.sh`) compared each
