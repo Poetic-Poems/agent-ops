@@ -26156,10 +26156,16 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   — `escalation_webhook_notify` (`lib/enabler.sh`) and its parameterised twin
   `_pager_webhook_notify` (`lib/pager.sh`, which cannot share the first's
   cycle-scoped globals — see that file's own header) — which `lib/notify.sh`
-  absorbs into one implementation used from a cycle-context wrapper
-  (`notify_post_cycle`) and directly (lib/pager.sh, threading every context
-  parameter explicitly, the shape that file's whole design already commits
-  to). `escalation_webhook_url` stays accepted as an alias for one release
+  replaces for every notification in the three classes above, used from a
+  cycle-context wrapper (`notify_post_cycle`) and directly (lib/pager.sh,
+  threading every context parameter explicitly, the shape that file's whole
+  design already commits to). `_pager_webhook_notify` itself survives for
+  requirement 51's own filing-failure fallback alone — the two paths in
+  `pager_file` where the pager's tracking or `pw::decision` issue could not
+  be filed — which is not one of the three classes and still POSTs its own
+  pre-#1279 body shape, ungated by `notify_events`; unpicking it also
+  reaches into requirement 51's text, so it is tracked separately as #1329
+  rather than folded in here. `escalation_webhook_url` stays accepted as an alias for one release
   rather than a breaking rename, so an installation that has already wired
   the old key into an alerting receiver keeps working through the
   transition; `scripts/doctor.sh` warns on it so the rename is visible
