@@ -202,12 +202,6 @@ spec:
                 # this cluster, not after any pod or Kubernetes Node.
                 - name: NODE_NAME
                   value: "CHANGE-ME-cluster-name"
-                # Optional, same meaning as the compose service's own copy:
-                # enables the registry-digest comparison. Uncomment and set
-                # to enable it; left unset, image.registry_digest and
-                # digest_match both read null.
-                # - name: HOST_FACTS_IMAGE_REPO
-                #   value: Pullwright/agent-ops
               resources:
                 requests:
                   cpu: 50m

@@ -1357,7 +1357,7 @@
   // large — per-container memory/cpu, the updater ledger tail, a full
   // viewer-probe map — and most of it is exactly the kind of detail this
   // page already puts one click away rather than a permanent badge for
-  // (compose/image/updater above are the precedent). This surfaces four
+  // (compose/image/updater above are the precedent). This surfaces three
   // facts deliberately, and leaves the rest to a human reading the raw
   // JSON:
   //   - an MTU mismatch (`host.network.mtu_match === false`) — the same
@@ -1368,16 +1368,19 @@
   //     — nothing else on this page reads a container's own cgroup;
   //   - a stalled Kubernetes rollout (`rollouts[].stalled`) — a Deployment
   //     stuck below its desired replica count past its own progress
-  //     deadline, invisible to a fleet running the compose driver;
-  //   - this node's own self-probe failing (`viewer_probe[n.node]`) — this
-  //     collector probes every node it can reach, including itself; a
-  //     self-probe failure means this host cannot even reach its own
-  //     dashboard, independent of whether any peer can reach it.
+  //     deadline, invisible to a fleet running the compose driver.
   // Left out on purpose: per-container memory/cpu figures (routine, not a
   // fault), image digest_match (the registry-level `imageLine` above
-  // already covers staleness), and the updater ledger tail (`updaterLine`
-  // above already reads it). `null` when the record is absent or carries
-  // none of the four facts above.
+  // already covers staleness), the updater ledger tail (`updaterLine`
+  // above already reads it), and this node's own viewer-vantage self-probe
+  // (`viewer_probe[n.node]`) — the collector ships with nowhere to reach a
+  // peer's tailnet from (#1339), so every compose node's self-probe fails
+  // from the first tick regardless of health; folding it into this badge
+  // would light every card permanently rather than flag a real fault. The
+  // probe still runs and its result is in the record for anyone reading it
+  // directly; it rejoins this badge once #1339 gives it a route to succeed
+  // on a healthy node. `null` when the record is absent or carries none of
+  // the three facts above.
   function hostFactsLine(n) {
     var hf = n.host;
     if (!hf) return null;
@@ -1406,12 +1409,6 @@
         }
         return false;
       });
-    }
-    if (!bad) {
-      var vp = (hf.viewer_probe || {})[n.node];
-      if (vp && vp.ok === false) {
-        bad = "this node's own viewer-vantage probe is failing" + (vp.reason ? " (" + vp.reason + ")" : "");
-      }
     }
     if (!bad) return null;
     return el("div", {class:"ver"}, el("span", {class:"badge b-amber", text:"host degraded", title: bad}));
