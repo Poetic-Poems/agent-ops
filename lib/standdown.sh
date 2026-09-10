@@ -241,6 +241,56 @@ if (( min_free_memory_bytes > 0 )); then
   fi
 fi
 
+# 2.0g Host budget (requirement 2.0g, agent-ops#757). Free, and for the same
+# reason as 2.0c/2.0f immediately above: this reads a file already sitting in
+# this node's own state_dir, no network and no docker socket of its own (the
+# runtime deliberately holds neither, agent-ops#603), so it runs in the same
+# band as the other two. 2.0c and 2.0f each protect the host against *this*
+# node's own next cycle; neither says anything about the *other* containers
+# sharing the same host — the two-Compose-projects-per-host layout
+# deploy/docker/compose.yaml's own D14 comment already names, where each
+# project sizes its ceilings as though it owned the whole machine. Nothing
+# bounded the sum of those ceilings until this check: measured on ockham
+# 2026-08-24, six containers each believed they could take the whole 7.457 GiB
+# VM, and the host froze repeatedly.
+#
+# `host_budget_enforce` off (the default) turns this whole check into a
+# no-op: the host-facts collector (scripts/collect-host-facts.sh,
+# agent-ops#1283) already publishes the sum and its headroom in every
+# record regardless, so the figures are visible before anything binds on
+# them without this gate refusing a single cycle — "an operator who
+# knowingly overcommits a development box should be able to say so once"
+# (the issue's own words) is exactly what leaving this off does.
+if [[ "$host_budget_enforce" == "true" ]]; then
+  host_budget_record="$(cat "$state_dir/host-facts/$node_name.json" 2>/dev/null)"
+  # No fabricated verdict from a record that does not exist yet (a fresh
+  # node whose collector has not completed a first pass), does not parse, or
+  # predates this feature / carries no compose driver's `budget` section (a
+  # Kubernetes node, out of scope — see the issue's own "Why Kubernetes does
+  # not close this") — the same "no evidence, no stand-down" reasoning 2.0c's
+  # unreadable `df` and 2.0f's unreadable `/proc/meminfo` already rest on.
+  if [[ -n "$host_budget_record" ]] && jq -e . >/dev/null 2>&1 <<<"$host_budget_record"; then
+    host_budget_summary="$(jq -c '.budget // empty' <<<"$host_budget_record" 2>/dev/null)"
+    if [[ -n "$host_budget_summary" && "$host_budget_summary" != "null" ]]; then
+      host_budget_mem_declared="$(jq -r '.mem_declared_bytes // 0' <<<"$host_budget_summary")"
+      host_budget_mem_total="$(jq -r '.mem_total_bytes // empty' <<<"$host_budget_summary")"
+      host_budget_cpu_declared="$(jq -r '.cpu_declared_nanos // 0' <<<"$host_budget_summary")"
+      host_budget_cpu_count="$(jq -r '.cpu_count // empty' <<<"$host_budget_summary")"
+      host_budget_mem_verdict="$(host_budget_mem_verdict "$host_budget_mem_declared" "$host_budget_mem_total" "$host_budget_reserved_memory_bytes")"
+      host_budget_cpu_verdict="$(host_budget_cpu_verdict "$host_budget_cpu_declared" "$host_budget_cpu_count" "$host_budget_reserved_cpus")"
+      if [[ "$host_budget_mem_verdict" == "over" || "$host_budget_cpu_verdict" == "over" ]]; then
+        log_event "stand-down" "$(jq -nc \
+          --arg r "$(host_budget_describe "$host_budget_summary" "$host_budget_reserved_memory_bytes" "$host_budget_reserved_cpus")" \
+          --arg cause "host-overcommit" --argjson budget "$host_budget_summary" \
+          --arg mem_verdict "$host_budget_mem_verdict" --arg cpu_verdict "$host_budget_cpu_verdict" \
+          '{reason: $r, cause: $cause, budget: $budget, mem_verdict: $mem_verdict, cpu_verdict: $cpu_verdict}')"
+        set_node_state_terminal externally-blocked host-overcommit
+        exit 0
+      fi
+    fi
+  fi
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last

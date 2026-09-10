@@ -57,6 +57,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/disk-space.sh"
 # shellcheck source=lib/memory.sh
 . "$SCRIPT_DIR/lib/memory.sh"
+# shellcheck source=lib/host-budget.sh
+. "$SCRIPT_DIR/lib/host-budget.sh"
 # shellcheck source=lib/repo-clone.sh
 . "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
@@ -840,6 +842,19 @@ min_free_workspace_bytes="$(cfg '.min_free_workspace_bytes')"
 # file and stalls the whole machine. `0` turns the check off.
 min_free_memory_bytes="$(cfg '.min_free_memory_bytes')"
 [[ "$min_free_memory_bytes" =~ ^[0-9]+$ ]] || min_free_memory_bytes=0
+# Requirement 2.0g (agent-ops#757): whether the sum of every running
+# container's own declared ceiling on this host — not only this project's
+# three services, every container the host-facts collector's Docker socket
+# sees — is allowed to overcommit the host, and the margin reserved for the
+# host itself in each dimension when it is not. `host_budget_enforce` off
+# (the default) leaves the check advisory: the sum is still published in
+# the host-facts record, but nothing here stands the cycle down on it.
+host_budget_enforce="$(cfg '.host_budget_enforce')"
+[[ "$host_budget_enforce" == "true" ]] || host_budget_enforce="false"
+host_budget_reserved_memory_bytes="$(cfg '.host_budget_reserved_memory_bytes')"
+[[ "$host_budget_reserved_memory_bytes" =~ ^[0-9]+$ ]] || host_budget_reserved_memory_bytes=0
+host_budget_reserved_cpus="$(cfg '.host_budget_reserved_cpus')"
+[[ "$host_budget_reserved_cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || host_budget_reserved_cpus=0
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 # Requirement 4i (agent-ops#641): the largest assembled prompt the Co-Ordinator

@@ -16170,7 +16170,7 @@ with the Reviewer's own.
     node-count x window — and this requirement is where it is made
     checkable: a `node-state` transition event, logged the instant a node's
     own state changes, carrying the state it is entering, its cause (for the
-    four states that have one, from a closed fourteen-token vocabulary), and
+    four states that have one, from a closed fifteen-token vocabulary), and
     the state it was in a moment before; and a pure fold,
     `lib/node-time-state.sh`'s `node_time_state_fold` (behind the read-only
     `scripts/node-time-state.sh`), reconstructing seconds per state from
@@ -24426,7 +24426,7 @@ oblige anyone to edit a test.
     transition reaches every site requirement 50 names, and the invariant
     balances (requirement 50).** `test/node-time-state.test.sh` drives
     `lib/node-time-state.sh` directly: `node_time_state_for_cause` against
-    every one of the fourteen closed-vocabulary tokens, including the four
+    every one of the fifteen closed-vocabulary tokens, including the four
     translated rather than renamed (`raced`/`pre-claimed` to `peer-claimed`,
     `fabricated`/`untraceable` to `coordinator-declined`) and an unrecognised
     cause (maps to nothing, never a guess); `node_time_state_idle_split`

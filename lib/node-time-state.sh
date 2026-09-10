@@ -31,7 +31,7 @@
 # in this file keeps that newline for the same reason, whether or not the
 # variables it fills are ever inspected by a caller that would notice.
 #
-# Three of the fourteen tokens are pre-existing `stand-down`/`claim-lost`
+# Three of the fifteen tokens are pre-existing `stand-down`/`claim-lost`
 # causes this requirement does not rename (agent-ops#598's join-key
 # precedent: an existing field's values are never renamed to satisfy a new
 # reader) — `raced`/`pre-claimed` (claim-race stand-downs, agent-cycle.sh)
@@ -50,6 +50,7 @@ node_time_state_for_cause() {  # CAUSE -> "STATE\tCAUSE\n"
     disk-low)        printf 'externally-blocked\tdisk-low\n' ;;
     disk-full)       printf 'externally-blocked\tdisk-full\n' ;;
     memory-low)      printf 'externally-blocked\tmemory-low\n' ;;
+    host-overcommit) printf 'externally-blocked\thost-overcommit\n' ;;
     back-pressure)   printf 'idle-with-demand\tback-pressure\n' ;;
     awaiting-tick)   printf 'idle-with-demand\tawaiting-tick\n' ;;
     peer-claimed|raced|pre-claimed)         printf 'idle-with-demand\tpeer-claimed\n' ;;
