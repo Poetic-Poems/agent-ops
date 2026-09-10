@@ -102,7 +102,12 @@ and the scope-code registry.
 
 Resolving an item is a frontmatter-only edit — `status: resolved`, plus
 `resolved:` and `ref:` — with the body left in place; item files are never
-deleted or renamed (CI enforces both). `perl scripts/td-check.pl`
+deleted or renamed (CI enforces both). Where the item's work order arrived
+as a GitHub issue instead — the common case since #1039's migration —
+closing the issue does not resolve it: the same pull request must still
+make this frontmatter edit. See TECH-DEBT.md's "Resolution and history"
+for how the two compose, and its one exception (an issue filed with no
+file behind it at all). `perl scripts/td-check.pl`
 (argless — it detects the register's format) checks the register and is
 what `.github/workflows/tech-debt-register.yml` runs on every pull
 request, so run it before you push. The register scripts are

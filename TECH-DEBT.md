@@ -142,5 +142,23 @@ re-opening debt means filing a new item that references the old one. An
 item that turns out not to be debt keeps its file too: `status: not-debt`,
 with `ref:` pointing at where the content moved.
 
+A tech-debt item's work order arrives today as a GitHub issue labelled
+`pw::type:tech-debt`, not as this file — every item open at the time of
+#1039's migration got one, and each such issue's body ends with a "Filed as
+`tech-debt/<id>.md`, <date>." line naming the record it corresponds to.
+That issue is the work-order surface a Co-Ordinator selects and an
+Implementer claims; it does not replace the register. The resolving pull
+request must do both, in the same PR: close the issue with a real closing
+keyword (`Fixes #<n>`) plus a `td-record` block, **and** flip the named
+file's frontmatter to `status: resolved`, filling `resolved:` and `ref:` —
+exactly as "Claiming an item" step 6 already describes for the
+direct-filing path, with PR #1313 the precedent to follow. Skip the
+file-side flip — as an early round of PR #1355 did — and the register
+stays wrong on `main`, and `lib/work-gone.sh`'s work-gone signal stays
+stuck, since both key off this file's own `status:`, never the issue's.
+Not every tech-debt issue has a file to flip: one filed straight to an
+issue by a branchless stage ("Filing alongside other work" step 5) has
+none, and an ordinary closing keyword is the whole of its resolution.
+
 Aggregated views of the register (a Ledger-style table, a status tally)
 are generated on demand, never committed.
