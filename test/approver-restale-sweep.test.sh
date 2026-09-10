@@ -293,6 +293,19 @@ rc="$(run_case PR_LIST_JSON="$rebase_only_list" \
 assert_eq "a configured-longer threshold holds the same review back from escalation" \
   "0" "$(count "$tmp_dir/escalate-calls")"
 
+# --- issue #1353: a fractional hours value must not silently disable the
+#     cutoff (GNU date's relative parser rejects "1.5 hours ago" outright,
+#     which used to leave $cutoff empty and the whole branch a silent no-op)
+
+rc="$(run_case PR_LIST_JSON="$rebase_only_list" \
+  STANDING_STATE_8="CHANGES_REQUESTED" STANDING_AT_8="$old_at" STANDING_COMMIT_8="oldsha8" \
+  REVIEWS_8="[$(review_row 556 "pullwright-approver[bot]" "$old_at")]" \
+  NEWEST_8="$older_at" APPROVER_RESTALE_ESCALATE_AFTER_HOURS="1.5")"
+assert_eq "a fractional escalation threshold (1.5h) still escalates a review 30h stale" \
+  "1" "$(count "$tmp_dir/escalate-calls")"
+assert_contains "  ... naming the same review-scoped item ref as the integer-hours case" \
+  "item_ref=pr-8-approver-restale-556" "$(escalate_calls)"
+
 # --- Non-stale and non-candidate pull requests are skipped up front -----------
 
 fresh_list="$(jq -sc '.' <(
@@ -389,6 +402,17 @@ rc="$(run_case PR_LIST_JSON="$(jq -sc '.' <(
 ))")"
 assert_eq "a ready pull request inside the engage bound is ordinary in-flight work, not engaged" \
   "0" "$(count "$tmp_dir/review-calls")"
+
+# --- issue #1353: a fractional engage threshold must not silently disable
+#     the whole trigger (a broken cutoff here returns 0 before the loop
+#     even starts, so it would otherwise be indistinguishable from "nothing
+#     to engage")
+
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" REVIEW_ACTION_30="posted" \
+  APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="2.5")"
+assert_eq "a fractional engage threshold (2.5h) still engages a pull request 3h old" \
+  "1" "$(count "$tmp_dir/review-calls")"
+assert_contains "  ... in unreviewed mode" "mode=unreviewed" "$(review_calls)"
 
 rc="$(run_case PR_LIST_JSON="$unreviewed_list" CLAIMED_PRS='[30]')"
 assert_eq "a pull request under a live fleet claim is a peer's, never engaged" \

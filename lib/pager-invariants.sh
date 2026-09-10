@@ -1349,7 +1349,8 @@ _pager_ready_pr_candidates() {
   local repos_json="$1" pr_label="$2" cutoff_hours="$3"
   local gh cutoff repo open
   gh="${PAGER_GH:-gh}"
-  cutoff="$(date -u -d "${cutoff_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  cutoff="$(jq -n -r --arg h "$cutoff_hours" \
+    '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
   [[ -n "$cutoff" ]] || return 0
   while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
