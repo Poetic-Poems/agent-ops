@@ -560,7 +560,10 @@ file and carries placeholders only; `.env` itself is never committed.
   nothing, so the sum may exceed the host and only bounds one container's blast
   radius. Where the host is small enough that the sum is the binding number, as
   on a WSL2 VM running two nodes, the defaults are chosen so the whole file
-  fits. A process ceiling sits beside the memory one because a fork loop
+  fits — and requirement 2.0g (agent-ops#757) is what checks that they still
+  do, on every cycle, against every container sharing the host (not only this
+  file's own three services), rather than trusting this paragraph's own
+  arithmetic to stay correct by hand. A process ceiling sits beside the memory one because a fork loop
   exhausts a host's pid space long before its memory, and the failure then
   takes the host rather than the container. The stated trade is that a stage
   outgrowing its ceiling is killed mid-cycle instead of taking the host down
@@ -2247,6 +2250,108 @@ implements.
       the directory Docker then poisoned (agent-ops#1347). Installing the
       hook replaces any earlier entry naming the same parent, so the old form
       does not survive an upgrade.
+
+   0g. *Host budget* (requirement 2.0g, agent-ops#757). Free, and for the
+      same reason as 0c/0f immediately above: it reads a file already sitting
+      in this node's own `state_dir`, no network call and no Docker socket of
+      its own (the runtime deliberately holds neither, agent-ops#603 — see
+      0's own header), so it runs in the same band. 0c and 0f each protect
+      the host against *this* node's own next cycle; neither says anything
+      about the *other* containers sharing the same host. Per-container
+      ceilings (D14, agent-ops#606) bound one container's blast radius, but
+      Docker reserves nothing, so the sum of every limit on a host may freely
+      exceed it — `deploy/docker/compose.yaml`'s own "Resource ceilings
+      (D14)" comment already does this arithmetic by hand for the two-nodes-
+      one-host layout ("one tailnet node at 2.4 GiB plus one local node at
+      2.2 GiB leaves headroom for the VM itself"), and nothing before this
+      requirement checked that the comment stayed correct. Measured on
+      ockham 2026-08-24: six containers, none aware of any other, each
+      believed it could take the whole 7.457 GiB VM, and the host froze
+      repeatedly.
+
+      The sum this requirement checks is computed and published by the
+      host-facts collector (component from agent-ops#1283,
+      `scripts/collect-host-facts.sh`), not measured here: `lib/host-facts.sh`
+      now also reads the host's own `MemTotal` (`/proc/meminfo`) and CPU
+      count (the `processor` line count in `/proc/cpuinfo` — not namespaced,
+      the same property 0f's own header verifies for `/proc/meminfo`) into
+      `host.mem_total_bytes`/`host.cpu_count`, and the compose driver — the
+      one driver with a Docker socket, and so the only one that can enumerate
+      every container on the host, not only this compose project's own three
+      services — gains a `budget` section
+      (`docs/HOST-FACTS-SCHEMA.md`) summing every *running* container's own
+      declared `memory.max_bytes`/`cpu.limit_nanos` from `containers[]`
+      (agent-ops#606's own per-container actuals section) and reporting each
+      dimension's headroom alongside it, so the number is visible in the
+      published record before anything binds on it, exactly as the issue's
+      own "Done when" asks. `lib/host-budget.sh` is the one place this sum
+      and its verdict are computed — the same "read and judge exactly one
+      way" shape `lib/disk-space.sh` and `lib/memory.sh` already hold, so a
+      caller can never disagree with another about what "over budget" means.
+      A container with no readable ceiling is excluded from the sum, not
+      treated as `0` or as unbounded, and counted separately
+      (`mem_unknown_containers`/`cpu_unknown_containers`) — the same "no
+      evidence is not evidence" reasoning 0's own `unknown` and 0c/0f's
+      unreadable-meter branches already rest on: a sum that silently invented
+      a number for an unmeasured container would be worse than one that says
+      plainly it is a lower bound.
+
+      Explicitly out of scope: the Kubernetes driver. The issue's own "Why
+      Kubernetes does not close this" section frames this requirement as a
+      same-host, co-tenant problem — two Compose projects on one machine,
+      neither aware of the other, with no control plane owning the sum — and
+      a Kubernetes cluster's `ResourceQuota`/`LimitRange` already assume the
+      cluster owns the machine, which is a different problem this
+      requirement does not attempt. The `budget` key is therefore absent
+      outright under the `kubernetes` driver, a driver-specific omission
+      (docs/HOST-FACTS-SCHEMA.md), not a degraded fact.
+
+      This requirement's own gate reads the just-published record from this
+      node's own `state_dir/host-facts/<node>.json` — the same file 0f's
+      cgroup-parent detail and `doctor.sh`'s Egress section already read —
+      and is silently a no-op when that file does not exist yet (a fresh node
+      whose collector has not completed a first pass), does not parse, or
+      carries no `budget` section (a Kubernetes node, or a record predating
+      this requirement): the same "no evidence, no stand-down" reasoning 0c's
+      unreadable `df` and 0f's unreadable `/proc/meminfo` already rest on.
+      Where the record does carry a `budget`, `host_budget_mem_verdict`/
+      `host_budget_cpu_verdict` compare `mem_declared_bytes`/
+      `cpu_declared_nanos` plus a configured reserve
+      (`host_budget_reserved_memory_bytes`, default 512 MiB, the same figure
+      `min_free_memory_bytes` defaults to; `host_budget_reserved_cpus`,
+      default `0` — CPU is time-sliced and ordinary oversubscription is not
+      itself a fault the way overcommitted memory is, so this dimension holds
+      containers to the host's own core count exactly rather than assuming a
+      margin is wanted) against `mem_total_bytes`/`cpu_count * 1e9`. Either
+      dimension reading `over` is an overcommit.
+
+      Unlike 0c/0f, an overcommit does **not** stand the cycle down by
+      itself: `host_budget_enforce` (default `false`) gates it. Off, the
+      check is a complete no-op inside this requirement — the sum is still
+      published in the host-facts record regardless, so it is visible to a
+      human (or `doctor.sh`'s own advisory "Host budget" section, reading the
+      same record through the same `lib/host-budget.sh` functions) before
+      anything binds on it — which is what "advisory-by-default" (the
+      issue's own words) means here: "an operator who knowingly overcommits a
+      development box should be able to say so once" is exactly what leaving
+      `host_budget_enforce` at its default does, with no fight against this
+      requirement required. On: an overcommit logs a `stand-down` event with
+      `cause: "host-overcommit"` (added to the closed cause vocabulary,
+      `docs/FLOW-SCHEMA.md`, fourteen tokens → fifteen) whose `reason` carries
+      `lib/host-budget.sh`'s own `host_budget_describe` — both dimensions'
+      arithmetic, the declared sum, the reserve, the host total, and the
+      unknown-container counts, regardless of which dimension actually
+      tripped — and the raw `budget` object besides, so the event is never
+      read as an assertion with no numbers behind it.
+
+      Proof is `test/host-budget.test.sh` (`lib/host-budget.sh`'s pure
+      summation/verdict/describe functions, driven against fixture
+      `containers[]` arrays including a declared sum that cannot fit a small
+      host — proving the overcommit path without waiting for a real host to
+      run out, per the issue's own "Done when") and `test/host-budget-
+      wiring.test.sh` (this requirement's own block lifted out of
+      `lib/standdown.sh`, the same split `test/disk-space[-wiring].test.sh`
+      already use for 0c).
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -17591,6 +17696,18 @@ What exists, and the requirements each part answers to:
    `min_free_workspace_bytes` floor through the same three functions, so the
    gate and the warning cannot silently disagree about what "low" means.
    Unit-tested, `test/disk-space.test.sh`),
+   `lib/host-budget.sh` (requirement 2.0g's `host_budget_declared_mem_bytes`/
+   `host_budget_declared_cpu_nanos` and their own unknown-container counts,
+   `host_budget_summary_json`, `host_budget_mem_verdict`/
+   `host_budget_cpu_verdict` and `host_budget_describe` — the one place the
+   sum of every running container's declared ceiling on a host is computed
+   and judged against that host's own totals, sourced by both
+   `scripts/collect-host-facts.sh` (which publishes the sum into the
+   host-facts record's `budget` section) and `agent-cycle.sh`/
+   `scripts/doctor.sh` (which each read that record back and judge it
+   through these same functions, so the stand-down and the advisory warning
+   cannot silently disagree about what "over budget" means). Unit-tested,
+   `test/host-budget.test.sh` and `test/host-budget-wiring.test.sh`),
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
    pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
@@ -20765,6 +20882,45 @@ oblige anyone to edit a test.
    first sample establishes the baseline silently — this check needs no
    ceiling to be correctly configured first, so it still fires on a
    `livelocked` or `unconfirmed` node.
+2n-ii. **A cycle does not start work that overcommits the host it shares with
+   its siblings (requirement 2.0g, agent-ops#757).** `test/host-budget.test.sh`
+   passes: `host_budget_declared_mem_bytes`/`host_budget_declared_cpu_nanos`
+   sum only `"running"` entries carrying a numeric ceiling, read `0` for an
+   empty or all-unknown array (never empty — a real answer, not "unknown"),
+   and exclude an `"exited"` entry's ceiling from the sum entirely;
+   `host_budget_declared_mem_unknown_count`/`_cpu_unknown_count` count the
+   running entries the sum excluded; `host_budget_summary_json` carries
+   `mem_total_bytes`/`cpu_count` through as `null` (never coerced to `0`)
+   when its own input is non-numeric, and each `*_headroom_*` reads `null`
+   whenever its own total does; `host_budget_mem_verdict`/
+   `host_budget_cpu_verdict` read `over` only when the declared sum plus the
+   configured reserve exceeds the host's own total, and `ok` for an
+   unreadable host total, a `0` reserve, or a sum at or below it — including
+   against a fixture whose declared container ceilings sum past a small
+   host's total, proving the overcommit path directly rather than by waiting
+   for a real host to run out (the issue's own "Done when"); `host_budget_
+   describe` names both dimensions' arithmetic — the declared sum, the
+   unknown-container count, the reserve, and the host total — regardless of
+   which dimension is the one reading `over`.
+   `test/host-budget-wiring.test.sh` passes against requirement 2.0g's own
+   block lifted verbatim from `lib/standdown.sh`: `host_budget_enforce:
+   "false"` (the default) falls through untouched however overcommitted the
+   published record reads, standing nothing down; with it `"true"`, a
+   published `budget` reading `over` in either dimension exits 0 without
+   falling through, the logged `stand-down` event carries
+   `cause: "host-overcommit"` and a `reason` naming the arithmetic; a missing
+   host-facts file, one that does not parse, or one carrying no `budget`
+   section (a Kubernetes-driver record, or one predating this requirement)
+   all fall through untouched even with `host_budget_enforce: "true"` — no
+   stand-down on a guess. `host_facts_mem_total_bytes`/`host_facts_cpu_count`
+   read `/proc/meminfo`/`/proc/cpuinfo` directly, the same "unreadable is
+   empty, never `0`" contract `host_facts_mem_available_bytes` already holds
+   and, like it, untested at the unit level for the unreadable branch — none
+   of these three take a path override, and the container running the test
+   suite always has a readable `/proc`; `host_facts_mem_total_bytes` mirrors
+   `lib/memory.sh`'s own already-tested `memory_total_kb` closely enough that
+   a second dedicated unreadable-path test would add no coverage `test/
+   memory.test.sh` does not already give the same arithmetic.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
