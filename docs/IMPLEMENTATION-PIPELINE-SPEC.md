@@ -563,7 +563,8 @@ file and carries placeholders only; `.env` itself is never committed.
   fits — and requirement 2.0g (agent-ops#757) is what checks that they still
   do, on every cycle, against every container sharing the host (not only this
   file's own three services), rather than trusting this paragraph's own
-  arithmetic to stay correct by hand. A process ceiling sits beside the memory one because a fork loop
+  arithmetic to stay correct by hand. A process ceiling sits beside the
+  memory one because a fork loop
   exhausts a host's pid space long before its memory, and the failure then
   takes the host rather than the container. The stated trade is that a stage
   outgrowing its ceiling is killed mid-cycle instead of taking the host down
@@ -2336,8 +2337,8 @@ implements.
       development box should be able to say so once" is exactly what leaving
       `host_budget_enforce` at its default does, with no fight against this
       requirement required. On: an overcommit logs a `stand-down` event with
-      `cause: "host-overcommit"` (added to the closed cause vocabulary,
-      `docs/FLOW-SCHEMA.md`, fourteen tokens → fifteen) whose `reason` carries
+      `cause: "host-overcommit"` (one of the fifteen tokens in the closed
+      cause vocabulary, `docs/FLOW-SCHEMA.md`) whose `reason` carries
       `lib/host-budget.sh`'s own `host_budget_describe` — both dimensions'
       arithmetic, the declared sum, the reserve, the host total, and the
       unknown-container counts, regardless of which dimension actually
@@ -20912,7 +20913,11 @@ oblige anyone to edit a test.
    host-facts file, one that does not parse, or one carrying no `budget`
    section (a Kubernetes-driver record, or one predating this requirement)
    all fall through untouched even with `host_budget_enforce: "true"` — no
-   stand-down on a guess. `host_facts_mem_total_bytes`/`host_facts_cpu_count`
+   stand-down on a guess — and each of the first two leaves the block at exit
+   0 rather than carrying a failed `cat` out of it, which under the
+   `set -euo pipefail` `run_standdown_checks` is called beneath would abort
+   the whole cycle instead of falling through to 2.1.
+   `host_facts_mem_total_bytes`/`host_facts_cpu_count`
    read `/proc/meminfo`/`/proc/cpuinfo` directly, the same "unreadable is
    empty, never `0`" contract `host_facts_mem_available_bytes` already holds
    and, like it, untested at the unit level for the unreadable branch — none

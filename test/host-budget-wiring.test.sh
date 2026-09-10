@@ -84,8 +84,11 @@ write_record() {
 # run_block ENFORCE RECORD_FILE EVENT_FILE — ENFORCE seeds host_budget_enforce
 # exactly as agent-cycle.sh's own cfg read would ("true"/"false");
 # RECORD_FILE is what the stubbed `state_dir/host-facts/<node>.json` read
-# resolves to (state_dir and node_name are pointed at RECORD_FILE's own
-# directory/basename). Writes every log_event call to EVENT_FILE and prints
+# resolves to. Each invocation gets its own `state_dir`, named after
+# RECORD_FILE — a single shared one let an earlier case's copied record
+# survive into the "no record exists yet" case below, which then fell
+# through for the wrong reason and hid a real `set -e` abort in the block.
+# Writes every log_event call to EVENT_FILE and prints
 # the block's own exit status followed by "FELL THROUGH" iff it ran off the
 # end rather than exiting.
 run_block() {
@@ -105,7 +108,7 @@ run_block() {
     # shellcheck disable=SC2034  # consumed by $budget_block below, invisible to a static reader
     host_budget_reserved_cpus=0
     # shellcheck disable=SC2034  # consumed by $budget_block below, invisible to a static reader
-    state_dir="$(dirname "$record_file")/state"
+    state_dir="$(dirname "$record_file")/state-$(basename "$record_file" .json)"
     # shellcheck disable=SC2034  # consumed by $budget_block below, invisible to a static reader
     node_name="node"
     mkdir -p "$state_dir/host-facts"
@@ -211,6 +214,25 @@ assert_eq "a missing host-facts record falls through rather than standing down o
   "yes" "$(if grep -q 'FELL THROUGH' "$evt_file"; then echo yes; else echo no; fi)"
 assert_eq "…and stands nothing down" \
   "no" "$(if grep -q '^stand-down' "$evt_file"; then echo yes; else echo no; fi)"
+# The regression this pins: the record read is a bare `cat`, and
+# agent-cycle.sh runs `run_standdown_checks` under `set -euo pipefail`, so a
+# missing file must not carry a non-zero status out of the block and abort
+# the cycle instead of falling through to 2.1.
+assert_eq "…and does not abort the cycle under set -e (exit 0, not 1)" \
+  "0" "$block_rc"
+
+# --- host_budget_enforce: true, record exists but does not parse ---
+
+evt_file="$tmp_dir/bad-json-events"
+rec_file="$tmp_dir/bad-json.json"
+printf 'not json at all' > "$rec_file"
+block_rc="$(run_block true "$rec_file" "$evt_file")"
+assert_eq "a host-facts record that does not parse falls through rather than standing down on a guess" \
+  "yes" "$(if grep -q 'FELL THROUGH' "$evt_file"; then echo yes; else echo no; fi)"
+assert_eq "…and stands nothing down" \
+  "no" "$(if grep -q '^stand-down' "$evt_file"; then echo yes; else echo no; fi)"
+assert_eq "…and does not abort the cycle under set -e (exit 0, not 1)" \
+  "0" "$block_rc"
 
 # --- host_budget_enforce: true, record carries no budget section ---
 # (a Kubernetes-driver record, or one written before agent-ops#757)

@@ -262,7 +262,14 @@ fi
 # knowingly overcommits a development box should be able to say so once"
 # (the issue's own words) is exactly what leaving this off does.
 if [[ "$host_budget_enforce" == "true" ]]; then
-  host_budget_record="$(cat "$state_dir/host-facts/$node_name.json" 2>/dev/null)"
+  # `|| true` is load-bearing, not decoration: agent-cycle.sh sources this
+  # file under `set -euo pipefail` and calls `run_standdown_checks` bare, so
+  # a `cat` that fails on a record this node has not published yet would
+  # abort the whole cycle with 1 here instead of falling through — the
+  # opposite of the "no evidence, no stand-down" this block exists to hold
+  # to. 2.0c/2.0f have no such hazard only because `disk_space_free_kb`/
+  # `memory_available_kb` swallow their own unreadable meter and return 0.
+  host_budget_record="$(cat "$state_dir/host-facts/$node_name.json" 2>/dev/null || true)"
   # No fabricated verdict from a record that does not exist yet (a fresh
   # node whose collector has not completed a first pass), does not parse, or
   # predates this feature / carries no compose driver's `budget` section (a
