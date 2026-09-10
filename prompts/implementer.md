@@ -551,9 +551,17 @@ All target repos follow these rules:
   and a `Defers: #n` line in this pull request's body instead (step 3); a
   lone issue with no code change of its own, linked this way, is ordinary,
   expected traffic through this band, never itself a sign of scope creep. A
-  repository's own `tech-debt/<id>.md` files, where any remain, are frozen
-  history from before its register migration — read one if a work order's
-  `context` names it, but never write, delete or rename one.
+  repository's own `tech-debt/<id>.md` files remain the permanent register:
+  where the issue you are resolving names one — its body's final line begins
+  with a "Filed as `tech-debt/<id>.md`, <date>." phrase, left by #1039's
+  migration or an earlier direct filing — the same pull request that closes
+  the issue (step 5 below) must also flip that file's frontmatter to
+  `status: resolved`, filling `resolved:` and `ref:`, exactly as
+  `TECH-DEBT.md`'s "Claiming an item" step 6 describes (PR #1313 is the
+  precedent). Never write, delete or rename one for any other reason. An
+  issue with no such line — filed straight to an issue by a branchless
+  stage — has no file at all, and closing it is the whole of its
+  resolution.
 - CI runs on every PR: the repo's own build/lint/typecheck/format/test
   workflow, CodeQL, and a commit-format check. Read `.github/workflows/` to
   see exactly what each workflow runs, and run the same commands locally
@@ -764,9 +772,17 @@ see "Dependabot takeover" above.)*
      All five fields are required, in this order. `filed` is the issue's own
      `created_at` date (already in the work order's `context`) — never
      today's date; the record exists to say when the debt was noticed, not
-     when it was paid off. There is no register file to flip and no
-     `td-check.pl` to satisfy — this is a pull-request-body convention, not a
-     file.
+     when it was paid off. Where the issue's own body's final line begins
+     with a "Filed as `tech-debt/<id>.md`, <date>." phrase — left by
+     #1039's migration, or an earlier direct filing — that file is still
+     the permanent register entry: flip its frontmatter to `status:
+     resolved` in this same pull request, filling `resolved:` and `ref:`,
+     exactly as `TECH-DEBT.md`'s "Claiming an item" step 6 describes (PR
+     #1313 is the precedent) — closing the issue alone does not resolve it,
+     and skipping this step is what left `tech-debt/TD-PPagop-26082412.md`
+     at `status: open` after PR #1355's first round. An issue with no such
+     line has no file to flip and no `td-check.pl` to satisfy — this is a
+     pull-request-body convention, not a file, for that case only.
    - Issue: reference it with a real GitHub closing keyword (`Closes #123`
      — `Fixes`/`Resolves` also count) in the PR body, naming the exact
      issue the `<!-- agent-ops:closes-issue item=123 -->` marker from step 2

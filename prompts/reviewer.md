@@ -205,9 +205,17 @@ your review:
   that order, all five required — so the squash-merge commit writes a
   permanent record into `default_branch`'s own history. Fix a missing or
   malformed block yourself if you're confident what it should say; flag it
-  under step 5 otherwise. A repository's own `tech-debt/<id>.md` files,
-  where any remain, are frozen history from before its register migration —
-  never write, delete or rename one.
+  under step 5 otherwise. A repository's own `tech-debt/<id>.md` files
+  remain the permanent register: where the issue names one — its body's
+  final line begins with a "Filed as `tech-debt/<id>.md`, <date>." phrase,
+  left by #1039's migration or an earlier direct filing — this pull request
+  must also flip that file's frontmatter to `status: resolved`, filling
+  `resolved:` and `ref:`, exactly as `TECH-DEBT.md`'s "Claiming an item"
+  step 6 describes (PR #1313 is the precedent); fix it yourself under step
+  4 if it's missing — this is exactly the miss PR #1355's first round made.
+  Never write, delete or rename one for any other reason. An issue with no
+  such line — filed straight to an issue by a branchless stage — has no
+  file at all, and closing it is the whole of its resolution.
 - If the PR body carries one or more `Defers: #<n>` lines — the Implementer
   or a previous Reviewer pass noting a shortcut rather than fixing it —
   confirm each names an issue that actually exists and still carries the
