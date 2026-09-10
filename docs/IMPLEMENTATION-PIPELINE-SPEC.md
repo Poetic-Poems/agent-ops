@@ -3348,8 +3348,8 @@ implements.
    strictly ordered across generations, a replacement always starting after
    what it replaced. Each line also
    carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
-   `scheduler`, `dashboard` or `dashboard-local`, `"unknown"` if unset) the
-   writing container ran as. This field has a live limitation
+   `scheduler`, `dashboard`, `dashboard-local` or `collector`, `"unknown"` if
+   unset) the writing container ran as. This field has a live limitation
    (agent-ops#1072): watchtower clones the writing container's environment
    forward the same way it clones its hostname, so a compose-level addition
    of `AGENT_OPS_SERVICE` never reaches a container created by a roll — every

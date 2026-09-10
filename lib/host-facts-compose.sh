@@ -25,7 +25,7 @@
 # container answering a different question — the container's own cgroup,
 # not the parent's.
 _host_facts_compose_systemd_slice_path() {
-  local name="${1%.slice}" parts="" acc="" out=""
+  local name="${1%.slice}" parts="" acc="" out="" part=""
   IFS='-' read -r -a parts <<<"$name"
   for part in "${parts[@]}"; do
     if [[ -z "$acc" ]]; then acc="$part"; else acc="$acc-$part"; fi
@@ -166,42 +166,82 @@ host_facts_compose_container_entry() {
 
 # host_facts_compose_image_digests_json INSPECT-ARRAY [CURL-CMD] — an
 # object mapping each distinct container's own `.Image` id (the local
-# image ID `docker inspect <container>` carries) to that image's own repo
-# digest — read from `GET /images/{id}/json`'s `.RepoDigests[0]`, the one
-# endpoint that actually carries it; a container's own inspect does not.
-# One call per *distinct* image, never per container, so a stack where
-# every service shares one image (the ordinary case here) pays the cost
-# once.
+# image ID `docker inspect <container>` carries) to that image's own
+# `RepoDigests[0]` *whole* — `<repository>@sha256:<hex>` — read from
+# `GET /images/{id}/json`, the one endpoint that actually carries it; a
+# container's own inspect does not. The repository half is kept rather than
+# split away here because the caller needs it: a registry digest fetched
+# for one repository says nothing about a container running another
+# (`host_facts_compose_containers_json` below). One call per *distinct*
+# image, never per container, so a stack where every service shares one
+# image (the ordinary case here) pays the cost once.
 host_facts_compose_image_digests_json() {
   local inspects="${1:-[]}" curl_cmd="${2:-${HOST_FACTS_DOCKER_CURL_CMD:-curl}}"
-  local out="{}" image_id="" digest=""
+  local out="{}" image_id="" ref=""
   while IFS= read -r image_id; do
     [[ -n "$image_id" ]] || continue
     [[ "$(jq -nc --argjson o "$out" --arg k "$image_id" '$o | has($k)' 2>/dev/null)" == "true" ]] && continue
-    digest="$(host_facts_compose_docker_get "/images/$image_id/json" "$curl_cmd" \
-      | jq -r '(.RepoDigests // [])[0] // "" | if test("@sha256:") then split("@")[1] else "" end' 2>/dev/null)"
+    ref="$(host_facts_compose_docker_get "/images/$image_id/json" "$curl_cmd" \
+      | jq -r '(.RepoDigests // [])[0] // "" | if test("@sha256:") then . else "" end' 2>/dev/null)"
     out="$(jq -nc --argjson o "$out" --arg k "$image_id" \
-      --argjson d "$( [[ -n "$digest" ]] && jq -nc --arg x "$digest" '$x' || printf 'null' )" \
+      --argjson d "$( [[ -n "$ref" ]] && jq -nc --arg x "$ref" '$x' || printf 'null' )" \
       '$o + {($k): $d}' 2>/dev/null || printf '%s' "$out")"
   done < <(jq -r '.[]?.Image // empty' <<<"$inspects" 2>/dev/null)
   printf '%s' "$out"
+}
+
+# _host_facts_compose_same_repo REPO CONFIGURED-REPO — whether a container's
+# own image repository (the half of `RepoDigests[0]` before the `@`, e.g.
+# `ghcr.io/pullwright/agent-ops`) is the repository a registry digest was
+# fetched for (`HOST_FACTS_IMAGE_REPO`, e.g. `Pullwright/agent-ops`, against
+# `HOST_FACTS_IMAGE_REGISTRY`, default `ghcr.io`). Case-insensitive, because
+# a registry path is lowercase while the `owner/repo` slug people configure
+# is not. Matched against the fully-qualified form and the bare slug, and
+# nothing else: a repository with the same path under a *different* registry
+# is a different image, and must not be compared.
+_host_facts_compose_same_repo() {
+  local repo="${1:-}" configured="${2:-}" registry="${HOST_FACTS_IMAGE_REGISTRY:-ghcr.io}"
+  [[ -n "$repo" && -n "$configured" ]] || return 1
+  repo="$(tr '[:upper:]' '[:lower:]' <<<"$repo" 2>/dev/null || printf '%s' "$repo")"
+  configured="$(tr '[:upper:]' '[:lower:]' <<<"$configured" 2>/dev/null || printf '%s' "$configured")"
+  registry="$(tr '[:upper:]' '[:lower:]' <<<"$registry" 2>/dev/null || printf '%s' "$registry")"
+  [[ "$repo" == "$configured" || "$repo" == "$registry/$configured" ]]
 }
 
 # host_facts_compose_containers_json INSPECT-ARRAY REGISTRY-DIGEST ROOT
 # DRIVER [CURL-CMD] — the whole `containers[]` array, in the order
 # INSPECT-ARRAY carries. A single malformed element is skipped, never
 # fatal to the rest.
+#
+# REGISTRY-DIGEST was fetched for exactly one repository —
+# `HOST_FACTS_IMAGE_REPO` — so it reaches only those entries whose own image
+# actually comes from that repository. A stack's other containers
+# (watchtower, tailscale, whatever else the host runs) carry real repo
+# digests of their own, and comparing one of those against this repository's
+# `:latest` would publish `digest_match: false` forever for a container that
+# is not stale at all — a wrong fact, where docs/HOST-FACTS-SCHEMA.md's own
+# "Degradation" contract asks for an honest `null` instead.
 host_facts_compose_containers_json() {
   local inspects="${1:-[]}" registry_digest="${2:-}" root="${3:-}" driver="${4:-}" \
     curl_cmd="${5:-${HOST_FACTS_DOCKER_CURL_CMD:-curl}}"
-  local digests="" out="[]" one="" image_id="" digest=""
+  local digests="" out="[]" one="" image_id="" ref="" digest="" repo="" entry_registry_digest=""
+  local configured_repo="${HOST_FACTS_IMAGE_REPO:-}"
   digests="$(host_facts_compose_image_digests_json "$inspects" "$curl_cmd")"
   while IFS= read -r one; do
     [[ -n "$one" ]] || continue
     image_id="$(jq -r '.Image // ""' <<<"$one" 2>/dev/null)"
-    digest="$(jq -r --arg k "$image_id" '.[$k] // "" | if type == "string" then . else "" end' <<<"$digests" 2>/dev/null)"
+    ref="$(jq -r --arg k "$image_id" '.[$k] // "" | if type == "string" then . else "" end' <<<"$digests" 2>/dev/null)"
+    digest=""; repo=""
+    if [[ "$ref" == *"@"* ]]; then
+      digest="${ref##*@}"
+      repo="${ref%@*}"
+    fi
+    entry_registry_digest=""
+    if _host_facts_compose_same_repo "$repo" "$configured_repo"; then
+      entry_registry_digest="$registry_digest"
+    fi
     local entry=""
-    entry="$(host_facts_compose_container_entry "$one" "$digest" "$registry_digest" "$root" "$driver")"
+    entry="$(host_facts_compose_container_entry "$one" "$digest" "$entry_registry_digest" "$root" "$driver")"
     [[ -n "$entry" ]] || continue
     out="$(jq -nc --argjson arr "$out" --argjson e "$entry" '$arr + [$e]' 2>/dev/null || printf '%s' "$out")"
   done < <(jq -c '.[]?' <<<"$inspects" 2>/dev/null)

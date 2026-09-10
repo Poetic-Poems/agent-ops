@@ -565,6 +565,19 @@ services:
       # Matches the cgroup mount below: this is where *this* container's
       # copy of the host's cgroup tree lands.
       HOST_FACTS_CGROUP_ROOT: /host/sys/fs/cgroup
+      # The one container that needs DOCKER_MTU as an *environment* value
+      # rather than as the `driver_opts` substitution every other use of it
+      # in this file is (see the two `com.docker.network.driver.mtu` lines
+      # near the bottom). Compose reads `.env` for substitution only, never
+      # into a container's environment, so without this line
+      # host.network.docker_mtu_configured would always take
+      # lib/host-facts.sh's own 1500 fallback — and a node that correctly
+      # set DOCKER_MTU=1400 to match a 1400-byte egress path would publish
+      # mtu_match: false and be warned, by doctor.sh and by the dashboard's
+      # `host degraded` badge, to fix what it had already fixed. Same
+      # `:-1500` default as the driver_opts lines, so the two can never
+      # disagree about what "unset" means.
+      DOCKER_MTU: ${DOCKER_MTU:-1500}
     volumes:
       # Read-write, unlike the dashboard's read-only mount of the same
       # volume: this is the one container that writes into it

@@ -6,6 +6,18 @@
 # `kubectl apply -n` or add `namespace:` yourself, matching how the rest of
 # this cluster's manifests are applied.
 #
+# THE ONE EXCEPTION, and it has to be edited by hand: the RoleBinding's and
+# the ClusterRoleBinding's own ServiceAccount *subjects* below each carry an
+# explicit `namespace:`, because Kubernetes' RBAC validation rejects a
+# ServiceAccount subject that omits it — it does not default to the binding's
+# own namespace the way most references do. Both read `default` here. If you
+# apply this file into any other namespace, change both to that namespace
+# too: leaving them says "bind the ServiceAccount named agent-ops-collector
+# in the `default` namespace", which is not the one this file just created,
+# so the collector gets 403 on every API read — and because
+# lib/host-facts-kubernetes.sh degrades rather than fails, the symptom is
+# five empty arrays on every tick and no error anywhere.
+#
 # OPEN QUESTION, not resolved by this manifest: Kubernetes has no equivalent
 # of deploy/docker/compose.yaml's `state` named volume, which is how a
 # compose node's collector and scheduler share one place to write and read
@@ -75,11 +87,12 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: agent-ops-collector
-    # Matches whatever namespace this manifest is applied into — RoleBinding
-    # subjects resolve relative to the binding's own namespace when this
-    # field is left off, but it is required syntactically for a
-    # ServiceAccount subject, so name it explicitly rather than rely on that
-    # implicit rule holding across kubectl/kustomize invocations.
+    # CHANGE THIS if you apply the file into any namespace but `default`.
+    # RBAC validation requires a ServiceAccount subject to name its own
+    # namespace, and it is *not* inferred from the binding's — so this line
+    # does not follow `kubectl apply -n`, and a mismatch binds nothing at
+    # all (see the header). It must match the namespace the ServiceAccount
+    # above actually lands in.
     namespace: default
 roleRef:
   kind: Role
@@ -115,8 +128,9 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: agent-ops-collector
-    # A ClusterRoleBinding's ServiceAccount subject is namespace-scoped even
-    # though the binding itself is cluster-scoped — this must name the same
+    # CHANGE THIS too, for the same reason as the RoleBinding above: a
+    # ClusterRoleBinding's ServiceAccount subject is namespace-scoped even
+    # though the binding itself is cluster-scoped, and it must name the same
     # namespace the ServiceAccount above actually lives in.
     namespace: default
 roleRef:

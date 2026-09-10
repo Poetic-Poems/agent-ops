@@ -91,7 +91,7 @@ the engine itself returns them:
 | `restart_count` | integer | `State.RestartCount`. |
 | `started_at` | string \| null | `State.StartedAt`, `null` for the zero-value Docker reports on a container that has never started. |
 | `image.digest` | string \| null | The running image's own `RepoDigests[0]` (the `sha256:...` half), `null` when the image carries no repo digest (built locally, never pulled). |
-| `image.registry_digest` | string \| null | The registry's current `:latest` manifest digest for this repository, `null` when the registry could not be read — the same "unverified, never guessed" contract `lib/image-drift.sh` already holds for the commit-level comparison this one complements. |
+| `image.registry_digest` | string \| null | The registry's current `:latest` manifest digest for **this container's own** repository, `null` when the registry could not be read *or* when this container does not run the one repository the collector was configured to compare against (`HOST_FACTS_IMAGE_REPO`) — the collector fetches one repository's digest, so a container running another image (watchtower, tailscale, anything else on the host) reads `null` here rather than a foreign repository's digest. The same "unverified, never guessed" contract `lib/image-drift.sh` already holds for the commit-level comparison this one complements. |
 | `image.digest_match` | boolean \| null | `digest == registry_digest`; `null` whenever either side is `null`. |
 | `memory.current_bytes` | integer \| null | `memory.current`, read from the container's own cgroup. |
 | `memory.high_bytes` | integer \| null | `memory.high`, `null` for the literal `max`. |
@@ -214,6 +214,8 @@ the same JSON `docker inspect` and `kubectl get -o json` show, since both
 tools are thin clients over exactly these responses — asserting the record
 shape above field by field, including the degradations this document names:
 an unreadable cgroup file, a container carrying no compose-service label, an
-unreachable registry, a pod with no terminated/waiting container status, a
-CronJob that has stopped scheduling, and a viewer probe that times out or
-receives a body that will not parse as JSON.
+unreachable registry, a container running an image from a repository other
+than the one the registry digest was fetched for, a pod with no
+terminated/waiting container status, a CronJob that has stopped scheduling,
+and a viewer probe that times out or receives a body that will not parse as
+JSON.

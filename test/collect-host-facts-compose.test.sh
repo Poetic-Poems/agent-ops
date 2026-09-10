@@ -19,6 +19,10 @@
 #     container's own inspect, which carries no `RepoDigests` field at all;
 #   - digest_match is true when the resolved digest equals the registry's,
 #     false when it differs, and null when either side is unreadable;
+#   - the registry digest reaches only containers running the repository it
+#     was actually fetched for — a container from another repository reads
+#     registry_digest/digest_match null, never a foreign repository's digest
+#     and a permanent false;
 #   - memory.current/high/max/oom_kill each read independently from a
 #     fixture cgroup tree, and each is null on its own when that file is
 #     absent — one missing file never takes the other three down with it;
@@ -100,7 +104,10 @@ case "$url" in
     echo '{"RepoDigests":["ghcr.io/pullwright/agent-ops@sha256:regdigest"]}'
     ;;
   "http://localhost/images/sha256:imageB/json")
-    echo '{"RepoDigests":[]}'
+    # A foreign repository, as watchtower and tailscale really are on a
+    # node: a real repo digest of its own, from a repository that is not the
+    # one HOST_FACTS_IMAGE_REPO names.
+    echo '{"RepoDigests":["docker.io/containrrr/watchtower@sha256:wtdigest"]}'
     ;;
   *"/containers/fullid2/logs"*)
     printf '%s' "$STUB_WT_LOG"
@@ -171,6 +178,28 @@ section="$(host_facts_compose_section "$stub_curl")"
 assert_eq "section carries two containers" "2" "$(jq '.containers | length' <<<"$section")"
 assert_eq "watchtower_log_tail carries the raw log for the caller to parse" \
   "1" "$(jq -r '(.watchtower_log_tail // "") | test("Session done") | if . then 1 else 0 end' <<<"$section")"
+
+# The registry digest is fetched for exactly one repository
+# (HOST_FACTS_IMAGE_REPO), so it reaches only the container actually running
+# that repository's image. The other container on this host runs
+# containrrr/watchtower — a real repo digest, from a repository this
+# collector never asked the registry about — and must read registry_digest
+# null / digest_match null rather than a foreign repository's digest and a
+# permanent `false` (docs/HOST-FACTS-SCHEMA.md's own `image.registry_digest`
+# row).
+assert_eq "the configured repository's own container compares against the registry" \
+  "sha256:regdigest" \
+  "$(jq -r '.containers[] | select(.name=="agent-ops-scheduler-1") | .image.registry_digest' <<<"$section")"
+assert_eq "and reads digest_match true when it is up to date" "true" \
+  "$(jq -r '.containers[] | select(.name=="agent-ops-scheduler-1") | .image.digest_match' <<<"$section")"
+assert_eq "a container from another repository keeps its own digest" \
+  "sha256:wtdigest" \
+  "$(jq -r '.containers[] | select(.name=="agent-ops-watchtower-1") | .image.digest' <<<"$section")"
+assert_eq "a container from another repository is never compared to this one's registry digest" \
+  "null" \
+  "$(jq -r '.containers[] | select(.name=="agent-ops-watchtower-1") | .image.registry_digest' <<<"$section")"
+assert_eq "so its digest_match is null, never a permanent false" "null" \
+  "$(jq -r '.containers[] | select(.name=="agent-ops-watchtower-1") | .image.digest_match' <<<"$section")"
 
 updater="$(host_facts_updater_json "$tmp_dir" "no-such-host" "$(jq -r '.watchtower_log_tail' <<<"$section")")"
 assert_eq "last_session parses Failed/Scanned/Updated from the log" \
