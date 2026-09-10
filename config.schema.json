@@ -1132,6 +1132,19 @@
         }
       }
     },
+    "pager_landing_armed_within_days": {
+      "description": "Days lib/pager-invariants.sh's `landing-never-armed` invariant (agent-ops#1280) tolerates a repository configured at merge_autonomy agent-merges-routine or above going with zero landing-armed events despite landing-refused activity in that same trailing window, before firing — the agent-ops#718 signature: six days of landing-refused events and no armings at all, because the refusal path itself (most often landing_protected_paths_hit) was silently failing closed on every attempt. A window with no landing-refused activity for a repository decides nothing — this invariant never fires on a repository that simply has no pull request ready to land.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 7,
+      "x-docs": {
+        "readme": "Days. How long a repository configured at merge_autonomy agent-merges-routine or above may go with zero landing-armed events, despite landing-refused activity in that same window, before the dashboard's `landing-never-armed` pager invariant fires.",
+        "spec": "Requirement 51's own `landing-never-armed` threshold (agent-ops#1280): the trailing window, in days, over which a repository configured at merge_autonomy agent-merges-routine or above must log at least one landing-armed event given landing-refused activity in that same window, before this invariant fires.",
+        "value": {
+          "spec": "7 days"
+        }
+      }
+    },
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",

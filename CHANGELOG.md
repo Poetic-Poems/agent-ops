@@ -130,6 +130,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   6), `pager_repair_rate_percent` (default 20), `pager_escalation_burst`
   (default 10).
 
+- **The pager: landing and approval invariants** (issue #1280, part 3a of
+  #1126's findings, requirement 51): three more built-in invariants
+  (`lib/pager-invariants.sh`) — the class where a pull request sits ready,
+  or a whole repository stops landing, with nothing any existing invariant
+  reads catching it. `landing-never-armed` (pipeline-act; a repository
+  configured at `merge_autonomy` `agent-merges-routine` or above with
+  `landing-refused` activity but no `landing-armed` event in the trailing
+  `pager_landing_armed_within_days`, default 7 — #718's own signature: six
+  days of refusals and zero armings, because `landing_protected_paths_hit`'s
+  `gh api … -F` was 404ing on every call; the remedy files a
+  `pw::type:tech-debt` issue naming the repo's own refusal-class
+  histogram). `landing-refused-unknown` (pipeline-act; `landing-refused`
+  events of class `unknown` — `lib/landing.sh`'s own fail-closed vocabulary
+  for a live GitHub read that could not even be attempted — at or above
+  half of a trailing 24h's refusals fleet-wide, with at least five; the same
+  #718 incident was 72 of 115). `pr-unreviewed` (pipeline-act; a ready,
+  non-draft, `pr_label` pull request older than
+  `approver_unreviewed_engage_after_hours` with no standing review, no
+  `approver-verdict`, no Approver warning and no
+  `approver-unreviewed-engaged` event at all — requirement 46's own
+  unreviewed trigger never having run for it even once, the #1081 signature
+  that stranded PR #1059; the remedy logs the identical
+  `approver-unreviewed-engaged` event the ordinary sweep would, `result:
+  "unavailable"`, which starts that sweep's own escalate clock for a pull
+  request it had never started for at all). New config:
+  `pager_landing_armed_within_days` (default 7).
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for

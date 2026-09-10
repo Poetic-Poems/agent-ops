@@ -855,6 +855,7 @@ and the schema must carry every one of them.
 | `pager_idle_cycles` | 6 cycles | Requirement 51's own `idle-with-demand` threshold (agent-ops#1281): the count of an active node's own trailing cycles — each read from its own last `node-state` event — that must all end `idle-with-demand` (cause other than `back-pressure`) before this invariant fires. |
 | `pager_repair_rate_percent` | 20% | Requirement 51's own `work-order-repaired-rate` threshold (agent-ops#1281): the percentage, of a trailing 24h window's `selection` events, also carrying a `work-order-repaired` event, above which this invariant fires. |
 | `pager_escalation_burst` | 10 escalations | Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice inside that same window fires it regardless of this count. |
+| `pager_landing_armed_within_days` | 7 days | Requirement 51's own `landing-never-armed` threshold (agent-ops#1280): the trailing window, in days, over which a repository configured at merge_autonomy agent-merges-routine or above must log at least one landing-armed event given landing-refused activity in that same window, before this invariant fires. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -16687,6 +16688,98 @@ with the Reviewer's own.
     `digest-truncated` read no new configuration of their own, only the
     union log and (for the latter two) a live GitHub read.
 
+    Issue #1280 (part 3a of #1126's own findings) adds three more —
+    **landing and approval**: the class where a pull request sits ready, or a
+    whole repository stops landing, with nothing any existing invariant reads
+    catching it, because the facts live in the Landing Gate's own refusal
+    path (`lib/landing.sh`) and the Approver's own unreviewed-trigger memory
+    (requirement 46) rather than a node's liveness or the Co-Ordinator's own
+    selection machinery. `pager_evaluate` gains four more trailing, optional
+    parameters — `REPOS_JSON`, `PR_LABEL`,
+    `APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS`, `LANDING_ARMED_WITHIN_DAYS` —
+    set as `PAGER_EVAL_REPOS_JSON` and three siblings, the identical
+    plain-variable exception `PAGER_EVAL_REPO`/`PAGER_EVAL_CYCLE_INTERVAL_
+    MINUTES` already established. `PAGER_EVAL_REPOS_JSON` carries each
+    configured repository's own *configured* `merge_autonomy` level (a
+    repository's own override, else the fleet-wide default) — never the live
+    effective level, the identical D18 WI-6 approximation `config_json`'s own
+    back-pressure card already makes, since a per-repository merge-budget-
+    freeze read is a cost neither this invariant nor that card pays on every
+    evaluation.
+
+    - **`landing-never-armed`** (pipeline-act). Fires when a repository
+      configured at merge_autonomy `agent-merges-routine` or above logged at
+      least one `landing-refused` event in the trailing
+      `pager_landing_armed_within_days` (default 7) window but no
+      `landing-armed` event in that same window. Caught: #718 — agent-ops sat
+      at `agent-merges-routine` from 2026-08-18 with 115 `landing-refused`
+      and zero armings for six days, because `landing_protected_paths_hit`'s
+      `gh api … -F` POSTed and 404'd on every call. The `landing-refused`
+      gate is deliberate, never "no `landing-armed` event" alone: a
+      repository with nothing ready to land in the window is not this
+      incident, and would otherwise fire on every quiet repository at this
+      level, forever. Evidence embeds each firing repository's own
+      refusal-class histogram (`reason`'s own `<class>:<detail>` vocabulary,
+      split on the first colon) — the fact a diagnosis starts from. The
+      pipeline-act remedy files a `pw::type:tech-debt` issue against this
+      pipeline's own repository (the reader, `lib/landing.sh`, lives here,
+      never in a target repo), naming the histogram, on
+      `verdict-unanimous`'s own terms.
+    - **`landing-refused-unknown`** (pipeline-act). Fires when
+      `landing-refused` events of class `unknown` (`lib/landing.sh`'s own
+      `unknown:<reason>` vocabulary — the fail-closed answer
+      `landing_eligible`/`landing_protected_path_controls_ok` give when a
+      live GitHub read could not even be attempted, never a deterministic
+      `ineligible`) make up at least half of a trailing-24h window's
+      `landing-refused` events, fleet-wide, with at least five. Caught: the
+      same #718 incident (72 of 115). The fraction and the floor are fixed,
+      un-schema-backed constants, `review-pipeline-failing`'s own precedent
+      above, for the identical reason it states: this class has not yet seen
+      a second incident to tune them against. The pipeline-act remedy files
+      a `pw::type:tech-debt` issue on the identical terms
+      `landing-never-armed`'s own remedy uses — the two invariants share one
+      root cause class, and often fire together for the same incident.
+    - **`pr-unreviewed`** (pipeline-act). Fires when at least one ready,
+      non-draft, `pr_label` pull request, older than
+      `approver_unreviewed_engage_after_hours` (requirement 46's own cutoff,
+      reused rather than duplicated), carries no standing review at all
+      (GitHub's own `reviewDecision`, read once per candidate repository's
+      own `gh pr list` call — a superset of "no standing *App* review"
+      specific enough in practice, since a third party reviewing an
+      autonomous pipeline's own pull request ahead of the Approver is not the
+      ordinary case this invariant needs to rule out, and costs no further
+      per-pull-request API call the way a live per-pull-request read would),
+      no `approver-verdict`, no warning naming it and no
+      `approver-unreviewed-engaged` event *at all* — never merely stale, the
+      total silence of requirement 46's own unreviewed trigger (#890) never
+      having run for this pull request even once. Caught: PR #1059, stranded
+      when the kill-switch read failed closed with no log line (#1081) —
+      exactly the silent skip this invariant is built to notice from outside
+      the sweep that skipped. The pipeline-act remedy logs the identical
+      `approver-unreviewed-engaged` event requirement 46's own sweep would
+      (`result: "unavailable"`, truthful — this framework has no clone or
+      model credential with which to post a real review itself, the
+      host-independence this issue's own compatibility note requires) for
+      every candidate found. Logging it is the "enqueue" half of the issue's
+      own remedy text: it starts the escalate clock
+      `_approver_restale_sweep_repo` reads
+      (`approver_unreviewed_prior_engagement`) for a pull request that clock
+      had never started for at all, so the very next ordinary sweep — any
+      node, its own next cycle, needing no signal from here to run — either
+      posts a real review or, once `approver_restale_escalate_after_hours`
+      passes from this logged engagement, escalates to `enabler_assignee`
+      itself: the "file if a second window passes" half of the issue's own
+      remedy text, performed by the sweep this remedy hands the baton to
+      rather than reimplemented here.
+
+    Configuration for the three: `pager_landing_armed_within_days` (default
+    7 days) is new; `landing-refused-unknown` reads no new configuration of
+    its own (fixed constants only); `pr-unreviewed` reuses `pr_label` and
+    `approver_unreviewed_engage_after_hours`, needing no key of their own.
+    All three read the union log and the forge alone — never a clone, never a
+    host — the compatibility this issue's own acceptance names for the
+    orchestrated-container target.
+
     `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
     evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
     page-rendering section documents the `pager-firing` banner and node-card
@@ -24429,10 +24522,45 @@ oblige anyone to edit a test.
     agree, its remedy logs a `digest-truncation-veto` event naming the
     affected repo (parsed from the evidence's own repo token, never
     re-deriving the live counts), and it never fires against a union log
-    carrying no `source-state-digest` event at all. `scripts/render-config-
-    table.sh --check` passes with `pager_stale_file_after_minutes`/
-    `pager_dashboard_fetch_seconds`/`pager_idle_cycles`/`pager_repair_rate_
-    percent`/`pager_escalation_burst` added. `scripts/lint-shell.sh` is
+    carrying no `source-state-digest` event at all.
+
+    The same file also drives agent-ops#1280's three landing/approval
+    invariants, a `pr list` case added to the shared `gh` stub, answering per
+    the `-R` repository the call actually names (mirroring the existing
+    per-label answering `issue list` already does) so a fixture can give two
+    repositories two different pull-request listings: `landing-never-armed`
+    fires on a repository named in `PAGER_EVAL_REPOS_JSON` at
+    `agent-merges-routine` with `landing-refused` events but no
+    `landing-armed` event in the trailing `pager_landing_armed_within_days`
+    window, with evidence naming its own refusal-class histogram, its remedy
+    filing a stubbed `pw::type:tech-debt` issue naming that histogram; does
+    not fire on a repository at `human`, on one with a `landing-armed` event
+    inside the window, or on one with no `landing-refused` activity in the
+    window at all (nothing ready to land is not this incident); and does not
+    fire with `PAGER_EVAL_REPOS_JSON`/`PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS`
+    unconfigured.
+    `landing-refused-unknown` fires when a trailing-24h window's
+    `landing-refused` events are at least half class `unknown` (split on the
+    reason's own first colon) with at least five, not below either bound,
+    and not on a window of five `unknown` refusals out of eleven total (55%
+    but only five of a smaller total is still tested as a pass — the two
+    bounds are independent); its remedy files a stubbed `pw::type:tech-debt`
+    issue. `pr-unreviewed` fires on a stubbed `pr list` naming a ready,
+    non-draft, `pr_label` pull request older than
+    `PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS` with a null
+    `reviewDecision` and no `approver-verdict`/`approver-unreviewed-engaged`/
+    matching `warning` event in the union log; does not fire on a draft, on
+    one younger than the cutoff, on one whose `reviewDecision` already names
+    a standing decision, or on one already carrying any of the three
+    disqualifying union-log events; its remedy logs a fresh
+    `approver-unreviewed-engaged` event (`result: "unavailable"`) for every
+    candidate found, re-deriving the candidate set live rather than parsing
+    the evidence string, and reports how many it enqueued.
+
+    `scripts/render-config-table.sh --check` passes with
+    `pager_stale_file_after_minutes`/`pager_dashboard_fetch_seconds`/
+    `pager_idle_cycles`/`pager_repair_rate_percent`/`pager_escalation_burst`/
+    `pager_landing_armed_within_days` added. `scripts/lint-shell.sh` is
     clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,

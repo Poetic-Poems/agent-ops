@@ -188,6 +188,96 @@
 #                           "refuse to act on absence for that cycle" — then
 #                           files, a durable record if it keeps recurring.
 #
+# Issue #1280 (part 3a of #1126's findings) adds three more — landing and
+# approval: the class that lets a pull request sit ready, or a whole
+# repository stop landing, with nothing any existing invariant reads
+# catching it, because the facts live in the Landing Gate's own refusal path
+# and the Approver's own unreviewed-trigger memory rather than a node's
+# liveness or the Co-Ordinator's own selection machinery.
+#
+#   landing-never-armed     a repository configured at merge_autonomy
+#                           agent-merges-routine or above with zero
+#                           landing-armed events despite landing-refused
+#                           activity in the trailing
+#                           pager_landing_armed_within_days (default 7)
+#                           window. Caught: #718 — agent-ops sat at
+#                           agent-merges-routine from 2026-08-18 with 115
+#                           landing-refused and zero armings for six days,
+#                           because landing_protected_paths_hit's `gh api …
+#                           -F` POSTed and 404'd on every call. Configured
+#                           level only, never the live effective level (a
+#                           per-repository merge-budget-freeze read this
+#                           invariant declines to pay for on every
+#                           evaluation, the same approximation the
+#                           back-pressure card already makes, D18 WI-6) —
+#                           and gated on landing-refused activity in the
+#                           same window, so a repository with nothing ready
+#                           to land never fires. pipeline-act: files
+#                           tech-debt against lib/landing.sh's refusal path,
+#                           with the window's own refusal-class histogram as
+#                           evidence.
+#   landing-refused-unknown  landing-refused events of class `unknown`
+#                           (lib/landing.sh's own `unknown:<reason>`
+#                           vocabulary — landing_eligible/landing_protected_
+#                           path_controls_ok's fail-closed answer when a
+#                           live GitHub read could not even be attempted,
+#                           never a deterministic ineligible) make up at
+#                           least half of a trailing-24h window's
+#                           landing-refused events, with at least five.
+#                           Caught: the same #718 incident (72 of 115). 5 and
+#                           one-half are fixed, un-schema-backed constants —
+#                           lib/pager-invariants.sh's own review-pipeline-
+#                           failing precedent, this class not yet having seen
+#                           a second incident to tune them against.
+#                           pipeline-act: files tech-debt.
+#   pr-unreviewed           a ready, non-draft, pr_label pull request with no
+#                           standing review at all (GitHub's own
+#                           reviewDecision, read once per candidate
+#                           repository's own `gh pr list` — a superset of
+#                           "no standing *App* review" specific enough in
+#                           practice, since a third party reviewing an
+#                           autonomous pipeline's own draft ahead of the
+#                           Approver is not the ordinary case this invariant
+#                           needs to rule out), no approver-verdict, no
+#                           warning naming it and no approver-unreviewed-
+#                           engaged event *at all* — never merely stale, the
+#                           total silence that is requirement 46's own
+#                           unreviewed trigger (#890) never having run for
+#                           this pull request even once. Caught: PR #1059,
+#                           stranded when the kill-switch read failed closed
+#                           with no log line (#1081) — exactly the silent
+#                           skip this invariant is built to notice from
+#                           outside the sweep that skipped. createdAt older
+#                           than approver_unreviewed_engage_after_hours,
+#                           requirement 46's own cutoff, reused rather than
+#                           duplicated. pipeline-act: the remedy logs the
+#                           identical approver-unreviewed-engaged event
+#                           requirement 46's own sweep would (`result:
+#                           "unavailable"`, truthful — this framework has no
+#                           clone or model credential to post a real review
+#                           with) for every candidate found — which starts
+#                           the escalate clock `_approver_restale_sweep_repo`
+#                           reads (`approver_unreviewed_prior_engagement`)
+#                           for a pull request that clock had never started
+#                           for at all, so the very next ordinary sweep (any
+#                           node, its own next cycle) either posts a real
+#                           review or — once
+#                           approver_restale_escalate_after_hours passes from
+#                           this logged engagement — escalates to
+#                           enabler_assignee itself. "Enqueue the
+#                           re-engagement, and file if a second window
+#                           passes" (the issue's own remedy text): the
+#                           logged engagement is the enqueue, the ordinary
+#                           sweep's own escalation is the second window, and
+#                           this invariant's own pw::pager issue, filed
+#                           alongside on the ordinary hysteresis terms every
+#                           pipeline-act remedy files under, is never the
+#                           only place this is visible.
+#
+# All three read the union log and the forge alone — never a clone, never a
+# host — on the compatibility the issue's own acceptance names for the
+# orchestrated-container target.
+#
 # Sourced after lib/pager.sh; registration itself is a separate call
 # (`pager_register_builtin_invariants`), not top-level code, so a test can
 # source this file and register only what it means to exercise.
@@ -1084,6 +1174,279 @@ pager_remedy_digest_truncated() {
   printf 'vetoed this cycle'\''s work-gone clearances for %d repo(s) pending a healthy digest' "$vetoed"
 }
 
+# --- agent-ops#1280: landing and approval -----------------------------------
+
+# pager_eval_landing_never_armed FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when a repository PAGER_EVAL_REPOS_JSON names at merge_autonomy
+# agent-merges-routine or above logged at least one landing-refused event in
+# the trailing PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS (default 7) window but no
+# landing-armed event in that same window — the #718 signature: six days of
+# refusals and zero armings, because the refusal path itself
+# (landing_protected_paths_hit's `gh api … -F`) was silently failing closed
+# on every attempt. The landing-refused gate (never "no landing-armed event"
+# alone) is deliberate: a repository with nothing ready to land in the window
+# is not this incident, and would otherwise fire on every quiet repository
+# configured at this level, forever. merge_autonomy here is the *configured*
+# level (PAGER_EVAL_REPOS_JSON's own `merge_autonomy`, this file's header),
+# never the live effective one — a per-repository merge-budget-freeze read
+# this invariant declines to pay for on every evaluation, the same
+# approximation `scripts/publish-dashboard.sh`'s own back-pressure card
+# already makes (D18 WI-6) for an identical reason. Evidence embeds each
+# repository's own refusal-class histogram (`reason`'s own `<class>:<detail>`
+# vocabulary, split on the first colon) — the two facts the remedy's own
+# tech-debt issue starts a diagnosis from.
+pager_eval_landing_never_armed() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local repos_json="${PAGER_EVAL_REPOS_JSON:-}" days="${PAGER_EVAL_LANDING_ARMED_WITHIN_DAYS:-}"
+  [[ "$days" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf '{"firing":false}'; return 0; }
+  if [[ -z "$repos_json" ]] || ! jq -e 'type == "array"' <<<"$repos_json" >/dev/null 2>&1; then
+    printf '{"firing":false}'; return 0
+  fi
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n --argjson repos "$repos_json" --argjson days "$days" --argjson now "$(date -u +%s)" '
+    (86400 * $days) as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "landing-armed" or .event == "landing-refused")
+        | select((.repo // "") != "")
+        | select((try (.ts | fromdateiso8601) catch null) != null)
+        | select(($now - (.ts | fromdateiso8601)) <= $window_s) ] as $recent
+    | ($recent | map(select(.event == "landing-armed"))) as $armed
+    | ($recent | map(select(.event == "landing-refused"))) as $refused
+    | ($repos | map(select((.merge_autonomy // "human") as $l
+                    | ["agent-merges-routine", "agent-merges-all"] | index($l) != null))) as $eligible
+    | ( [ $eligible[] as $r
+          | ($r.slug) as $slug
+          | ($refused | map(select(.repo == $slug))) as $repo_refused
+          | select(($repo_refused | length) > 0)
+          | select(($armed | map(select(.repo == $slug)) | length) == 0)
+          | ($repo_refused | group_by((.reason // "") | split(":")[0])
+             | map({class: ((.[0].reason // "") | split(":")[0]), count: length})
+             | sort_by(-.count)) as $hist
+          | {repo: $slug, refused: ($repo_refused | length),
+             histogram: ($hist | map("\(.class): \(.count)") | join(", "))}
+        ] ) as $hits
+    | if ($hits | length) == 0 then {firing: false}
+      else {firing: true, nodes: [],
+            evidence: ("at merge_autonomy agent-merges-routine or above with zero landing-armed events in the trailing "
+              + ($days | tostring) + " day(s) despite landing-refused activity (the #718 signature), on "
+              + (($hits | map("\(.repo) (\(.refused) refusal(s); refusal-class histogram: \(.histogram))")) | join("; ")))}
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_remedy_landing_never_armed KEY EVIDENCE
+# Pipeline act: files a `pw::type:tech-debt` issue against this pipeline's
+# own repository (PAGER_REMEDY_REPO) — the reader (lib/landing.sh) lives
+# here, never in a target repo, the identical reasoning
+# pager_remedy_verdict_unanimous already states — naming the refusal-class
+# histogram EVIDENCE already carries.
+pager_remedy_landing_never_armed() {
+  local key="$1" evidence="$2" repo="${PAGER_REMEDY_REPO:-}"
+  [[ -n "$repo" ]] || { printf 'no pager_repo configured — could not file the tech-debt issue'; return 1; }
+  local item="pager-reader:$key" body_file created number
+  body_file="$(mktemp)"
+  {
+    printf 'A fleet-wide invariant fired: a repository configured at merge_autonomy agent-merges-routine or above armed no landing in pager_landing_armed_within_days despite refusal activity.\n\n'
+    printf '%s\n\n' "$evidence"
+    printf 'This is the #718 signature — a gate inside _landing_stage_attempt (most often landing_protected_paths_hit) failing closed on every attempt, refusing every landing regardless of merit. The refusal-class histogram above names which gate to start from.\n\n'
+    printf -- '---\nFiled automatically by lib/pager.sh (issue #1280).\nref: %s\n' "$item"
+  } > "$body_file"
+  if created="$(_pager_create_issue "$repo" "$item" "pw::type:tech-debt" \
+        "Pager: landing-never-armed fired ($evidence)" "$body_file" "")" && [[ -n "$created" ]]; then
+    number="${created%%$'\t'*}"
+    rm -f "$body_file"
+    printf 'filed %s#%s (pw::type:tech-debt)' "$repo" "$number"
+    return 0
+  fi
+  rm -f "$body_file"
+  return 1
+}
+
+# pager_eval_landing_refused_unknown FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when landing-refused events of class `unknown`
+# (lib/landing.sh's own `unknown:<reason>` vocabulary — the fail-closed
+# answer landing_eligible/landing_protected_path_controls_ok give when a live
+# GitHub read could not even be attempted, never a deterministic ineligible)
+# make up at least half of a trailing-24h window's landing-refused events,
+# fleet-wide, with at least five. Caught: the #718 incident (72 of 115). The
+# fraction and the floor are fixed, un-schema-backed constants —
+# `pager_eval_review_pipeline_failing`'s own precedent (this file's header),
+# for the identical reason it states: this class has not yet seen a second
+# incident to tune them against.
+pager_eval_landing_refused_unknown() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local min_events=5
+  [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
+  jq -c -R -n --argjson now "$(date -u +%s)" --argjson min "$min_events" '
+    86400 as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "landing-refused")
+        | select((try (.ts | fromdateiso8601) catch null) != null)
+        | select(($now - (.ts | fromdateiso8601)) <= $window_s) ] as $refusals
+    | ($refusals | length) as $total
+    | ($refusals | map(select((((.reason // "") | split(":")[0])) == "unknown")) | length) as $unknown
+    | if $total == 0 then {firing: false}
+      elif ($unknown >= $min) and (($unknown * 2) >= $total)
+      then {firing: true,
+            evidence: ("\($unknown) of \($total) landing-refused event(s) fleet-wide in the trailing 24h are class \"unknown\" ("
+              + (( ($unknown * 1000.0 / $total | round) / 10 ) | tostring) + "%) — at or above half, with at least \($min) events (the #718 signature)")}
+      else {firing: false}
+      end
+  ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_remedy_landing_refused_unknown KEY EVIDENCE
+# Pipeline act: files a `pw::type:tech-debt` issue against this pipeline's
+# own repository, on the identical terms pager_remedy_landing_never_armed
+# already uses — the two invariants share one root cause class, and often
+# fire together for the same incident.
+pager_remedy_landing_refused_unknown() {
+  local key="$1" evidence="$2" repo="${PAGER_REMEDY_REPO:-}"
+  [[ -n "$repo" ]] || { printf 'no pager_repo configured — could not file the tech-debt issue'; return 1; }
+  local item="pager-reader:$key" body_file created number
+  body_file="$(mktemp)"
+  {
+    printf 'A fleet-wide invariant fired: at least half of a trailing 24h'\''s landing-refused events are class "unknown".\n\n'
+    printf '%s\n\n' "$evidence"
+    printf 'A refusal class of "unknown" (lib/landing.sh'\''s own vocabulary) means a live GitHub read the Landing Gate needed could not even be attempted — never a deterministic ineligible verdict. This is the #718 signature: a gate inside _landing_stage_attempt (most often landing_protected_paths_hit) failing closed on every attempt. Check the fleet log'\''s own landing-refused reasons for the affected repository(ies) directly.\n\n'
+    printf -- '---\nFiled automatically by lib/pager.sh (issue #1280).\nref: %s\n' "$item"
+  } > "$body_file"
+  if created="$(_pager_create_issue "$repo" "$item" "pw::type:tech-debt" \
+        "Pager: landing-refused-unknown fired ($evidence)" "$body_file" "")" && [[ -n "$created" ]]; then
+    number="${created%%$'\t'*}"
+    rm -f "$body_file"
+    printf 'filed %s#%s (pw::type:tech-debt)' "$repo" "$number"
+    return 0
+  fi
+  rm -f "$body_file"
+  return 1
+}
+
+# _pager_ready_pr_candidates REPOS_JSON PR_LABEL CUTOFF_HOURS -> one
+# "<repo>\t<number>\t<url>\t<head>" line per open, non-draft, PR_LABEL pull
+# request, in every repo REPOS_JSON names, whose own `createdAt` is older
+# than CUTOFF_HOURS and whose `reviewDecision` names no terminal review at
+# all (empty or `REVIEW_REQUIRED`) — a superset of "no standing *App*
+# review" specific enough in practice, since a third party reviewing an
+# autonomous pipeline's own pull request ahead of the Approver is not the
+# ordinary case this invariant needs to rule out, and reading it straight off
+# the one `gh pr list` call every candidate repository needs anyway costs no
+# further per-pull-request API call the way a live per-pull-request read
+# (`landing_approver_standing_review_at`, which additionally needs the
+# Approver App's own login) would.
+_pager_ready_pr_candidates() {
+  local repos_json="$1" pr_label="$2" cutoff_hours="$3"
+  local gh cutoff repo open
+  gh="${PAGER_GH:-gh}"
+  cutoff="$(date -u -d "${cutoff_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  [[ -n "$cutoff" ]] || return 0
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    open="$("$gh" pr list -R "$repo" --state open --label "$pr_label" \
+      --json number,url,isDraft,reviewDecision,createdAt,headRefOid --limit 200 2>/dev/null || true)"
+    jq -e 'type == "array"' <<<"$open" >/dev/null 2>&1 || continue
+    jq -r --arg cutoff "$cutoff" --arg repo "$repo" '
+      .[] | select(.isDraft | not)
+      | select(((.reviewDecision // "") == "") or ((.reviewDecision // "") == "REVIEW_REQUIRED"))
+      | select((.createdAt // "") != "" and .createdAt < $cutoff)
+      | [$repo, (.number | tostring), .url, (.headRefOid // "")] | @tsv
+    ' <<<"$open" 2>/dev/null
+  done < <(jq -r '.[].slug' <<<"$repos_json" 2>/dev/null)
+}
+
+# _pager_pr_unreviewed_candidates REPOS_JSON PR_LABEL CUTOFF_HOURS
+#                                  UNION_LOG_FILE -> the same TSV shape as
+# _pager_ready_pr_candidates, narrowed to the pull requests requirement 46's
+# own unreviewed trigger (agent-ops#890) has never once touched at all: no
+# approver-verdict, no warning naming it, and no approver-unreviewed-engaged
+# event for its own pr_url anywhere in UNION_LOG_FILE. Never merely stale —
+# total silence, the #1081 signature (a sweep that returned before it ever
+# reached its own unreviewed-trigger loop, logging nothing at all about why).
+# Shared by the eval and remedy functions below, the same "one listing,
+# never re-derived twice" discipline every other invariant here follows.
+_pager_pr_unreviewed_candidates() {
+  local repos_json="$1" pr_label="$2" cutoff_hours="$3" union_log_file="$4"
+  [[ -n "$repos_json" && -n "$pr_label" ]] || return 0
+  [[ "$cutoff_hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+  local raw touched='[]'
+  raw="$(_pager_ready_pr_candidates "$repos_json" "$pr_label" "$cutoff_hours")"
+  [[ -n "$raw" ]] || return 0
+  if [[ -f "$union_log_file" ]]; then
+    touched="$(jq -c -R -n '
+      [ inputs | select(length > 0) | (fromjson? // empty)
+        | select(.event == "approver-verdict" or .event == "approver-unreviewed-engaged" or .event == "warning")
+        | (.pr_url // empty) | select(. != "") ] | unique
+    ' < "$union_log_file" 2>/dev/null)"
+    [[ -n "$touched" ]] || touched='[]'
+  fi
+  jq -R -r --argjson touched "$touched" '
+    (split("\t")) as $f
+    | select(($f | length) == 4)
+    | select(($touched | index($f[2])) == null)
+    | $f | @tsv
+  ' <<<"$raw" 2>/dev/null
+}
+
+# pager_eval_pr_unreviewed FLEET_NODES_JSON UNION_LOG_FILE
+# Fires when at least one ready, non-draft, PAGER_EVAL_PR_LABEL pull request,
+# older than PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS (requirement
+# 46's own cutoff, reused rather than duplicated), carries no standing
+# review, no approver-verdict, no Approver warning and no
+# approver-unreviewed-engaged event at all — requirement 46's own unreviewed
+# trigger never having run for it even once. Caught: PR #1059, stranded when
+# the kill-switch read failed closed with no log line (#1081) — exactly the
+# silent skip this invariant is built to notice from outside the sweep that
+# skipped.
+pager_eval_pr_unreviewed() {
+  local _fleet_nodes_json="$1" union_log_file="$2"
+  local repos_json="${PAGER_EVAL_REPOS_JSON:-}" pr_label="${PAGER_EVAL_PR_LABEL:-}" \
+        hours="${PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS:-}"
+  local hits
+  hits="$(_pager_pr_unreviewed_candidates "$repos_json" "$pr_label" "$hours" "$union_log_file")"
+  [[ -n "$hits" ]] || { printf '{"firing":false}'; return 0; }
+  jq -Rsc '
+    (split("\n") | map(select(length > 0) | split("\t")) | map({repo: .[0], number: .[1]})) as $rows
+    | {firing: true, nodes: [],
+       evidence: ("\($rows | length) ready pull request(s) with no standing review, no approver-verdict, no Approver warning and no approver-unreviewed-engaged event at all — requirement 46'\''s own unreviewed trigger (agent-ops#890) never ran for them (the #1081 signature): "
+         + ($rows | map("\(.repo)#\(.number)") | join(", ")))}
+  ' <<<"$hits" 2>/dev/null || printf '{"firing":false}'
+}
+
+# pager_remedy_pr_unreviewed KEY EVIDENCE
+# Pipeline act: re-derives the same candidate set (never parses EVIDENCE's
+# own prose, `pager_remedy_page_outlived_item`'s own terms) and, for each,
+# logs the identical `approver-unreviewed-engaged` event requirement 46's own
+# sweep would (`result: "unavailable"` — truthful, since this framework has
+# no clone or model credential with which to post a real review itself, the
+# same host-independence this issue's own compatibility note requires).
+# Logging it is the "enqueue" the issue's own remedy text asks for: it starts
+# the escalate clock `_approver_restale_sweep_repo` reads
+# (`approver_unreviewed_prior_engagement`) for a pull request that clock had
+# never started for at all, so the very next ordinary sweep — any node, its
+# own next cycle, needing no signal from here to run — either posts a real
+# review or, once `approver_restale_escalate_after_hours` passes from this
+# logged engagement, escalates to `enabler_assignee` itself: the "file if a
+# second window passes" half of the issue's own remedy text, performed by
+# the sweep this remedy hands the baton to rather than reimplemented here.
+pager_remedy_pr_unreviewed() {
+  local _key="$1" _evidence="$2"
+  local repos_json="${PAGER_EVAL_REPOS_JSON:-}" pr_label="${PAGER_EVAL_PR_LABEL:-}" \
+        hours="${PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS:-}" \
+        union_log_file="${PAGER_REMEDY_UNION_LOG_FILE:-}" log_file="${PAGER_REMEDY_LOG_FILE:-}" \
+        node="${PAGER_REMEDY_NODE:-}" cycle="${PAGER_REMEDY_CYCLE:-}"
+  [[ -n "$log_file" ]] || { printf 'no PAGER_REMEDY_LOG_FILE — nothing to enqueue'; return 1; }
+  local hits repo number url head engaged=0
+  hits="$(_pager_pr_unreviewed_candidates "$repos_json" "$pr_label" "$hours" "$union_log_file")"
+  while IFS=$'\t' read -r repo number url head; do
+    [[ -n "$url" ]] || continue
+    pager_log_event "$log_file" "$node" "$cycle" "approver-unreviewed-engaged" \
+      "$(jq -nc --arg u "$url" --arg r "$repo" --arg h "$head" \
+        '{pr_url: $u, repo: $r, head: $h, result: "unavailable"}')"
+    engaged=$(( engaged + 1 ))
+  done <<<"$hits"
+  printf 'enqueued %d ready pull request(s) into requirement 46'\''s own retry/escalate memory (approver-unreviewed-engaged, result: unavailable)' "$engaged"
+}
+
 # pager_register_builtin_invariants [STALE_FILE_AFTER_MINUTES]
 # Register every built-in invariant above with lib/pager.sh's own registry.
 # Not top-level code (see this file's header). STALE_FILE_AFTER_MINUTES —
@@ -1126,4 +1489,11 @@ pager_register_builtin_invariants() {
     "More than pager_escalation_burst escalations were filed fleet-wide in the trailing 24h, or the same re-flag reason paged the same item twice (agent-ops#933's own signature: a mechanical burst from a handful of unfixed bugs). The evidence above carries the reason histogram — start from whichever reason recurs most."
   pager_register digest-truncated pager_eval_digest_truncated \
     pipeline-act pager_remedy_digest_truncated
+  # agent-ops#1280: the landing and approval class.
+  pager_register landing-never-armed pager_eval_landing_never_armed \
+    pipeline-act pager_remedy_landing_never_armed
+  pager_register landing-refused-unknown pager_eval_landing_refused_unknown \
+    pipeline-act pager_remedy_landing_refused_unknown
+  pager_register pr-unreviewed pager_eval_pr_unreviewed \
+    pipeline-act pager_remedy_pr_unreviewed
 }
