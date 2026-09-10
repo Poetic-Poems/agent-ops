@@ -36,6 +36,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/config-access.sh
+. "$SCRIPT_DIR/lib/config-access.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/disk-space.sh
@@ -110,12 +112,11 @@ DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)" 
   echo "collect-host-facts: could not read $CONFIG_FILE against $SCHEMA_FILE" >&2
   exit 2
 }
-cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
-
-state_dir="$(cfg '.state_dir')"
-[[ "$state_dir" == "~"* ]] && state_dir="$HOME${state_dir:1}"
-workspace_root="$(cfg '.workspace_root')"
-[[ "$workspace_root" == "~"* ]] && workspace_root="$HOME${workspace_root:1}"
+# `cfg` and `expand_home` come from lib/config-access.sh, sourced above —
+# the same two helpers agent-cycle.sh and review-cycle.sh read their own
+# config through (agent-ops#967), rather than a third private copy here.
+state_dir="$(expand_home "$(cfg '.state_dir')")"
+workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 
 node="$(host_facts_node_name)"
 generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
