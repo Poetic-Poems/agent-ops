@@ -541,6 +541,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The cgroupfs reboot hook no longer leaves a cgroup path Docker can poison**
+  (issue #1347). On `ockham-container`, an unclean restart left the node unable
+  to start **any** memory-limited container — including sidecars with no
+  `cgroup_parent` — with `runc` reporting `openat2
+  /sys/fs/cgroup/docker/<id>/memory.max: no such file or directory`.
+
+  Two faults composed. `scripts/cgroup-parent-setup.sh`'s `@reboot` hook ran
+  `mkdir` and then redirected into `memory.high`, but at boot the `memory`
+  controller is not yet delegated in the root's `cgroup.subtree_control`, so
+  the interface files do not exist and cgroupfs will not let a redirect create
+  them: the hook half-succeeded silently, leaving a controller-less cgroup.
+  `compose.yaml` then bind-mounted those paths, and Docker creates a missing
+  bind source **as a directory** — inside the cgroup filesystem a directory is
+  a cgroup, so `memory.high` became one, occupying the name the controller
+  needs. #1316 had extended the hook to write `memory.max` and
+  `memory.swap.max` too, so a failed boot could poison four paths rather than
+  one.
+
+  The script now delegates `memory` down every ancestor of the parent before
+  writing anything, removes any interface path it finds existing as a directory
+  (announcing the repair), and — the invariant that makes this recoverable —
+  **removes the parent it created if it cannot finish**, so there is no bare
+  directory left for Docker to mount over. A parent that already existed is
+  never removed, since it may hold containers. The reboot persistence is now a
+  generated script rewritten on each run rather than an inline `&&` chain, and
+  installing it replaces any earlier entry for the same parent, so the old form
+  does not survive an upgrade.
+
+  The systemd path was never affected: `poetic-1` and `poetic-2` came through
+  the same period untouched, because systemd creates the slice with controllers
+  already delegated and `Before=docker.service` holds the directory open from
+  boot. The parent-cgroup design is sound; the cgroupfs boot hook was the weak
+  part.
+
 - **The forge authoring App's token is now minted on demand, not once per
   cycle** (issue #1021, TD-PPagop-26082833). `lib/standdown.sh` used to
   resolve the App's installation token once, at stand-down, and export it

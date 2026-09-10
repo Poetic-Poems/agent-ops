@@ -2205,6 +2205,33 @@ implements.
       correctly configured first, so it still fires on a `livelocked` or
       `unconfirmed` node, which is the exact gap this incident fell through.
 
+      On a `cgroupfs` host the parent is a plain cgroup directory, and
+      `scripts/cgroup-parent-setup.sh` delegates the `memory` controller down
+      every ancestor of that directory — writing `+memory` to each
+      `cgroup.subtree_control` — before it writes any ceiling. A cgroup's
+      interface files exist only because an ancestor delegated the controller,
+      so without this the parent has no `memory.high` to write to at all. It
+      also removes any of the four interface paths it finds existing as a
+      *directory* rather than a file, and reports doing so: Docker creates a
+      missing bind source as a directory, and inside the cgroup filesystem a
+      directory is a cgroup, so a `memory.high` that is a directory occupies
+      the name the controller must use and the real file can never appear
+      there.
+
+      Two invariants follow, and both are what make the failure recoverable
+      rather than terminal. A run that cannot finish **removes the parent it
+      created**, so there is no bare directory left for Docker to mount a
+      cgroup over — a parent that already existed is never removed, since it
+      may hold containers. And the reboot persistence on such a host is a
+      generated script (`/usr/local/sbin/agent-ops-cgroup-parent-<name>.sh`,
+      rewritten on every run) that repeats those same steps in the same
+      order, rather than a chain of `&&`-joined writes inline in a crontab
+      entry: the inline form could not delegate, could not distinguish a
+      missing file from a failed write, reported neither, and left exactly
+      the directory Docker then poisoned (agent-ops#1347). Installing the
+      hook replaces any earlier entry naming the same parent, so the old form
+      does not survive an upgrade.
+
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
       is as fresh as the last state-sync fetch; `fleet/limit.json` on the

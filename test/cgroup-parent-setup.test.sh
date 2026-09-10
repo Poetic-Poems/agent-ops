@@ -109,6 +109,23 @@ printf '%s' "${STUB_UID:-0}"
 STUB
 chmod +x "$stub_bin/id"
 
+# crontab, because the boot-hook path installs one and this suite must never
+# touch the real user's. An earlier draft of these tests did exactly that,
+# leaving two @reboot entries pointing at deleted temp directories. The stub
+# records what would have been installed in CRONTAB_SPOOL so a test can assert
+# on it, and answers `-l` from that same file so the replace-don't-append
+# behaviour is observable.
+cat > "$stub_bin/crontab" <<'STUB'
+#!/usr/bin/env bash
+spool="${CRONTAB_SPOOL:?CRONTAB_SPOOL must be set - refusing to touch a real crontab}"
+if [[ "${1:-}" == "-l" ]]; then
+  [[ -f "$spool" ]] && cat "$spool"
+  exit 0
+fi
+cat "${1:-/dev/stdin}" > "$spool"
+STUB
+chmod +x "$stub_bin/crontab"
+
 root_n=0
 fresh_roots() {  # fresh_roots — a clean pair of fixture roots per call
   root_n=$(( root_n + 1 ))
@@ -319,6 +336,88 @@ assert_eq "…written to memory.max as the literal cgroupfs word, never systemd'
   "max" "$(cat "$parent_dir/memory.max")"
 assert_eq "…and to memory.swap.max the same way" \
   "max" "$(cat "$parent_dir/memory.swap.max")"
+
+# --- Delegation, poisoned paths, and leaving no bait (agent-ops#1347) ---------
+#
+# The failure these cover took ockham-container off the air: the reboot hook
+# created the parent, could not write the interface files because the memory
+# controller was not delegated yet, and left a bare directory that Docker then
+# populated with a cgroup named `memory.high`. The invariant worth protecting
+# is the last one — a run that cannot finish must leave nothing behind.
+
+fresh_roots
+printf 'cpuset cpu io memory pids\n' > "$sys_root/cgroup.controllers"
+printf 'cpuset cpu io pids\n' > "$sys_root/cgroup.subtree_control"
+run_setup STUB_DRIVER=cgroupfs CGROUP_PARENT_SYS_ROOT="$sys_root" CGROUP_PARENT_UNIT_DIR="$unit_dir" \
+  CGROUP_PARENT_HELPER_DIR="$tmp_dir/sbin-$root_n" -- \
+  --name agentops-d1 --limit 768m --no-boot-hook
+assert_eq "an undelegated root is delegated rather than written through" "0" "$rc"
+assert_contains "…and says which cgroup it delegated to" \
+  "delegated the memory controller to the children of $sys_root" "$out"
+assert_contains "…leaving memory in subtree_control" "memory" "$(cat "$sys_root/cgroup.subtree_control")"
+
+fresh_roots
+printf 'cpuset cpu io pids\n' > "$sys_root/cgroup.controllers"
+printf 'cpuset cpu io pids\n' > "$sys_root/cgroup.subtree_control"
+run_setup STUB_DRIVER=cgroupfs CGROUP_PARENT_SYS_ROOT="$sys_root" CGROUP_PARENT_UNIT_DIR="$unit_dir" \
+  CGROUP_PARENT_HELPER_DIR="$tmp_dir/sbin-$root_n" -- \
+  --name agentops-d2 --limit 768m --no-boot-hook
+assert_eq "a host whose kernel has no memory controller is refused, not half-done" "1" "$rc"
+assert_contains "…naming the reason" "memory controller is not available" "$out"
+assert_eq "…and the parent it created is removed, so Docker has nothing to mount over" \
+  "absent" "$([ -e "$sys_root/agentops-d2" ] && echo present || echo absent)"
+
+fresh_roots
+printf 'cpuset cpu io memory pids\n' > "$sys_root/cgroup.controllers"
+printf 'cpuset cpu io memory pids\n' > "$sys_root/cgroup.subtree_control"
+mkdir -p "$sys_root/agentops-d3/memory.high"
+run_setup STUB_DRIVER=cgroupfs CGROUP_PARENT_SYS_ROOT="$sys_root" CGROUP_PARENT_UNIT_DIR="$unit_dir" \
+  CGROUP_PARENT_HELPER_DIR="$tmp_dir/sbin-$root_n" -- \
+  --name agentops-d3 --limit 768m --no-boot-hook
+assert_eq "a poisoned interface path is repaired rather than fatal" "0" "$rc"
+assert_contains "…and the repair is announced" "is a directory, not a file" "$out"
+assert_eq "…leaving memory.high a real file again" \
+  "805306368" "$(cat "$sys_root/agentops-d3/memory.high" 2>/dev/null)"
+
+fresh_roots
+printf 'cpuset cpu io pids\n' > "$sys_root/cgroup.controllers"
+printf 'cpuset cpu io pids\n' > "$sys_root/cgroup.subtree_control"
+mkdir -p "$sys_root/agentops-d4"
+printf 'pre-existing\n' > "$sys_root/agentops-d4/marker"
+run_setup STUB_DRIVER=cgroupfs CGROUP_PARENT_SYS_ROOT="$sys_root" CGROUP_PARENT_UNIT_DIR="$unit_dir" \
+  CGROUP_PARENT_HELPER_DIR="$tmp_dir/sbin-$root_n" -- \
+  --name agentops-d4 --limit 768m --no-boot-hook
+assert_eq "a parent this run did not create is never removed on failure" \
+  "present" "$([ -e "$sys_root/agentops-d4/marker" ] && echo present || echo absent)"
+
+# --- The reboot hook is a generated script, not an inline chain ----------------
+
+fresh_roots
+helper_dir="$tmp_dir/sbin-$root_n"
+spool="$tmp_dir/crontab-$root_n"
+printf 'cpuset cpu io memory pids\n' > "$sys_root/cgroup.controllers"
+printf 'cpuset cpu io memory pids\n' > "$sys_root/cgroup.subtree_control"
+# Seed the spool with the old inline chain this change replaces, plus an
+# unrelated line that must survive.
+printf '@reboot mkdir -p %s/agentops-h1 && echo 1 > %s/agentops-h1/memory.high\n4 4 * * * updatedb\n' \
+  "$sys_root" "$sys_root" > "$spool"
+run_setup STUB_DRIVER=cgroupfs CGROUP_PARENT_SYS_ROOT="$sys_root" CGROUP_PARENT_UNIT_DIR="$unit_dir" \
+  CRONTAB_SPOOL="$spool" CGROUP_PARENT_HELPER_DIR="$helper_dir" -- \
+  --name agentops-h1 --limit 768m
+helper="$helper_dir/agent-ops-cgroup-parent-agentops-h1.sh"
+assert_eq "the boot hook is written as its own script" \
+  "yes" "$([ -x "$helper" ] && echo yes || echo no)"
+assert_contains "…which delegates the controller before writing" \
+  "cgroup.subtree_control" "$(cat "$helper" 2>/dev/null)"
+assert_contains "…clears a poisoned path" "rmdir" "$(cat "$helper" 2>/dev/null)"
+assert_contains "…and removes the parent again if the files never appeared" \
+  "left nothing for Docker to mount over" "$(cat "$helper" 2>/dev/null)"
+assert_eq "installing it replaces the old inline chain rather than appending" \
+  "0" "$(grep -c 'mkdir -p .* && echo' "$spool" 2>/dev/null)"
+assert_eq "…leaving exactly one hook for this parent" \
+  "1" "$(grep -c 'agent-ops-cgroup-parent-agentops-h1.sh' "$spool" 2>/dev/null)"
+assert_eq "…and unrelated crontab lines untouched" \
+  "1" "$(grep -c 'updatedb' "$spool" 2>/dev/null)"
 
 # --- shellcheck ---
 

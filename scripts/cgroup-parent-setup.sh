@@ -74,6 +74,12 @@
 #   * systemd is not always PID 1 even when it is installed. The ockham node
 #     is a WSL2 host with `systemd 249` on disk and `init(Ubuntu)` as PID 1,
 #     so it gets a crontab `@reboot` hook where a systemd host gets a unit.
+#     Either way the hook runs a script this file generates, never an inline
+#     chain of writes: at boot it must delegate the `memory` controller before
+#     it can write anything, and must leave the parent absent if it cannot —
+#     the inline form did neither, and a node that came up with a bare
+#     directory had it turned into a poisoned cgroup by Docker's bind-mount
+#     auto-creation (agent-ops#1347).
 #
 # So the driver is read from `docker info`, the slice path is derived from
 # systemd's own naming rule and cross-checked against `systemctl show` where
@@ -111,7 +117,10 @@
 #                  degrades every other container and the host itself long
 #                  before anything is killed.
 #   --check        report what is in force and change nothing.
-#   --no-boot-hook skip installing the reboot persistence (cgroupfs hosts).
+#   --no-boot-hook skip installing the reboot persistence (cgroupfs hosts). The
+#                  hook is a generated script under /usr/local/sbin, and
+#                  installing it replaces any earlier entry for the same
+#                  parent, so an upgrade does not leave two.
 #
 # Exit status: 0 on success or a clean `--check`, 1 on error, 2 on a `--check`
 # that found the parent absent, unbounded, or in the livelock band (a real
@@ -126,6 +135,7 @@ set -uo pipefail
 # own real cgroup.
 : "${CGROUP_PARENT_SYS_ROOT:=/sys/fs/cgroup}"
 : "${CGROUP_PARENT_UNIT_DIR:=/etc/systemd/system}"
+: "${CGROUP_PARENT_HELPER_DIR:=/usr/local/sbin}"
 
 name=""
 limit="768m"
@@ -237,6 +247,81 @@ high_file="$parent_dir/memory.high"
 max_file="$parent_dir/memory.max"
 swap_file="$parent_dir/memory.swap.max"
 
+# --- Keeping the cgroup writable, and un-poisoning it when it is not --------
+#
+# Two failure modes, both seen on ockham-container 2026-09-10
+# (agent-ops#1347), and both specific to a cgroupfs host with no systemd.
+#
+# A cgroup's interface files exist only because an *ancestor* delegates the
+# controller: `memory.high` appears under this parent only once `memory` is in
+# the root's `cgroup.subtree_control`. At boot, cron fires before anything has
+# done that, so a hook that runs `mkdir` and then redirects into `memory.high`
+# creates the directory and fails every write — cgroupfs will not create an
+# arbitrary file — leaving a controller-less cgroup and a non-zero exit nobody
+# reads.
+#
+# That gap is not inert, which is what turned a silent half-failure into an
+# unbootable node. compose bind-mounts these paths, and Docker creates a
+# missing bind source as a *directory*; inside cgroupfs a directory is a
+# cgroup. So `memory.high` becomes one, the name is occupied, and the
+# controller can never create the real file there — the path stays poisoned
+# until someone rmdir's it.
+#
+# Hence: delegate before writing, verify the files actually appeared, and
+# leave nothing behind if they did not.
+
+# delegate_memory CGROUP — make `memory` available to CGROUP's *children*.
+delegate_memory() {
+  local cg="$1"
+  # No `cgroup.controllers` at all means this is not a live cgroup v2 mount —
+  # a fixture, or a path that is simply a directory. Nothing to delegate
+  # through and nothing to complain about: the writes that follow are the
+  # honest test of whether this works, and they fail loudly on a real host.
+  [[ -e "$cg/cgroup.controllers" ]] || return 0
+  grep -qw memory "$cg/cgroup.controllers" 2>/dev/null \
+    || { printf 'the memory controller is not available in %s\n' \
+           "$cg/cgroup.controllers" >&2; return 1; }
+  grep -qw memory "$cg/cgroup.subtree_control" 2>/dev/null && return 0
+  printf '+memory\n' > "$cg/cgroup.subtree_control" 2>/dev/null \
+    || { printf 'cannot delegate the memory controller via %s\n' \
+           "$cg/cgroup.subtree_control" >&2; return 1; }
+  printf 'delegated the memory controller to the children of %s\n' "$cg"
+}
+
+# ensure_memory_delegated TARGET — delegate `memory` down every ancestor of
+# TARGET, creating the intermediate cgroups on the way, so that TARGET's own
+# interface files exist. A cgroup's `subtree_control` governs its children and
+# never itself, so the walk delegates at each ancestor and stops at TARGET.
+ensure_memory_delegated() {
+  local target="${1%/}" rel acc i n
+  local -a parts=()
+  rel="${target#"$CGROUP_PARENT_SYS_ROOT"}"; rel="${rel#/}"
+  [[ -n "$rel" ]] || return 0
+  IFS='/' read -ra parts <<< "$rel"
+  acc="$CGROUP_PARENT_SYS_ROOT"
+  n=${#parts[@]}
+  for (( i = 0; i < n; i++ )); do
+    delegate_memory "$acc" || return 1
+    acc="$acc/${parts[i]}"
+    [[ -d "$acc" ]] || mkdir "$acc" 2>/dev/null \
+      || { printf 'cannot create %s\n' "$acc" >&2; return 1; }
+  done
+}
+
+# clear_poisoned — remove any interface path that is a directory rather than a
+# file. Such a directory is an empty cgroup Docker created at a missing bind
+# source; removing it is what lets the controller create the real file.
+clear_poisoned() {
+  local p rc=0
+  for p in "$high_file" "$max_file" "$swap_file" "$parent_dir/memory.events"; do
+    [[ -d "$p" ]] || continue
+    printf 'repairing: %s is a directory, not a file — an empty cgroup Docker created at a missing bind source; removing it\n' "$p"
+    rmdir "$p" 2>/dev/null \
+      || { printf '  cannot remove %s — it has processes or children\n' "$p" >&2; rc=1; }
+  done
+  return "$rc"
+}
+
 report() {
   printf 'driver        %s (cgroup v%s)\n' "$driver" "$version"
   printf 'parent        %s\n' "$name${unit:+.slice}"
@@ -319,13 +404,52 @@ UNIT
       "$unit" "$limit_bytes" "$max_val" "$swap_val"
     ;;
   cgroupfs)
+    # Whether this run is the one that created the parent decides whether a
+    # failure below may remove it: never delete a parent that was already
+    # there and may have containers in it.
+    parent_was_absent=0
+    [[ -d "$parent_dir" ]] || parent_was_absent=1
     mkdir -p "$parent_dir" || die "cannot create $parent_dir"
-    printf '%s\n' "$max_val" > "$max_file" || die "cannot write $max_file"
+    # Order matters. A poisoned `memory.high` occupies the name the controller
+    # is about to create, so clear it first; then delegate, so the real files
+    # appear; then confirm they did, rather than discovering it at the first
+    # write. Leaving a bare directory behind on failure is what let Docker
+    # poison this path in the first place (agent-ops#1347), so unwind it.
+    unwind_parent() {
+      (( parent_was_absent )) && rmdir "$parent_dir" 2>/dev/null
+      return 0
+    }
+    clear_poisoned || { unwind_parent; die "cannot clear a poisoned interface path under $parent_dir"; }
+    ensure_memory_delegated "$parent_dir" \
+      || { unwind_parent; die "the memory controller could not be delegated to $parent_dir — nothing written, and the parent left absent so Docker cannot mount a directory over it"; }
+    clear_poisoned || { unwind_parent; die "cannot clear a poisoned interface path under $parent_dir"; }
+    # Removing a poisoned directory frees the name but does not by itself
+    # create the interface file. The kernel creates those when a cgroup is
+    # created, or when a controller is newly delegated to its parent — so if
+    # `memory` was already delegated, neither has happened and the name is now
+    # simply absent. Recreating the cgroup is what materialises them, and it
+    # is safe only while nothing lives in it: a parent with processes is a
+    # running node's, and removing it would take the containers with it.
+    if [[ ! -e "$high_file" ]]; then
+      if [[ -s "$parent_dir/cgroup.procs" ]]; then
+        die "$high_file is missing and $parent_dir has processes in it — stop the containers under this parent, then re-run"
+      fi
+      if rmdir "$parent_dir" 2>/dev/null; then
+        mkdir "$parent_dir" 2>/dev/null || true
+      fi
+    fi
+    # Each write is the real test of whether the controller is delegated: on a
+    # live cgroupfs an undelegated parent has no such file and the redirect
+    # fails. Unwind on the way out so a partial run leaves no bare directory
+    # for Docker to mount a cgroup over.
+    printf '%s\n' "$max_val" > "$max_file" \
+      || { unwind_parent; die "cannot write $max_file"; }
     printf 'set %s = %s\n' "$max_file" "$max_val"
-    printf '%s\n' "$swap_val" > "$swap_file" || die "cannot write $swap_file"
+    printf '%s\n' "$swap_val" > "$swap_file" \
+      || { unwind_parent; die "cannot write $swap_file"; }
     printf 'set %s = %s\n' "$swap_file" "$swap_val"
     printf '%s\n' "$limit_bytes" > "$high_file" \
-      || die "cannot write $high_file"
+      || { unwind_parent; die "cannot write $high_file"; }
     printf 'set %s = %s\n' "$high_file" "$limit_bytes"
     # A cgroupfs parent is a directory in a virtual filesystem: it survives
     # container recreation (verified 2026-09-08) but not a reboot, which
@@ -335,9 +459,57 @@ UNIT
     # reboot-restored memory.high with no restored hard ceiling is the
     # livelock band all over again (agent-ops#1305).
     if ((boot_hook)); then
-      hook="mkdir -p $parent_dir && echo $max_val > $max_file && echo $swap_val > $swap_file && echo $limit_bytes > $high_file"
+      # A generated script, not an inline `&&` chain in a crontab entry. The
+      # chain was the whole of agent-ops#1347: it could not delegate the
+      # controller, could not tell a missing file from a failed write, and
+      # reported neither — while leaving behind exactly the bare directory
+      # Docker then turned into a poisoned cgroup. This does the same three
+      # things the interactive path above does, in the same order, and removes
+      # the parent again if it cannot finish.
+      helper="$CGROUP_PARENT_HELPER_DIR/agent-ops-cgroup-parent-$name.sh"
+      mkdir -p "$CGROUP_PARENT_HELPER_DIR"
+      cat > "$helper" <<HELPER
+#!/bin/sh
+# Written by agent-ops scripts/cgroup-parent-setup.sh — regenerated whenever
+# that script runs, so edit the script, never this copy.
+#
+# Restores the parent cgroup '$name' after a reboot, which repopulates the
+# cgroup filesystem empty. Runs before dockerd where the init system can order
+# it, and is safe to run after: every step is idempotent.
+set -e
+root='$CGROUP_PARENT_SYS_ROOT'
+dir='$parent_dir'
+
+mkdir -p "\$dir"
+
+# Clear any interface path Docker created as a directory at a missing bind
+# source; it occupies the name the controller needs.
+for f in memory.high memory.max memory.swap.max memory.events; do
+  if [ -d "\$dir/\$f" ]; then rmdir "\$dir/\$f" 2>/dev/null || true; fi
+done
+
+# Delegate the memory controller; without this the interface files below do
+# not exist and every write fails silently.
+grep -qw memory "\$root/cgroup.subtree_control" 2>/dev/null \\
+  || echo +memory > "\$root/cgroup.subtree_control"
+
+# Confirm rather than assume, and leave nothing behind if it did not work.
+for f in memory.max memory.swap.max memory.high; do
+  if [ ! -f "\$dir/\$f" ]; then
+    rmdir "\$dir" 2>/dev/null || true
+    echo "agent-ops: \$dir/\$f absent after delegating the memory controller; left nothing for Docker to mount over" >&2
+    exit 1
+  fi
+done
+
+echo $max_val > "\$dir/memory.max"
+echo $swap_val > "\$dir/memory.swap.max"
+echo $limit_bytes > "\$dir/memory.high"
+HELPER
+      chmod 0755 "$helper"
+      printf 'wrote %s\n' "$helper"
       if [[ "$(ps -p 1 -o comm=)" == "systemd" ]]; then
-        cat > "/etc/systemd/system/agent-ops-cgroup-parent-$name.service" <<UNIT
+        cat > "$CGROUP_PARENT_UNIT_DIR/agent-ops-cgroup-parent-$name.service" <<UNIT
 # Written by agent-ops scripts/cgroup-parent-setup.sh.
 [Unit]
 Description=agent-ops scheduler cgroup parent ($name)
@@ -346,7 +518,7 @@ Before=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c '$hook'
+ExecStart=$helper
 
 [Install]
 WantedBy=multi-user.target
@@ -356,13 +528,23 @@ UNIT
       else
         # systemd is installed on the ockham node but is not PID 1, so a unit
         # would never run. root's crontab is what does run there.
-        line="@reboot $hook"
-        if crontab -l 2>/dev/null | grep -Fqx "$line"; then
-          printf 'reboot hook already in root crontab\n'
+        # Replace rather than append, and drop any older entry for this same
+        # parent — including the inline `&&` chain earlier versions installed,
+        # which is the one that had to be removed by hand on ockham-container
+        # (agent-ops#1347). Matching on the parent directory catches both
+        # shapes without needing to recognise the old text.
+        line="@reboot $helper"
+        cron_tmp="$(mktemp)"
+        crontab -l 2>/dev/null \
+          | grep -v -F "$parent_dir" \
+          | grep -v -F "$helper" > "$cron_tmp" || true
+        printf '%s\n' "$line" >> "$cron_tmp"
+        if crontab "$cron_tmp"; then
+          printf 'installed reboot hook in root crontab: %s\n' "$line"
         else
-          { crontab -l 2>/dev/null; printf '%s\n' "$line"; } | crontab - \
-            && printf 'installed reboot hook in root crontab\n'
+          printf 'could not install the reboot hook in root crontab\n' >&2
         fi
+        rm -f "$cron_tmp"
       fi
     fi
     ;;
