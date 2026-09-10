@@ -44,6 +44,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read-only socket it mounts, and carries the workspaces volume so the
   viewer-vantage probe can enumerate this node's peers.
 
+- **Host-budget stand-down** (issue #757, requirement 2.0g): per-container
+  ceilings (D14, #606) bound one container's blast radius, but Docker
+  reserves nothing, so nothing before this checked whether the *sum* of
+  every container's ceiling still fit the host it shares with its
+  siblings — the two-Compose-projects-per-host layout
+  `deploy/docker/compose.yaml`'s own D14 comment already reasons about by
+  hand. The host-facts record now also publishes the host's own total
+  memory and CPU count, and the compose driver's record gains a `budget`
+  section summing every running container's declared `memory.max_bytes`/
+  `cpu.limit_nanos` from the same Docker socket the collector already
+  reads (`lib/host-budget.sh`, `docs/HOST-FACTS-SCHEMA.md`). `lib/
+  standdown.sh` stands a cycle down with `cause: "host-overcommit"`,
+  arithmetic included in the `reason`, when the declared sum overcommits
+  the host — gated by the new `host_budget_enforce` config key
+  (`false` by default: advisory only, the figures still published and
+  visible, nothing refused, until an operator opts in) and two configured
+  reserve margins (`host_budget_reserved_memory_bytes`,
+  `host_budget_reserved_cpus`). `scripts/doctor.sh` gains a matching
+  advisory "Host budget" section reading the same record.
+
 - **Overrun-slot skips** (issue #1287, requirement 11a): supercronic drops a
   firing silently when the previous cycle's job is still running, logging
   only to a container log the fleet never reads — a cycle running long lost
