@@ -637,6 +637,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the matched digest event's own `ts`, so it only ever compares like for
   like.
 
+- **A fractional `approver_unreviewed_engage_after_hours` or
+  `approver_restale_escalate_after_hours` no longer silently disables
+  requirement 46's sweep and the `pr-unreviewed` pager invariant** (issue
+  #1353). Both keys are schema-legal `number`s, but every cutoff derived from
+  one was computed with GNU date's relative parser
+  (`date -u -d "${hours} hours ago"`), which rejects a fractional value like
+  `1.5` outright — `lib/approver.sh`'s `_approver_restale_sweep_repo` (three
+  sites: stale-review escalate, unreviewed-engage, unreviewed-escalate) and
+  `lib/pager-invariants.sh`'s `_pager_ready_pr_candidates` each failed safe to
+  an empty cutoff and quietly never fired, with no warning logged anywhere —
+  so one schema-legal config value could disable the watchdog and the
+  invariant that watches it at once. All four sites now compute the cutoff
+  with jq arithmetic (`now - hours*3600 | strftime(...)`), which honours the
+  schema's declared `number` type instead of narrowing it and produces the
+  identical `%Y-%m-%dT%H:%M:%SZ` UTC string every downstream comparison
+  already expects.
+
 - **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
   timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
   --paginate --jq` re-runs its filter once per page and prints each page's
