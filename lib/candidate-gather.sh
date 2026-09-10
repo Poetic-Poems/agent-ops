@@ -594,8 +594,39 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # byte the Co-Ordinator pays to read. A cost-control feature that grows the
   # prompt it is meant to avoid buying has not saved anything.
   state="$(gather_source_state "$slug" "$default_branch")"
+  # agent-ops#1281's digest-truncated pager invariant: a veto this repo's
+  # digest earned in an earlier cycle (a fleet-level live paginated count
+  # that disagreed with this digest's own already-fetched counts — cheaper
+  # to check once per pager evaluation than once per node per cycle here)
+  # forces `ok: false` for the vetoed window, so `work_gone_clearances`'s own
+  # `ok == true` gate — "unknown decides nothing" — refuses to act on this
+  # repo's absence exactly as it already does for a failed `gh` read.
+  if [[ "$(jq -r '.ok // false' <<<"$state" 2>/dev/null)" == "true" ]]; then
+    digest_veto_active="$(jq -R -n --arg r "$slug" --argjson now "$(date -u +%s)" '
+      86400 as $w
+      | [ inputs | select(length > 0) | (fromjson? // empty)
+          | select(.event == "digest-truncation-veto" and (.repo // "") == $r)
+          | select((try (.ts | fromdateiso8601) catch null) != null)
+          | select(($now - (.ts | fromdateiso8601)) <= $w) ] | length > 0
+    ' < "$union_log" 2>/dev/null || printf 'false')"
+    if [[ "$digest_veto_active" == "true" ]]; then
+      state="$(jq -c '.ok = false' <<<"$state" 2>/dev/null || printf '%s' "$state")"
+      log_event "warning" "$(jq -nc --arg r "$slug" \
+        --arg d "a fleet-level digest-truncated page vetoed this cycle's source-state digest for $slug — work-gone clearances are refused against it until the page clears" \
+        '{detail: $d, repo: $r}')"
+    fi
+  fi
   source_states_json="$(jq -nc 'input as $arr | input as $s | $arr + [$s]' \
     <<<"$source_states_json"$'\n'"$state")"
+  # Fleet-visible digest summary (agent-ops#1281's own digest-truncated
+  # invariant): the counts alone, already fetched above — no extra `gh`
+  # call — so a peer node's own pager evaluation can compare them against a
+  # live paginated total it fetches itself, once per evaluation rather than
+  # once per node per cycle.
+  digest_summary_json="$(jq -c --arg r "$slug" \
+    '{repo: $r, ok: (.ok // false), issues_count: ((.issues // []) | length), open_prs_count: ((.open_prs // []) | length)}' \
+    <<<"$state" 2>/dev/null)"
+  [[ -n "$digest_summary_json" ]] && log_event "source-state-digest" "$digest_summary_json"
   # Requirement 34f, gathered here for the repo loop's one `gh` budget but read
   # below, before the skip-lists: a human's instruction to reopen a void has to
   # land *before* the extract the Co-Ordinator is handed, not after it.
