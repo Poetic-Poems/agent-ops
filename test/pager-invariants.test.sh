@@ -452,28 +452,60 @@ ns_ev() {  # ns_ev TS NODE CYCLE STATE CAUSE
     '{ts: $ts, node: $n, cycle: $c, event: "node-state", state: $s, cause: $cause}'
 }
 idle_log="$WORKDIR/idle.jsonl"
+# One cycle is several `node-state` events, not one, and this fixture says so:
+# agent-cycle.sh logs `overhead` unconditionally at the top of every cycle
+# that takes the lock and one more transition per stage-start, and only
+# `finalize_node_state_for_cycle` — the last event of the cycle — says how the
+# cycle *ended*. A fixture carrying terminal events alone would let an
+# invariant that reads the last N *events* pass here while never firing on a
+# real union log, which is exactly what this shape exists to prevent.
 write_log "$idle_log" \
+  "$(ns_ev "$(rel -920)" n1 c1 overhead "")" \
+  "$(ns_ev "$(rel -910)" n1 c1 overhead "")" \
   "$(ns_ev "$(rel -900)" n1 c1 idle-with-demand awaiting-tick)" \
+  "$(ns_ev "$(rel -620)" n1 c2 overhead "")" \
+  "$(ns_ev "$(rel -610)" n1 c2 overhead "")" \
   "$(ns_ev "$(rel -600)" n1 c2 idle-with-demand peer-claimed)" \
+  "$(ns_ev "$(rel -320)" n1 c3 overhead "")" \
   "$(ns_ev "$(rel -300)" n1 c3 idle-with-demand coordinator-declined)" \
   "$(cycle_ev "$(rel -650)" n1 c2 none-selected '{"reason":"nothing eligible clears the model'"'"'s own bar","eligible_total":4}')" \
   "$(cycle_ev "$(rel -910)" n1 c1 coordinator-input-fitted '{"detail":"trimmed to rung 3","rung":3}')" \
+  "$(ns_ev "$(rel -920)" n2 c1 overhead "")" \
   "$(ns_ev "$(rel -900)" n2 c1 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -620)" n2 c2 overhead "")" \
   "$(ns_ev "$(rel -600)" n2 c2 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -320)" n2 c3 overhead "")" \
   "$(ns_ev "$(rel -300)" n2 c3 idle-with-demand back-pressure)" \
+  "$(ns_ev "$(rel -920)" n3 c1 overhead "")" \
   "$(ns_ev "$(rel -900)" n3 c1 idle-with-demand awaiting-tick)" \
-  "$(ns_ev "$(rel -600)" n3 c2 producing "")"
+  "$(ns_ev "$(rel -620)" n3 c2 overhead "")" \
+  "$(ns_ev "$(rel -610)" n3 c2 producing "")" \
+  "$(ns_ev "$(rel -600)" n3 c2 idle-without-demand no-demand)" \
+  "$(ns_ev "$(rel -320)" n3 c3 overhead "")" \
+  "$(ns_ev "$(rel -300)" n3 c3 idle-with-demand awaiting-tick)"
 idle_nodes="$(fleet3 "$(node_row n1 false "" "" "")" "$(node_row n2 false "" "" "")" \
   "$(node_row n3 false "" "" "")")"
 PAGER_EVAL_IDLE_CYCLES=3
 verdict="$(pager_eval_idle_with_demand "$idle_nodes" "$idle_log")"
-assert_eq "last 3 cycles all idle-with-demand (excluding back-pressure): fires" "true" \
+assert_eq "last 3 cycles all ended idle-with-demand (excluding back-pressure): fires" "true" \
   "$(jq -r '.firing' <<<"$verdict")"
 assert_eq "  ... names exactly n1" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
+assert_eq "  ... the per-cycle overhead transitions between them do not break the streak" "1" \
+  "$(jq -r '.nodes | index("n1") != null' <<<"$verdict" | grep -c true)"
 assert_eq "  ... n2's own back-pressure cycles are excluded" "0" \
   "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
-assert_eq "  ... n3's one producing cycle breaks the streak" "0" \
+assert_eq "  ... n3's one cycle that ended without demand breaks the streak" "0" \
   "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
+
+idle_log_short="$WORKDIR/idle-short.jsonl"
+write_log "$idle_log_short" \
+  "$(ns_ev "$(rel -620)" n1 c1 overhead "")" \
+  "$(ns_ev "$(rel -610)" n1 c1 overhead "")" \
+  "$(ns_ev "$(rel -600)" n1 c1 idle-with-demand awaiting-tick)" \
+  "$(ns_ev "$(rel -320)" n1 c2 overhead "")" \
+  "$(ns_ev "$(rel -300)" n1 c2 idle-with-demand awaiting-tick)"
+assert_eq "two idle cycles' worth of events, however many: an incomplete window decides nothing" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_idle_with_demand "$idle_nodes" "$idle_log_short")")"
 assert_eq "  ... evidence carries the none-selected reason" "1" \
   "$(grep -c 'nothing eligible clears' <<<"$(jq -r '.evidence' <<<"$verdict")")"
 assert_eq "  ... evidence carries the fit report" "1" \
@@ -491,16 +523,29 @@ fit_ev() {  # fit_ev TS NODE CYCLE RUNG DROPPED
     '{ts: $ts, node: $n, cycle: $c, event: "coordinator-input-fitted", rung: $rung, entries_dropped: $dropped}'
 }
 fit_log="$WORKDIR/fit.jsonl"
+# n1 sits at the ladder's very last notch; n2 sits at rung 9, the *first* of
+# the entry caps and the rung agent-ops#1281's own evidence records
+# (`poetic-1`, 48–68 entries dropped in 149 of 150 fitted cycles from
+# 2026-09-04) — both are the ladder out of prose to shed and dropping whole
+# entries, which is what this invariant is about. n3 comes back up to a prose
+# rung, dropping nothing, within the window.
 write_log "$fit_log" \
   "$(fit_ev "$(rel -7200)" n1 c1 15 12)" \
   "$(fit_ev "$(rel -3600)" n1 c2 15 30)" \
-  "$(fit_ev "$(rel -900)" n2 c1 15 8)" \
-  "$(fit_ev "$(rel -300)" n2 c2 6 0)"
+  "$(fit_ev "$(rel -7200)" n2 c1 9 48)" \
+  "$(fit_ev "$(rel -3600)" n2 c2 9 68)" \
+  "$(fit_ev "$(rel -900)" n3 c1 9 8)" \
+  "$(fit_ev "$(rel -300)" n3 c2 6 0)"
 verdict="$(pager_eval_fit_ladder_pinned "[]" "$fit_log")"
-assert_eq "every fitted cycle at the top rung with drops: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
-assert_eq "  ... names exactly n1" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
-assert_eq "  ... n2 (one cycle back off the top rung) is excluded" "0" \
+assert_eq "every fitted cycle in the entry-dropping segment: fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... names n1, pinned at the ladder's last notch" "1" \
+  "$(jq -r '.nodes | index("n1") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... names n2 too, pinned at rung 9 — agent-ops#1128's own shape" "1" \
   "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
+assert_eq "  ... evidence carries n2's own rung and drop range" "1" \
+  "$(grep -c 'n2 (2 cycle(s) at rung 9-9, 48-68 entries dropped)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... n3 (one cycle back up to a prose rung, dropping nothing) is excluded" "0" \
+  "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
 
 fit_log_none="$WORKDIR/fit-none.jsonl"
 write_log "$fit_log_none" "$(fit_ev "$(rel -100000)" n1 c1 15 12)"
@@ -599,6 +644,22 @@ write_log "$claim_log_failed" \
 assert_eq "an escalation-failed outcome (never claimed escalate): does not fire" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_claim_unreconciled "[]" "$claim_log_failed")")"
 
+# The union log is never rotated (scripts/rotate-logs.sh), so an unwindowed
+# reading would fire on agent-ops#815's own original incident for ever and
+# could never clear — and the remedy would comment on items settled months
+# ago. Both the eval and its remedy are bound to the trailing 24h.
+claim_log_old="$WORKDIR/claim-old.jsonl"
+write_log "$claim_log_old" \
+  "$(cycle_ev "$(rel -172800)" n1 c1 enabler-examined '{"repo":"o/r","item":"9","outcome":"escalate"}')"
+assert_eq "an unreconciled claim older than the trailing 24h: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_claim_unreconciled "[]" "$claim_log_old")")"
+: > "$GH_CALLS_FILE"
+PAGER_REMEDY_UNION_LOG_FILE="$claim_log_old"
+assert_eq "  ... and its remedy comments on nothing" \
+  "no unreconciled claim found on re-check — nothing to correct" \
+  "$(pager_remedy_claim_unreconciled claim-unreconciled "irrelevant, re-derived live")"
+assert_eq "  ... posting no comment at all" "0" "$(grep -c '^issue comment' "$GH_CALLS_FILE")"
+
 # --- escalation-burst (agent-ops#1281) --------------------------------------
 
 esc_ev() { jq -nc --arg ts "$1" --arg n "$2" --arg c "$3" --arg r "$4" --arg i "$5" \
@@ -625,6 +686,16 @@ verdict="$(pager_eval_escalation_burst "[]" "$reflag_log")"
 assert_eq "the same re-flag reason paged the same item twice: fires despite a high burst threshold" \
   "true" "$(jq -r '.firing' <<<"$verdict")"
 assert_eq "  ... evidence names the reflagged item" "1" "$(grep -c 'o/r#9 reflagged 2x' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+reflag_log_old="$WORKDIR/reflag-old.jsonl"
+write_log "$reflag_log_old" \
+  "$(cycle_ev "$(rel -176400)" n1 c1 attempt-failed '{"repo":"o/r","item":"9","detail":"cannot tell what done means","unblock_condition":"a human clarifies scope"}')" \
+  "$(esc_ev "$(rel -176000)" n1 c1 o/r 9)" \
+  "$(cycle_ev "$(rel -175000)" n1 c2 attempt-failed '{"repo":"o/r","item":"9","detail":"cannot tell what done means","unblock_condition":"a human clarifies scope"}')" \
+  "$(esc_ev "$(rel -174000)" n1 c2 o/r 9)"
+PAGER_EVAL_ESCALATION_BURST=10
+assert_eq "the same re-flag reason, but outside the trailing 24h: does not fire" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_escalation_burst "[]" "$reflag_log_old")")"
 
 PAGER_EVAL_ESCALATION_BURST=""
 assert_eq "no configured burst threshold: never fires" "false" \

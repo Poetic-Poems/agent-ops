@@ -84,11 +84,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in August and September, this time read from the Co-Ordinator's own
   selection/fit machinery and from the block/escalation ledger.
   `idle-with-demand` (owner-only; an active node's last `pager_idle_cycles`,
-  default 6, `node-state` events all read `idle-with-demand` with a cause
+  default 6, cycles — each read from its own last `node-state` event, since
+  several are logged per cycle — all ended `idle-with-demand` with a cause
   other than `back-pressure` — evidence carries the node's own most recent
   `none-selected` reason and `coordinator-input-fitted` detail).
-  `fit-ladder-pinned` (owner-only; `coordinator-input-fitted` pinned at the
-  ladder's own top rung with entries dropped on every fitted cycle for 24h).
+  `fit-ladder-pinned` (owner-only; `coordinator-input-fitted` pinned in the
+  ladder's own entry-dropping segment — rung 9 or tighter, where #1128's own
+  evidence sat — with entries dropped on every fitted cycle for 24h).
   `work-order-repaired-rate` (owner-only; more than `pager_repair_rate_
   percent`, default 20, of a trailing 24h's selections needed a
   work-order-repaired repair — #821's own signature). `blocked-label-
@@ -96,12 +98,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with no open block behind it — the remedy calls requirement 38b's own
   release path, `refinement_label_remove`, directly, never a
   reimplementation). `claim-unreconciled` (pipeline-act; an Enabler escalate
-  verdict with no matching `escalated`/`tech-debt-filed` event in the same
+  verdict in the trailing 24h with no matching `escalated`/`tech-debt-filed`
+  event in the same
   cycle — #815's own signature recurring; the remedy posts one correction
   comment naming what could not be confirmed). `escalation-burst`
   (owner-only; more than `pager_escalation_burst`, default 10, escalations
   filed fleet-wide in 24h, or the same re-flag reason paging the same item
-  twice — fingerprinted with `escalation_autonomy_decide_reason_key`, reused
+  twice inside that window — fingerprinted with `escalation_autonomy_decide_reason_key`, reused
   from requirement 36d). `digest-truncated` (pipeline-act; a repo's
   `source-state-digest` undercounting a live paginated total this
   invariant fetches itself — #1165's own signature recurring; the remedy

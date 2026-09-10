@@ -95,8 +95,10 @@
 # digest-truncated):
 #
 #   idle-with-demand        an active node whose last `pager_idle_cycles`
-#                           `node-state` events (lib/node-time-state.sh,
-#                           D21) all read `idle-with-demand` with a cause
+#                           *cycles* — each one's own last `node-state`
+#                           event, since `node-state` is emitted several
+#                           times per cycle (lib/node-time-state.sh, D21) —
+#                           all end `idle-with-demand` with a cause
 #                           other than `back-pressure` (a deliberate
 #                           throttle, not a symptom) — the D21 state
 #                           vocabulary already excludes every externally-
@@ -109,10 +111,11 @@
 #                           fitted` detail, the two facts a diagnosis
 #                           starts from, but there is no fix a pipeline
 #                           could perform on the owner's behalf.
-#   fit-ladder-pinned       `coordinator-input-fitted` pinned at the
-#                           ladder's own top rung (lib/coordinator-
-#                           input.sh's `COORDINATOR_INPUT_TIERS` +
-#                           `COORDINATOR_INPUT_ENTRY_CAPS`, 8 + 7 = 15)
+#   fit-ladder-pinned       `coordinator-input-fitted` pinned in the
+#                           ladder's own entry-dropping segment — rung 9 or
+#                           tighter, the first of the 7 entry caps that
+#                           follow lib/coordinator-input.sh's 8 prose tiers,
+#                           which is the rung #1281's own evidence sat at —
 #                           with `entries_dropped > 0` in every fitted
 #                           cycle a node logged in the trailing 24h.
 #                           owner-only: raising `coordinator_prompt_max_
@@ -144,8 +147,9 @@
 #   claim-unreconciled      an `enabler-examined` event whose `outcome` is
 #                           the Enabler's own escalate verdict
 #                           (`lib/enabler.sh`'s `outcome="$verdict"`, never
-#                           reassigned on that path) with no `escalated` or
-#                           `tech-debt-filed` event for the same repo, item
+#                           reassigned on that path) in the trailing 24h
+#                           with no `escalated` or `tech-debt-filed` event
+#                           for the same repo, item
 #                           and cycle — agent-ops#815's own signature (#640
 #                           sat blocked five days on a claim an
 #                           adjudication pass had cancelled) recurring by a
@@ -163,9 +167,9 @@
 #                           `escalation_autonomy_decide_reason_key`,
 #                           lib/escalation-autonomy.sh — requirement 36d's
 #                           own per-reason bound, reused rather than
-#                           duplicated) paged the same item twice.
-#                           owner-only: the evidence carries the reason
-#                           histogram.
+#                           duplicated) paged the same item twice inside
+#                           that same window. owner-only: the evidence
+#                           carries the reason histogram.
 #   digest-truncated        a repo's most recent `source-state-digest`
 #                           event (lib/candidate-gather.sh, logged
 #                           alongside `gather_source_state`'s own already-
@@ -577,16 +581,35 @@ pager_eval_dashboard_unreadable() {
 
 # pager_eval_idle_with_demand FLEET_NODES_JSON UNION_LOG_FILE
 # Fires when an *active* node's (`.stale | not`) last PAGER_EVAL_IDLE_CYCLES
-# `node-state` events (lib/node-time-state.sh, D21) all read state
-# `idle-with-demand` with a cause other than `back-pressure` — a deliberate
-# throttle, not a symptom, and the one `idle-with-demand` cause the issue's
-# own exclusion list names that the D21 state vocabulary does not already
-# separate out on its own (every other named exclusion — usage-limit,
-# disk/memory, unauthorized, a fleet/kill-switch's own `down` — already logs
-# a *different* `node-state` state: `externally-blocked` or `down`). Fewer
-# than PAGER_EVAL_IDLE_CYCLES events for a node decides nothing — "last N
-# cycles" cannot be confirmed from an incomplete window, the same direction
-# every other "unknown decides nothing" guard in this codebase takes.
+# *cycles* all ended in state `idle-with-demand` (lib/node-time-state.sh,
+# D21) with a cause other than `back-pressure` — a deliberate throttle, not a
+# symptom, and the one `idle-with-demand` cause the issue's own exclusion
+# list names that the D21 state vocabulary does not already separate out on
+# its own (every other named exclusion — usage-limit, disk/memory,
+# unauthorized, a fleet/kill-switch's own `down` — already logs a *different*
+# `node-state` state: `externally-blocked` or `down`). Fewer than
+# PAGER_EVAL_IDLE_CYCLES cycles for a node decides nothing — "last N cycles"
+# cannot be confirmed from an incomplete window, the same direction every
+# other "unknown decides nothing" guard in this codebase takes.
+#
+# One cycle, not one event, and the distinction is the whole invariant:
+# `node-state` is emitted many times per cycle — `overhead` unconditionally
+# at the top of every cycle that takes the lock (agent-cycle.sh), and one
+# transition per `stage-start` (`producing` for the Implementer and the
+# Reviewer, `overhead` for every other actor) — so a run of
+# PAGER_EVAL_IDLE_CYCLES *consecutive events* all reading `idle-with-demand`
+# is a shape no cycling node can produce, and an invariant testing for one
+# would simply never fire. How a cycle *ended* is that cycle's own last
+# `node-state` event: `finalize_node_state_for_cycle`
+# (lib/node-time-state.sh) logs it once, at the very end of `cleanup`, after
+# the Enabler's and the Refiner's own transitions have had their chance to
+# add real overhead to the same timeline. So the events are grouped by the
+# `cycle` id every one of them carries, each cycle contributes its own last
+# event, and the window is applied to those. A tick that skipped
+# (`cycle-skipped`, whose `suppress_node_state_transitions` logs no
+# `node-state` at all) contributes nothing either way, which is the answer
+# this invariant wants: a tick that deferred to a cycle already running is
+# not a cycle that ended idle.
 pager_eval_idle_with_demand() {
   local fleet_nodes_json="$1" union_log_file="$2"
   local n="${PAGER_EVAL_IDLE_CYCLES:-}"
@@ -599,7 +622,9 @@ pager_eval_idle_with_demand() {
     | ($all | map(select(.event == "none-selected"))) as $none_selected
     | ($all | map(select(.event == "coordinator-input-fitted"))) as $fitted
     | ( [ $active[] as $node
-          | ($ns_all | map(select(.node == $node)) | sort_by(.ts)) as $node_ns
+          | ($ns_all | map(select(.node == $node))
+             | group_by(.cycle // "") | map(sort_by(.ts) | last)
+             | sort_by(.ts)) as $node_ns
           | if ($node_ns | length) < $n then empty
             else
               ($node_ns[-$n:]) as $window
@@ -626,19 +651,32 @@ pager_eval_idle_with_demand() {
 
 # pager_eval_fit_ladder_pinned FLEET_NODES_JSON UNION_LOG_FILE
 # Fires when a node's `coordinator-input-fitted` events (agent-cycle.sh,
-# lib/coordinator-input.sh) in the trailing 24h all land at the ladder's own
-# top rung (8 prose tiers + 7 entry caps = 15 — `COORDINATOR_INPUT_TIERS`/
-# `COORDINATOR_INPUT_ENTRY_CAPS`, a fixed constant of the ladder rather than a
+# lib/coordinator-input.sh) in the trailing 24h have *all* run out of prose
+# to shed and started dropping whole entries — rung 9 or tighter (the first
+# of the 7 entry-cap rungs that follow the 8 prose tiers:
+# `COORDINATOR_INPUT_TIERS` + 1, a fixed constant of the ladder rather than a
 # field either array carries) with `entries_dropped > 0` — a node whose
 # eligible backlog has outgrown `coordinator_prompt_max_bytes` on every
 # fitted cycle for a full day, not merely a one-off spike. A node with no
 # fitted cycle at all in the window contributes nothing (never fires on
 # silence).
+#
+# The entry-dropping segment, not its last notch: #1281's own evidence for
+# this invariant is `poetic-1` sitting at *rung 9* — the loosest entry cap,
+# 64 per band per repo — dropping 48–68 entries in 149 of the 150 fitted
+# cycles from 2026-09-04, and the ladder has not moved since (2ab6125,
+# 2026-08-21), so a test for rung 15 alone would miss the very incident
+# (#1128, #1136) this invariant is built from. The two clauses are close to
+# one clause by construction: `coordinator_apply_rung`'s own `cap($max; …)`
+# is a no-op while `$emax` is null, which is every prose rung, so
+# `entries_dropped > 0` is unreachable above rung 9 anyway — the rung floor
+# says the same thing in the ladder's own vocabulary rather than leaving it
+# implied by a derived count.
 pager_eval_fit_ladder_pinned() {
   local _fleet_nodes_json="$1" union_log_file="$2"
-  local top_rung=15
+  local entry_cap_rung=9
   [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
-  jq -c -R -n --argjson top "$top_rung" --argjson now "$(date -u +%s)" '
+  jq -c -R -n --argjson floor "$entry_cap_rung" --argjson now "$(date -u +%s)" '
     86400 as $window_s
     | [ inputs | select(length > 0) | (fromjson? // empty)
         | select(.event == "coordinator-input-fitted")
@@ -648,16 +686,20 @@ pager_eval_fit_ladder_pinned() {
     | ( [ $nodes[] as $n
           | ($recent | map(select(.node == $n))) as $node_events
           | select(($node_events | length) > 0)
-          | select($node_events | all(.rung == $top and ((.entries_dropped // 0) > 0)))
+          | select($node_events | all(((.rung // 0) >= $floor) and ((.entries_dropped // 0) > 0)))
           | {node: $n, count: ($node_events | length),
+             rung_min: ($node_events | map(.rung) | min),
+             rung_max: ($node_events | map(.rung) | max),
              dropped_min: ($node_events | map(.entries_dropped) | min),
              dropped_max: ($node_events | map(.entries_dropped) | max)}
         ] ) as $hits
     | if ($hits | length) == 0 then {firing: false}
       else {firing: true, nodes: ($hits | map(.node)),
-            evidence: ("coordinator-input-fitted pinned at the ladder'"'"'s top rung (" + ($top | tostring)
-              + ") with entries dropped on every fitted cycle in the trailing 24h on "
-              + (($hits | map("\(.node) (\(.count) cycle(s), \(.dropped_min)-\(.dropped_max) entries dropped)"))
+            evidence: ("coordinator-input-fitted pinned in the ladder'"'"'s entry-dropping segment (rung "
+              + ($floor | tostring)
+              + " or tighter) with entries dropped on every fitted cycle in the trailing 24h on "
+              + (($hits | map("\(.node) (\(.count) cycle(s) at rung \(.rung_min)-\(.rung_max), "
+                  + "\(.dropped_min)-\(.dropped_max) entries dropped)"))
                  | join("; ")))}
       end
   ' < "$union_log_file" 2>/dev/null || printf '{"firing":false}'
@@ -805,12 +847,27 @@ pager_remedy_blocked_label_orphaned() {
 # event for the same repo, item and cycle — agent-ops#815's own signature
 # (#640 sat blocked five days on a claim an adjudication pass had cancelled)
 # recurring by a different route.
+#
+# The claims are windowed to the trailing 24h, on the same terms every other
+# invariant in this class is (`fit-ladder-pinned`, `work-order-repaired-rate`,
+# `escalation-burst`), and for a reason particular to a ledger reader: the
+# union log is never rotated (scripts/rotate-logs.sh leaves `log.jsonl`
+# alone), so an unwindowed reading would fire on the original #815 incident
+# itself — still in this fleet's own history — and, worse, could never
+# *clear*: a fact derived from immutable history stays true for ever, the
+# `pw::pager` issue never closes, and the remedy's correction comment lands
+# on items resolved months ago. `escalated`/`tech-debt-filed` stay
+# unwindowed: they are only ever matched within the claim's own cycle, so a
+# reconciliation is always within seconds of the claim it answers.
 pager_eval_claim_unreconciled() {
   local _fleet_nodes_json="$1" union_log_file="$2"
   [[ -f "$union_log_file" ]] || { printf '{"firing":false}'; return 0; }
-  jq -c -R -n '
-    [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
-    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))) as $claims
+  jq -c -R -n --argjson now "$(date -u +%s)" '
+    86400 as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))
+       | map(select((try (.ts | fromdateiso8601) catch null) != null))
+       | map(select(($now - (.ts | fromdateiso8601)) <= $window_s))) as $claims
     | ($all | map(select(.event == "escalated" or .event == "tech-debt-filed"))) as $resolved
     | ( [ $claims[]
           | . as $c
@@ -834,7 +891,9 @@ pager_eval_claim_unreconciled() {
 # (`escalation_thread_reconcile`), mirrored rather than called directly:
 # that function reads cycle-scoped globals (`node_name`/`cycle_id`/
 # `cycle_dir`) lib/pager.sh's own header documents as unavailable to the
-# Publisher's process.
+# Publisher's process. The re-check applies the identical trailing-24h window
+# its own EVAL_FN does — a remedy reading a wider history than the invariant
+# that fired would comment on items the fire was never about.
 pager_remedy_claim_unreconciled() {
   local _key="$1" _evidence="$2"
   local union_log_file="${PAGER_REMEDY_UNION_LOG_FILE:-}" node="${PAGER_REMEDY_NODE:-}" \
@@ -845,9 +904,12 @@ pager_remedy_claim_unreconciled() {
     printf 'lib/pipeline-marker.sh is not available'; return 1
   fi
   local hits posted=0 repo item body
-  hits="$(jq -r -R -n '
-    [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
-    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))) as $claims
+  hits="$(jq -r -R -n --argjson now "$(date -u +%s)" '
+    86400 as $window_s
+    | [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    | ($all | map(select(.event == "enabler-examined" and (.outcome // "") == "escalate"))
+       | map(select((try (.ts | fromdateiso8601) catch null) != null))
+       | map(select(($now - (.ts | fromdateiso8601)) <= $window_s))) as $claims
     | ($all | map(select(.event == "escalated" or .event == "tech-debt-filed"))) as $resolved
     | ( [ $claims[] | . as $c
           | select(($resolved | map(select(.cycle == $c.cycle and (.repo // "") == ($c.repo // "")
@@ -877,7 +939,19 @@ $(pipeline_comment_marker "$cycle" script)"
 # triggering `attempt-failed`'s own `detail`/`unblock_condition`,
 # fingerprinted with `escalation_autonomy_decide_reason_key` — requirement
 # 36d's own per-reason bound, reused rather than duplicated) paged the same
-# item twice.
+# item twice in that same trailing 24h.
+#
+# Both halves are windowed, the re-flag half included, for the reason
+# `pager_eval_claim_unreconciled` above states at length: the union log is
+# never rotated, so an unwindowed re-flag count would fire on the 2026-08-28
+# burst (#933–#938) still sitting in this fleet's own history and could never
+# clear afterwards. The window also bounds the loop below, which forks two
+# `jq`s and a `sha256sum` per escalation it has to fingerprint — a per-
+# evaluation cost that would otherwise grow with the whole log, on a path
+# that runs every five minutes. The `attempt-failed` half stays unwindowed:
+# it is only ever read to look up the reason behind an escalation already
+# inside the window, and the re-flag it names can be a little older than the
+# page it caused.
 pager_eval_escalation_burst() {
   local _fleet_nodes_json="$1" union_log_file="$2"
   local burst="${PAGER_EVAL_ESCALATION_BURST:-}"
@@ -896,10 +970,13 @@ pager_eval_escalation_burst() {
 
   local reflag_desc=""
   if declare -F escalation_autonomy_decide_reason_key >/dev/null 2>&1; then
-    pairs="$(jq -c -R -n '
-      [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
+    pairs="$(jq -c -R -n --argjson now "$now" '
+      86400 as $w
+      | [ inputs | select(length > 0) | (fromjson? // empty) ] as $all
       | ($all | map(select(.event == "attempt-failed"))) as $attempts
-      | ($all | map(select(.event == "escalated"))) as $escalated
+      | ($all | map(select(.event == "escalated"))
+         | map(select((try (.ts | fromdateiso8601) catch null) != null))
+         | map(select(($now - (.ts | fromdateiso8601)) <= $w))) as $escalated
       | [ $escalated[] | . as $e
           | ($attempts | map(select((.repo // "") == ($e.repo // "")
                                     and ((.item // "") | tostring) == (($e.item // "") | tostring)

@@ -852,9 +852,9 @@ and the schema must carry every one of them.
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
 | `pager_stale_file_after_minutes` | 180 min | `node-stale`'s own per-key override of requirement 51's `pager_min_firing_minutes` hysteresis (agent-ops#1282): the fact this invariant evaluates is already slow-forming (a publication age past `2 × node_stale_after_minutes`), so filing waits far longer than the framework's own blip-sized default. |
 | `pager_dashboard_fetch_seconds` | 30 s | `dashboard-unreadable`'s own tolerance (agent-ops#1282) for how long a viewer's fetch of a node's `data.js` (agent-ops#1283's own viewer-vantage probe) may take before this invariant fires; a failed parse fires regardless of the elapsed time. |
-| `pager_idle_cycles` | 6 cycles | Requirement 51's own `idle-with-demand` threshold (agent-ops#1281): the count of an active node's own trailing `node-state` events that must all read `idle-with-demand` (cause other than `back-pressure`) before this invariant fires. |
+| `pager_idle_cycles` | 6 cycles | Requirement 51's own `idle-with-demand` threshold (agent-ops#1281): the count of an active node's own trailing cycles — each read from its own last `node-state` event — that must all end `idle-with-demand` (cause other than `back-pressure`) before this invariant fires. |
 | `pager_repair_rate_percent` | 20% | Requirement 51's own `work-order-repaired-rate` threshold (agent-ops#1281): the percentage, of a trailing 24h window's `selection` events, also carrying a `work-order-repaired` event, above which this invariant fires. |
-| `pager_escalation_burst` | 10 escalations | Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice fires it regardless of this count. |
+| `pager_escalation_burst` | 10 escalations | Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice inside that same window fires it regardless of this count. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -16458,15 +16458,27 @@ with the Reviewer's own.
     `REMEDY_ARG KEY EVIDENCE`'s own two-argument contract carries.
 
     - **`idle-with-demand`** (owner-only). Fires when an *active* node's
-      last `pager_idle_cycles` (default 6) `node-state` events (D21,
-      `lib/node-time-state.sh`) all read state `idle-with-demand` with a
-      cause other than `back-pressure` — a deliberate throttle, not a
+      last `pager_idle_cycles` (default 6) *cycles* all ended in state
+      `idle-with-demand` (D21, `lib/node-time-state.sh`) with a cause other
+      than `back-pressure` — a deliberate throttle, not a
       symptom, and the one exclusion the issue's own list (usage-limit,
       disk/memory, unauthorized, a fleet/kill-switch's own `down`,
       back-pressure) names that the D21 state vocabulary does not already
       separate into a different state on its own: every other named
       exclusion already logs `externally-blocked` or `down` instead of
-      `idle-with-demand`. Fewer than `pager_idle_cycles` events for a node
+      `idle-with-demand`. A cycle is read from its own *last* `node-state`
+      event, grouped by the `cycle` id every one of them carries, because
+      `node-state` is emitted several times per cycle — `overhead`
+      unconditionally at the top of every cycle that takes the lock, and one
+      transition per `stage-start` — so only `finalize_node_state_for_cycle`,
+      logged once at the very end of `cleanup`, says how a cycle *ended*; a
+      window over raw events would demand a run of consecutive
+      `idle-with-demand` events no cycling node can produce, and would never
+      fire at all. A tick that skipped contributes nothing (a
+      `cycle-skipped` calls `suppress_node_state_transitions` and logs no
+      `node-state`), which is the wanted answer: deferring to a cycle already
+      running is not a cycle that ended idle. Fewer than `pager_idle_cycles`
+      cycles for a node
       decides nothing — "last N cycles" cannot be confirmed from an
       incomplete window. Caught: the 2026-09-04 fleet-wide stand-down
       (#1163/#1165) and the 2026-08-31 starvation (#1128). Evidence embeds
@@ -16476,13 +16488,20 @@ with the Reviewer's own.
       for the firing decision itself.
     - **`fit-ladder-pinned`** (owner-only). Fires when a node's
       `coordinator-input-fitted` events (`lib/coordinator-input.sh`,
-      `agent-cycle.sh`) in the trailing 24h all land at the ladder's own top
-      rung — 8 prose tiers plus 7 entry caps, 15, a fixed constant of the
-      ladder rather than a field either array carries — with
-      `entries_dropped > 0`. A node with no fitted cycle at all in the
-      window contributes nothing. Caught: #1128, #1136 (a lower rung of the
-      ladder as it stood then dropping 48–68 entries in 149 of 150 fitted
-      cycles on `poetic-1` since 2026-09-04).
+      `agent-cycle.sh`) in the trailing 24h have all run out of prose to shed
+      and are dropping whole entries — rung 9 or tighter, the first of the 7
+      entry caps that follow the 8 prose tiers (`COORDINATOR_INPUT_TIERS` +
+      1, a fixed constant of the ladder rather than a field either array
+      carries) — with `entries_dropped > 0`. A node with no fitted cycle at
+      all in the window contributes nothing. The segment, not its last
+      notch: #1128/#1136's own evidence is `poetic-1` pinned at *rung 9* —
+      the loosest entry cap — dropping 48–68 entries in 149 of 150 fitted
+      cycles since 2026-09-04, so a test for rung 15 alone would miss the
+      incident this invariant is built from. The two clauses nearly coincide
+      by construction: `coordinator_apply_rung`'s own entry cap is a no-op
+      while it is null, which is every prose rung, so `entries_dropped > 0`
+      is unreachable above rung 9 — the rung floor states in the ladder's own
+      vocabulary what the drop count would otherwise leave implied.
     - **`work-order-repaired-rate`** (owner-only). Fires when the fleet-wide
       count of `work-order-repaired` events (`agent-cycle.sh`, #821 — a work
       order composed from trimmed input) in the trailing 24h exceeds
@@ -16513,7 +16532,8 @@ with the Reviewer's own.
     - **`claim-unreconciled`** (pipeline-act). Fires when an
       `enabler-examined` event whose `outcome` is the Enabler's own escalate
       verdict (`lib/enabler.sh`: `outcome="$verdict"`, never reassigned on
-      the path that actually files) carries no `escalated`/`tech-debt-filed`
+      the path that actually files) *in the trailing 24h* carries no
+      `escalated`/`tech-debt-filed`
       event for the same repo, item and cycle. Caught: #815 — #640 sat
       blocked five days on a claim an adjudication pass had cancelled; this
       invariant catches the same signature recurring by a different route (a
@@ -16524,16 +16544,31 @@ with the Reviewer's own.
       comment on the item's own thread, mirroring (never calling —
       `escalation_thread_reconcile` reads cycle-scoped globals this
       framework's process does not have, this requirement's own header)
-      the #815 correction-comment pattern.
+      the #815 correction-comment pattern, over the identical window its own
+      EVAL_FN read. Both are windowed, and a ledger reader has to be:
+      `log.jsonl` is never rotated, so an unwindowed reading would fire on
+      #815's own original incident — still in this fleet's history — could
+      never *clear* (a fact derived from immutable history stays true for
+      ever, so `pager_close` would never run), and would comment on items
+      settled months ago.
     - **`escalation-burst`** (owner-only). Fires when the fleet-wide count
       of `escalated` events in the trailing 24h exceeds
       `pager_escalation_burst` (default 10), or the same re-flag reason —
       the triggering `attempt-failed`'s own `detail`/`unblock_condition`,
       fingerprinted with `escalation_autonomy_decide_reason_key`
       (`lib/escalation-autonomy.sh`, requirement 36d's own per-reason bound,
-      reused rather than duplicated) — pages the same item twice, regardless
-      of the count threshold. Caught: 2026-08-28 (#933–#938; 55% mechanical,
-      from three unfixed bugs). Evidence carries the reason histogram.
+      reused rather than duplicated) — pages the same item twice inside that
+      same 24h, regardless
+      of the count threshold. Both halves are windowed, the re-flag half for
+      `claim-unreconciled`'s own reason (an unrotated union log would leave
+      the 2026-08-28 burst below firing this for ever, unclearably) and
+      because the window bounds the per-escalation fingerprinting this half
+      performs on a path that runs every five minutes. The `attempt-failed`
+      half is not windowed: it is read only to name the reason behind an
+      escalation already inside the window, and the re-flag it names may be
+      a little older than the page it caused. Caught: 2026-08-28 (#933–#938;
+      55% mechanical, from three unfixed bugs). Evidence carries the reason
+      histogram.
     - **`digest-truncated`** (pipeline-act). Fires when a repo's most recent
       `source-state-digest` event (`lib/candidate-gather.sh`, logged
       alongside `gather_source_state`'s own already-fetched counts — no
@@ -24261,15 +24296,22 @@ oblige anyone to edit a test.
     reimplementation) and a shared, extended `gh` stub (`issue edit`, `issue
     comment` and `api` added to the existing `issue list`/`issue create`/
     `issue close`/`pr view`/`issue view` cases): `idle-with-demand` fires on
-    an active node whose last `pager_idle_cycles` `node-state` events all
-    read `idle-with-demand`, excludes a node whose own streak is
-    `back-pressure` throughout, excludes a node whose streak is broken by
-    one `producing` cycle, and never fires with `pager_idle_cycles`
+    an active node whose last `pager_idle_cycles` cycles all *ended*
+    `idle-with-demand` — against a fixture carrying the `overhead`
+    transitions a real cycle logs alongside its terminal one, so that an
+    invariant reading raw events rather than per-cycle terminals cannot pass
+    here while never firing in production — excludes a node whose own streak
+    is `back-pressure` throughout, excludes a node whose streak is broken by
+    a cycle that ended `idle-without-demand`, decides nothing from fewer
+    than `pager_idle_cycles` cycles however many events they carry, and
+    never fires with `pager_idle_cycles`
     unconfigured, with its evidence carrying the node's own `none-selected`
     reason and `coordinator-input-fitted` detail; `fit-ladder-pinned` fires
     on a node whose every `coordinator-input-fitted` event in the trailing
-    24h sits at the ladder's own top rung (15) with entries dropped, not on
-    a node one rung short of the top, and not on a fitted event outside the
+    24h sits at rung 15 with entries dropped *and* on one pinned at rung 9,
+    #1128's own shape, with its evidence naming that node's rung and drop
+    range, not on a node that came back up to a prose rung within the
+    window, and not on a fitted event outside the
     trailing 24h; `work-order-repaired-rate` fires when the fleet-wide ratio
     of `work-order-repaired` to `selection` events in the trailing 24h
     exceeds `pager_repair_rate_percent`, not below it, and never on a window
@@ -24281,13 +24323,16 @@ oblige anyone to edit a test.
     `claim-unreconciled` fires on an `enabler-examined` event reading
     `outcome: "escalate"` with no matching `escalated` in the same cycle,
     does not fire once a matching `escalated` event is added, does not fire
-    on an `escalation-failed` outcome (which never claimed to escalate), and
+    on an `escalation-failed` outcome (which never claimed to escalate),
+    does not fire on a claim older than the trailing 24h and posts no
+    correction comment for one, and
     its remedy posts a stubbed `issue comment` naming what could not be
     confirmed; `escalation-burst` fires once the fleet-wide `escalated`
     count in the trailing 24h exceeds `pager_escalation_burst`, and,
     independently, when the same `attempt-failed` `detail`/
     `unblock_condition` fingerprint pages the same item twice regardless of
-    the count threshold, with evidence naming the reflagged item; and
+    the count threshold, with evidence naming the reflagged item, but not
+    when that same pair of pages sits outside the trailing 24h; and
     `digest-truncated` fires when a `source-state-digest` event's own counts
     fall short of a stubbed `gh api search/issues` total, not when the two
     agree, its remedy logs a `digest-truncation-veto` event naming the

@@ -451,7 +451,7 @@ Keys:
 | `pager_dashboard_fetch_seconds` | `30` | Seconds. How long a viewer may take fetching a node's `data.js` before the dashboard's `dashboard-unreadable` pager invariant treats it as unreadable from that viewer's vantage — a failed parse trips it regardless of how fast it answered. |
 | `pager_idle_cycles` | `6` | How many of a node's own most recent cycles must all have ended idle with real demand waiting (excluding a deliberate back-pressure throttle) before the dashboard's `idle-with-demand` pager invariant fires. |
 | `pager_repair_rate_percent` | `20` | Percent. How much of a trailing 24h's selections may need a work-order-repaired repair before the dashboard's `work-order-repaired-rate` pager invariant fires. |
-| `pager_escalation_burst` | `10` | How many escalations may be filed fleet-wide in a trailing 24h before the dashboard's `escalation-burst` pager invariant fires — independently of a re-flagged item's own repeat, which always fires it. |
+| `pager_escalation_burst` | `10` | How many escalations may be filed fleet-wide in a trailing 24h before the dashboard's `escalation-burst` pager invariant fires — independently of a re-flagged item's own repeat inside that window, which always fires it. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
