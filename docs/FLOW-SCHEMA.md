@@ -584,11 +584,16 @@ revisable in this one place rather than scattered across every emission site:
 - **`externally-blocked`** covers `usage-limit`, `github-budget`,
   `unreachable` (GitHub itself unreachable for a claim attempt),
   `unauthorized` (a dead or missing credential), and the host resource
-  guards `disk-low`/`disk-full`/`memory-low`. The last three are not
-  "external" in the strictest sense — they are a fact about this node's own
-  host — but they are grouped here rather than under `idle-without-demand`
-  because the fix is host capacity, not a change in demand, the same
-  distinction the other members of this bucket already turn on.
+  guards `disk-low`/`disk-full`/`memory-low`/`host-overcommit`. These four
+  are not "external" in the strictest sense — they are a fact about this
+  node's own host — but they are grouped here rather than under
+  `idle-without-demand` because the fix is host capacity, not a change in
+  demand, the same distinction the other members of this bucket already
+  turn on. `host-overcommit` (requirement 2.0g, agent-ops#757) differs from
+  the other three in what it measures: not this node's own live free
+  disk/memory, but the *declared* sum of every running container's own
+  ceiling on the host it shares with its siblings — a structural check, only
+  ever raised when `host_budget_enforce` is configured on.
 - A cycle-ending `stand-down`/`none-selected` that a peer's own claim
   explains (`raced`, `pre-claimed`, and this pipeline's own
   draining-with-live-claims stand-down) is `idle-with-demand`/
@@ -613,13 +618,13 @@ this document.
 
 ### The closed cause vocabulary
 
-Fourteen tokens, each mapping to exactly one state — `lib/node-time-state.sh`'s
+Fifteen tokens, each mapping to exactly one state — `lib/node-time-state.sh`'s
 `node_time_state_for_cause` is the one function that knows the mapping:
 
 | Cause | State |
 | --- | --- |
 | `disabled-node`, `disabled-fleet` | `down` |
-| `usage-limit`, `github-budget`, `unreachable`, `unauthorized`, `disk-low`, `disk-full`, `memory-low` | `externally-blocked` |
+| `usage-limit`, `github-budget`, `unreachable`, `unauthorized`, `disk-low`, `disk-full`, `memory-low`, `host-overcommit` | `externally-blocked` |
 | `back-pressure`, `awaiting-tick`, `peer-claimed`, `coordinator-declined` | `idle-with-demand` |
 | `no-demand` | `idle-without-demand` |
 
@@ -839,7 +844,7 @@ above — on the same terms:
   carries in a way an existing reader could misread as the old shape;
   changing an existing fate's own assignment rule; changing the fate
   priority order; renaming or removing one of the six states or one of the
-  fourteen causes; changing which state an existing cause maps to; changing
+  fifteen causes; changing which state an existing cause maps to; changing
   the definitional pin (which stages count as `producing`, what `down`
   covers).
 
@@ -965,7 +970,7 @@ and dedicated assertions folded into `test/landing-wiring.test.sh`,
 
 **The node time-state record:** `test/node-time-state.test.sh` drives
 `lib/node-time-state.sh` directly: `node_time_state_for_cause` against every
-one of the fourteen closed-vocabulary tokens (including the four translated
+one of the fifteen closed-vocabulary tokens (including the four translated
 rather than renamed — `raced`/`pre-claimed` to `peer-claimed`,
 `fabricated`/`untraceable` to `coordinator-declined`) and an unrecognised
 one (maps to nothing); `node_time_state_idle_split` against a positive

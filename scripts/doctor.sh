@@ -91,6 +91,8 @@ source "$SCRIPT_DIR/lib/memory.sh"
 source "$SCRIPT_DIR/lib/token-expiry.sh"
 # shellcheck source=lib/host-facts.sh
 source "$SCRIPT_DIR/lib/host-facts.sh"
+# shellcheck source=lib/host-budget.sh
+source "$SCRIPT_DIR/lib/host-budget.sh"
 # doctor.sh has no other trap and exits from several points below (bad
 # arguments, an unusable config, the ordinary end of a clean pass) — a single
 # EXIT trap, armed as soon as the library that owns the cache directory is
@@ -900,6 +902,57 @@ if [[ -n "$events_high" ]]; then
     mv -f "$events_tmp" "$events_state_file" 2>/dev/null || rm -f "$events_tmp" 2>/dev/null
   else
     rm -f "$events_tmp" 2>/dev/null || true
+  fi
+fi
+
+# --- Host budget ---
+
+# Requirement 2.0g (agent-ops#757): whether the *sum* of every running
+# container's own declared ceiling on this host — not only this project's
+# three services, every container the host-facts collector's Docker socket
+# sees — still fits the host it shares with its siblings (the two-Compose-
+# projects-per-host layout deploy/docker/compose.yaml's own D14 comment
+# already names). Read from the same published record the Egress section
+# below already reads (docs/HOST-FACTS-SCHEMA.md's `budget`), never
+# measured directly: this script holds neither the collector's Docker
+# socket nor its cgroup mount (agent-ops#603). `lib/host-budget.sh` is the
+# one place the sum is judged, so this warning and requirement 2.0g's own
+# stand-down can never disagree about what "over budget" means.
+section "Host budget"
+host_budget_enforce="$(cfg '.host_budget_enforce')"
+[[ "$host_budget_enforce" == "true" ]] || host_budget_enforce="false"
+host_budget_reserved_memory_bytes="$(cfg '.host_budget_reserved_memory_bytes')"
+[[ "$host_budget_reserved_memory_bytes" =~ ^[0-9]+$ ]] || host_budget_reserved_memory_bytes=0
+host_budget_reserved_cpus="$(cfg '.host_budget_reserved_cpus')"
+[[ "$host_budget_reserved_cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]] || host_budget_reserved_cpus=0
+if [[ -z "${AGENT_OPS_ROLE:-}" ]]; then
+  skip "host budget (AGENT_OPS_ROLE unset — not a fleet node, no host-facts collector runs here)"
+else
+  host_budget_file="$state_dir/host-facts/$(host_facts_node_name).json"
+  if [[ ! -r "$host_budget_file" ]]; then
+    skip "host budget: $host_budget_file does not exist yet — the host-facts collector has not run on this node"
+  else
+    host_budget_summary="$(jq -c '.budget // empty' "$host_budget_file" 2>/dev/null)"
+    if [[ -z "$host_budget_summary" || "$host_budget_summary" == "null" ]]; then
+      skip "host budget: $host_budget_file carries no budget section — a Kubernetes-driver record (out of scope, agent-ops#757), or one written before this feature"
+    else
+      host_budget_mem_declared="$(jq -r '.mem_declared_bytes // 0' <<<"$host_budget_summary")"
+      host_budget_mem_total="$(jq -r '.mem_total_bytes // empty' <<<"$host_budget_summary")"
+      host_budget_cpu_declared="$(jq -r '.cpu_declared_nanos // 0' <<<"$host_budget_summary")"
+      host_budget_cpu_count="$(jq -r '.cpu_count // empty' <<<"$host_budget_summary")"
+      host_budget_mem_verdict="$(host_budget_mem_verdict "$host_budget_mem_declared" "$host_budget_mem_total" "$host_budget_reserved_memory_bytes")"
+      host_budget_cpu_verdict="$(host_budget_cpu_verdict "$host_budget_cpu_declared" "$host_budget_cpu_count" "$host_budget_reserved_cpus")"
+      host_budget_description="$(host_budget_describe "$host_budget_summary" "$host_budget_reserved_memory_bytes" "$host_budget_reserved_cpus")"
+      if [[ "$host_budget_mem_verdict" == "over" || "$host_budget_cpu_verdict" == "over" ]]; then
+        if [[ "$host_budget_enforce" == "true" ]]; then
+          warn "host budget: $host_budget_description — requirement 2.0g will stand the next cycle down (host_budget_enforce is true)"
+        else
+          warn "host budget: $host_budget_description — advisory only (host_budget_enforce is false, the default)"
+        fi
+      else
+        ok "host budget: $host_budget_description"
+      fi
+    fi
   fi
 fi
 

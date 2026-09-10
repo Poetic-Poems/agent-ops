@@ -122,6 +122,16 @@ x-agent-ops: &agent-ops
   # the VM itself. Every one is overridable per node in .env, because a node on
   # a bigger host should not inherit a laptop's arithmetic.
   #
+  # That last sentence is arithmetic a human does by hand, reading this
+  # comment — requirement 2.0g (agent-ops#757) is what checks it stays true:
+  # the collector service below sums every running container's own declared
+  # ceiling on the Docker socket (this file's three services and any sibling
+  # compose project's own, on the same host) into host-facts/<node>.json's
+  # `budget` section, and `lib/standdown.sh` refuses to start a cycle into an
+  # overcommitted host when `host_budget_enforce` is configured on
+  # (`config.schema.json`; advisory-only by default, so this paragraph's own
+  # arithmetic is reported but not enforced until an operator opts in).
+  #
   # Not set, and not an oversight: disk and bandwidth, the other two budgets D14
   # names. Docker's blkio throttles need kernel support the WSL2 kernel does not
   # have (`docker info` warns "No blkio throttle.read_bps_device support"), and

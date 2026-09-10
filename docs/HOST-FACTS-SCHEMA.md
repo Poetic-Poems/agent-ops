@@ -66,6 +66,8 @@ on both.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `host.mem_available_bytes` | integer \| null | `MemAvailable` from `/proc/meminfo`, `null` when unreadable. |
+| `host.mem_total_bytes` | integer \| null | `MemTotal` from `/proc/meminfo`, `null` when unreadable — the figure `budget.mem_declared_bytes` below is compared against. |
+| `host.cpu_count` | integer \| null | The number of `processor` lines in `/proc/cpuinfo`, `null` when unreadable — the figure `budget.cpu_declared_nanos` below is compared against. |
 | `host.load` | object \| null | `{"1m", "5m", "15m"}`, each a number, read from `/proc/loadavg`; `null` whole when unreadable. |
 | `host.disk.state_dir` | object | `{"path", "free_bytes", "total_bytes"}` for the filesystem `state_dir` sits on. |
 | `host.disk.workspace_root` | object | Same shape, for `workspace_root`. |
@@ -104,6 +106,33 @@ the collector's container cannot read that container's cgroup files (see
 "Degradation" below) — this is routinely true for a container on a
 different cgroup slice than the one the collector's own host mount
 exposes, and is not itself a fault.
+
+## `budget` (`compose` only)
+
+The sum of every **running** container's own declared ceiling on this host
+— every container the Docker socket reports, not only this compose
+project's own three services, which is what lets one host's collector see
+a sibling project's ceilings too, with no cross-project sync needed — and
+what that sum leaves of the host's own totals (requirement 2.0g, issue
+#757). `lib/host-budget.sh` computes this object from `containers[]` and
+`host.mem_total_bytes`/`host.cpu_count` above; nothing here is measured a
+second time.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `budget.mem_total_bytes` | integer \| null | Carried straight from `host.mem_total_bytes`, alongside the figure it bounds. |
+| `budget.mem_declared_bytes` | integer | The sum of `memory.max_bytes` across every `containers[]` entry whose `state` is `"running"` and whose `memory.max_bytes` is a number. A container with no readable ceiling is excluded from this sum, never treated as `0` or as unbounded — see `budget.mem_unknown_containers`. |
+| `budget.mem_unknown_containers` | integer | How many running containers carry no readable `memory.max_bytes` — the count `mem_declared_bytes` silently excludes, so a reader can tell "this sum is complete" from "this sum is a lower bound". |
+| `budget.mem_headroom_bytes` | integer \| null | `mem_total_bytes - mem_declared_bytes`; `null` when `mem_total_bytes` is `null` (a headroom against an unmeasured total would be a guess). |
+| `budget.cpu_count` | integer \| null | Carried straight from `host.cpu_count`. |
+| `budget.cpu_declared_nanos` | integer | The sum of `cpu.limit_nanos` across every running entry whose limit is a number, in nanocpus (Docker's own unit — 1 whole CPU is `1000000000`). Same "known ceilings only" exclusion as `mem_declared_bytes`. |
+| `budget.cpu_unknown_containers` | integer | The CPU counterpart of `mem_unknown_containers`. |
+| `budget.cpu_headroom_nanos` | integer \| null | `cpu_count * 1000000000 - cpu_declared_nanos`; `null` when `cpu_count` is `null`. |
+
+Absent (the whole `budget` key omitted) under the `kubernetes` driver — the
+cluster vantage is explicitly out of scope for this same-host summation
+(the issue's own "Why Kubernetes does not close this"), not merely
+unmeasured, so this is a driver-specific field rather than a degraded one.
 
 ## `pods` / `rollouts` / `cronjobs` / `node_conditions` / `pvcs` (`kubernetes` only)
 
@@ -195,6 +224,11 @@ own "What replicates" does not name in `EXCLUDES`.
 - `scripts/doctor.sh`'s Egress section, which reads `host.network` and
   compares `docker_mtu_configured` against `egress_mtu`, surfacing a
   mismatch this node's own container could never detect for itself.
+- `lib/standdown.sh`'s requirement 2.0g and `scripts/doctor.sh`'s Host
+  budget section, both of which read `budget` and judge it through
+  `lib/host-budget.sh` — the former standing a cycle down on it when
+  `host_budget_enforce` is configured on, the latter only ever warning
+  (issue #757).
 - `dashboard/index.html`'s node card, which shows a `host` line whenever
   this record carries something worth flagging — surfaced via
   `scripts/publish-dashboard.sh` folding `host-facts/<node>.json` (self)
@@ -219,3 +253,10 @@ than the one the registry digest was fetched for, a pod with no
 terminated/waiting container status, a CronJob that has stopped scheduling,
 and a viewer probe that times out or receives a body that will not parse as
 JSON.
+
+`test/host-budget.test.sh` drives `lib/host-budget.sh` directly against
+fixture `containers[]` arrays — including a set of declared ceilings that
+cannot fit a small host, proving the overcommit verdict without waiting for
+a real host to run out — and `test/host-budget-wiring.test.sh` lifts
+requirement 2.0g's own block out of `lib/standdown.sh`, the same split
+`test/disk-space.test.sh`/`test/disk-space-wiring.test.sh` already use.
