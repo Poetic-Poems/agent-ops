@@ -310,6 +310,19 @@ doctor_heartbeat_json="$(jq -c '{timestamp, verdict}' "$doctor_status_file" 2>/d
 # cycle since upgrading has completed.
 stage_health_file="$state_dir/.stage-health.json"
 stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
+# This node's own host-facts record (scripts/collect-host-facts.sh,
+# agent-ops#1283, docs/HOST-FACTS-SCHEMA.md) — read rather than
+# recomputed, the same doctor_status_json/stage_health_json precedent
+# above: the collector runs on its own schedule (the compose service's own
+# loop, or the Kubernetes CronJob's own tick), not this script's 5-second
+# tick. Unlike compose/image/updater, this file is not embedded in
+# heartbeat.json — it sits beside it under state_dir and travels to peers
+# by the ordinary state-sync push/fetch, so both self's read here and each
+# peer's read below use the same relative path, "<node's own
+# dir>/host-facts/<node>.json". `null` until the collector's first pass on
+# this node.
+self_host_facts_file="$state_dir/host-facts/$self_node.json"
+self_host_facts_json="$(jq -c '.' "$self_host_facts_file" 2>/dev/null || echo null)"
 # This node's own updater verdict (lib/updater-health.sh, agent-ops#603),
 # recomputed here on the identical precedent compose_drift_status above
 # already sets: cheap (a directory of small local files, no network), so
@@ -2278,19 +2291,31 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   --argjson updater "$updater_json" \
   --argjson doctor "$doctor_heartbeat_json" \
   --argjson pu "$provider_unreachable_json" \
+  --argjson host "$self_host_facts_json" \
   --argjson pub "$self_pub_json" \
   '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,
     last_cycle: (if $lc == "" then null else $lc end), self: true,
     stale: ($pub.verdict != "fresh"),
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
-    stage_health: $stage_health, updater: $updater, doctor: $doctor,
+    stage_health: $stage_health, updater: $updater, doctor: $doctor, host: $host,
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   hb_ts="$(fleet_ts_field "$hb")"
   pub_json="$(fleet_publication_status "$hb_ts" "$node_stale_after_seconds" "$now_epoch")"
+  # Unlike compose/image/updater/etc. above, host-facts is not a field
+  # inside this peer's heartbeat.json — docs/HOST-FACTS-SCHEMA.md's own
+  # layout puts it at "<peers_dir>/<peer>/host-facts/<peer>.json", a
+  # sibling file under the same peer directory this heartbeat came from
+  # (fleet_peers_dir's own per-node layout), replicated by the identical
+  # state-sync push/fetch that brought this heartbeat down. `null` when
+  # that peer's collector has not run yet, or its record has not
+  # replicated here yet.
+  peer_dir="$(dirname "$hb")"
+  peer_host_facts_json="$(jq -c '.' "$peer_dir/host-facts/$(basename "$peer_dir").json" 2>/dev/null || echo null)"
   jq -c --argjson live "$node_live_json" \
-    --argjson pu "$provider_unreachable_json" --argjson pub "$pub_json" '
+    --argjson pu "$provider_unreachable_json" --argjson pub "$pub_json" \
+    --argjson host "$peer_host_facts_json" '
     . as $h
     | {node: ($h.node // "unknown"), role: ($h.role // "unknown"),
        heartbeat_ts: $pub.ts,
@@ -2334,6 +2359,7 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # built before this travelled (agent-ops#1278) yields null rather
        # than this node guessing at a doctor run it never made.
        doctor: ($h.doctor // null),
+       host: $host,
        # Unlike the fields above, `provider_unreachable` is not a report from
        # the peer about itself — it is this node reading the fleet-wide
        # union directly (issue #1073), computed once above and applied to

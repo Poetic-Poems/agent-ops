@@ -3369,6 +3369,42 @@ number's twins elsewhere on the page.
   — there is no separate "cleared" state to track, since the union log is
   read fresh every publish and a Co-Ordinator success anywhere in the fleet
   ends the run the same way it already ends the escalating case.
+- **A fifth badge reads the host-facts record a node's own collector
+  writes (`scripts/collect-host-facts.sh`, agent-ops#1283,
+  `docs/HOST-FACTS-SCHEMA.md`), a fact source none of the four badges
+  above can reach: each of them reads what runs *inside* the scheduler
+  container, and the D24 fence puts this container on the far side of its
+  own host's real network path, so nothing above can tell a host's own
+  egress MTU, a container's own OOM-kill count, or a Kubernetes rollout's
+  own stall from in here.** The Publisher folds `state_dir/host-facts/
+  <node>.json` (self) and `<peers_dir>/<peer>/host-facts/<peer>.json`
+  (each peer) into that node's row as `host`, `null` when no record
+  exists for that node yet — the collector's own schedule, not this
+  page's 5-second tick, so a freshly rolled node reads `null` here for a
+  while exactly as it does for `compose`/`image` above. The card renders
+  one amber badge, **host degraded**, naming the worst of three facts it
+  checks for, in this order: an MTU mismatch between `DOCKER_MTU` and the
+  host's own measured egress MTU (`host.network.mtu_match`) — the same
+  fact `doctor.sh`'s Egress section now reads from the identical file,
+  here because a card is checked far more often than `doctor.sh` runs;
+  any container this node runs having been OOM-killed at least once
+  (`containers[].memory.oom_kill_count`); or a Kubernetes Deployment stuck
+  below its desired replica count past its own progress deadline
+  (`rollouts[].stalled`).
+  Everything else the record carries — per-container memory/cpu figures,
+  a per-container image digest mismatch, the updater ledger tail — stays
+  out of this badge deliberately: it is either routine, or already
+  covered by `image`/`updater` above, and is one click away in the raw
+  record for anyone who needs it. This node's own viewer-vantage self-probe
+  (`viewer_probe.<this node>`, agent-ops#1286's own check) is excluded too,
+  for a different reason than routine: the collector ships with no route to
+  a peer's tailnet (#1339), so every compose node's self-probe fails from
+  its first tick regardless of health, and folding it into this badge would
+  light every card permanently rather than flag a real fault. The probe
+  still runs and its result is in the record for anyone reading it
+  directly; it rejoins this badge once #1339 gives it a route to succeed on
+  a healthy node. No badge (and no line at all) when the record is absent
+  or carries none of the three facts above.
 - **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
   issue #379) gets its own badge beside the role badge**, not just the
   page-top switch banner. The banner (above) is keyed to *this* node's own

@@ -300,6 +300,22 @@ verdict is to undo.
   only in their head. Say exactly what to do (see below). If a human has
   already been asked and simply has not acted, that is `still-blocked`, not a
   second issue.
+
+  **Never escalate to ask a human to read a host fact off a node.** The last
+  two entries in that list — an external service, and information that exists
+  only in someone's head — are narrowed by requirement 36a's own host-facts
+  carve-out, and the narrowing bites hardest exactly where this verdict is
+  most tempting: an ask of the form "please run these three `docker` commands
+  on `poetic-1` and paste the output" is a mechanical data-ask, not an
+  owner-only act, and it is what the collector exists to retire. Read
+  `state_dir/host-facts/<node>.json` — this node's own record, or a peer's at
+  `<peers_dir>/<peer>/host-facts/<peer>.json` — before you reach for
+  `escalate` on either condition. `docs/HOST-FACTS-SCHEMA.md` is the record's
+  own field list; the spec's carve-out states exactly which asks it refuses
+  and which still escalate. A field the record carries as `null`, a section
+  absent because that node runs the other driver, and a fact the record does
+  not carry at all are all still ordinary escalations — the carve-out refuses
+  the ask, never the answer.
 - **`void`** — there is no work: the item is already done on the default
   branch, or its premise is false (it asks for something that does not exist,
   or to undo something never done). Terminal, reversible only by a human, so

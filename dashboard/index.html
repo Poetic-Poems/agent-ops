@@ -1351,6 +1351,69 @@
       title: title}));
   }
 
+  // Whether the host-facts record (scripts/collect-host-facts.sh,
+  // agent-ops#1283, docs/HOST-FACTS-SCHEMA.md) this node's own collector
+  // last wrote carries anything worth a human's attention. The record is
+  // large — per-container memory/cpu, the updater ledger tail, a full
+  // viewer-probe map — and most of it is exactly the kind of detail this
+  // page already puts one click away rather than a permanent badge for
+  // (compose/image/updater above are the precedent). This surfaces three
+  // facts deliberately, and leaves the rest to a human reading the raw
+  // JSON:
+  //   - an MTU mismatch (`host.network.mtu_match === false`) — the same
+  //     fact doctor.sh's Egress section now reads from the identical file,
+  //     surfaced here too because a card is checked far more often than
+  //     doctor.sh is run;
+  //   - any container OOM-killed at least once (`memory.oom_kill_count`)
+  //     — nothing else on this page reads a container's own cgroup;
+  //   - a stalled Kubernetes rollout (`rollouts[].stalled`) — a Deployment
+  //     stuck below its desired replica count past its own progress
+  //     deadline, invisible to a fleet running the compose driver.
+  // Left out on purpose: per-container memory/cpu figures (routine, not a
+  // fault), image digest_match (the registry-level `imageLine` above
+  // already covers staleness), the updater ledger tail (`updaterLine`
+  // above already reads it), and this node's own viewer-vantage self-probe
+  // (`viewer_probe[n.node]`) — the collector ships with nowhere to reach a
+  // peer's tailnet from (#1339), so every compose node's self-probe fails
+  // from the first tick regardless of health; folding it into this badge
+  // would light every card permanently rather than flag a real fault. The
+  // probe still runs and its result is in the record for anyone reading it
+  // directly; it rejoins this badge once #1339 gives it a route to succeed
+  // on a healthy node. `null` when the record is absent or carries none of
+  // the three facts above.
+  function hostFactsLine(n) {
+    var hf = n.host;
+    if (!hf) return null;
+    var bad = null;
+    var net = ((hf.host || {}).network || {});
+    if (!bad && net.mtu_match === false) {
+      bad = "DOCKER_MTU (" + net.docker_mtu_configured + ") does not match this host's measured " +
+            "egress MTU (" + net.egress_mtu + ") — see deploy/docker/README.md";
+    }
+    if (!bad) {
+      (hf.containers || []).some(function (c) {
+        var oomCount = (c.memory || {}).oom_kill_count;
+        if (oomCount > 0) {
+          bad = "container " + (c.name || "?") + " has been OOM-killed " + oomCount + " time(s)";
+          return true;
+        }
+        return false;
+      });
+    }
+    if (!bad) {
+      (hf.rollouts || []).some(function (r) {
+        if (r.stalled) {
+          bad = "rollout " + (r.name || "?") + " is stalled (" + r.ready_replicas + "/" +
+                r.desired_replicas + " ready past its progress deadline)";
+          return true;
+        }
+        return false;
+      });
+    }
+    if (!bad) return null;
+    return el("div", {class:"ver"}, el("span", {class:"badge b-amber", text:"host degraded", title: bad}));
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -1643,6 +1706,8 @@
     if (updater) card.appendChild(updater);
     var providerUnreachable = providerUnreachableLine(n);
     if (providerUnreachable) card.appendChild(providerUnreachable);
+    var hostFacts = hostFactsLine(n);
+    if (hostFacts) card.appendChild(hostFacts);
 
     // This line is about the freshness of the VERSION/compose/image info above
     // it, which for self is always read live regardless of n.stale (self's own

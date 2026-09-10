@@ -1,0 +1,215 @@
+# deploy/kubernetes/collector-cronjob.yaml — the Kubernetes vantage of the
+# host-facts collector (issue #1283, scripts/collect-host-facts.sh). Sample
+# manifest: apply with `kubectl apply -n <namespace> -f` this file, having
+# first set the image reference and NODE_NAME below to this cluster's own
+# values. No namespace is hardcoded in these objects' metadata — use
+# `kubectl apply -n` or add `namespace:` yourself, matching how the rest of
+# this cluster's manifests are applied.
+#
+# THE ONE EXCEPTION, and it has to be edited by hand: the RoleBinding's and
+# the ClusterRoleBinding's own ServiceAccount *subjects* below each carry an
+# explicit `namespace:`, because Kubernetes' RBAC validation rejects a
+# ServiceAccount subject that omits it — it does not default to the binding's
+# own namespace the way most references do. Both read `default` here. If you
+# apply this file into any other namespace, change both to that namespace
+# too: leaving them says "bind the ServiceAccount named agent-ops-collector
+# in the `default` namespace", which is not the one this file just created,
+# so the collector gets 403 on every API read — and because
+# lib/host-facts-kubernetes.sh degrades rather than fails, the symptom is
+# five empty arrays on every tick and no error anywhere.
+#
+# OPEN QUESTION, not resolved by this manifest: Kubernetes has no equivalent
+# of deploy/docker/compose.yaml's `state` named volume, which is how a
+# compose node's collector and scheduler share one place to write and read
+# host-facts/<node>.json. This repository's state store has no Kubernetes
+# story yet at all. Rather than mount an emptyDir or an unbacked PVC that
+# would let the record "write successfully" every run and then vanish with
+# the Job pod — a false positive worse than an honest gap — this CronJob
+# runs the collector with `--print`, so the record lands in this Job's own
+# pod logs (`kubectl logs -l app=agent-ops-collector`) and nowhere else. It
+# does NOT currently reach the fleet dashboard the way a compose node's
+# record does. Wiring this into the fleet's actual state (a PVC some other
+# process also reads, a push to the state repository over HTTPS, an HTTP
+# endpoint) is an architecture decision for a human, not a guess this
+# sample manifest should make.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-ops-collector
+  labels:
+    app: agent-ops-collector
+---
+# Namespaced grants only: pods, deployments and cronjobs are what the
+# collector's own namespace runs, and PVCs are the storage those workloads
+# claim — all four are exactly the fields docs/HOST-FACTS-SCHEMA.md
+# documents under "pods"/"rollouts"/"cronjobs"/"pvcs". Deliberately does NOT
+# include "nodes": that is cluster-scoped and cannot be granted by a
+# namespaced Role at all — see the ClusterRole below, kept separate and as
+# narrow as this Role, for that reason and no other.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-ops-collector
+  labels:
+    app: agent-ops-collector
+rules:
+  # pods[]: phase, restart_count, last_terminated_reason, waiting_reason
+  # (lib/host-facts-kubernetes.sh's host_facts_k8s_pods_json).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # rollouts[]: desired/ready replica counts and the `stalled` verdict
+  # (host_facts_k8s_rollouts_json) — read-only against the Deployment's own
+  # status, never a write, so this grants no ability to scale or roll one.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # cronjobs[]: schedule, last_schedule_time, stopped_scheduling
+  # (host_facts_k8s_cronjobs_json) — including this CronJob's own record of
+  # itself, which is expected and harmless.
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list"]
+  # pvcs[]: identity only (name, namespace) — used_percent is always null
+  # here (no metrics-API client in this image), so this grant buys the list,
+  # never a capacity figure.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-ops-collector
+  labels:
+    app: agent-ops-collector
+subjects:
+  - kind: ServiceAccount
+    name: agent-ops-collector
+    # CHANGE THIS if you apply the file into any namespace but `default`.
+    # RBAC validation requires a ServiceAccount subject to name its own
+    # namespace, and it is *not* inferred from the binding's — so this line
+    # does not follow `kubectl apply -n`, and a mismatch binds nothing at
+    # all (see the header). It must match the namespace the ServiceAccount
+    # above actually lands in.
+    namespace: default
+roleRef:
+  kind: Role
+  name: agent-ops-collector
+  apiGroup: rbac.authorization.k8s.io
+---
+# The one cluster-scoped grant this collector needs, deliberately isolated
+# from the namespaced Role above: node_conditions[] (MemoryPressure /
+# DiskPressure / PIDPressure — host_facts_k8s_node_conditions_json) reads
+# /api/v1/nodes, which is cluster-scoped in Kubernetes' own RBAC model and
+# so cannot be granted by any Role, no matter how it is written. Kept to
+# exactly "nodes", "get"/"list" — no "nodes/status", no other resource — so
+# a cluster operator auditing what this ServiceAccount can do sees one
+# narrow, obviously-necessary line rather than a ClusterRole that happens to
+# also carry namespaced grants that did not need to be cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-ops-collector-nodes
+  labels:
+    app: agent-ops-collector
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-ops-collector-nodes
+  labels:
+    app: agent-ops-collector
+subjects:
+  - kind: ServiceAccount
+    name: agent-ops-collector
+    # CHANGE THIS too, for the same reason as the RoleBinding above: a
+    # ClusterRoleBinding's ServiceAccount subject is namespace-scoped even
+    # though the binding itself is cluster-scoped, and it must name the same
+    # namespace the ServiceAccount above actually lives in.
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: agent-ops-collector-nodes
+  apiGroup: rbac.authorization.k8s.io
+---
+# Every 5 minutes: frequent enough that a stopped_scheduling verdict on this
+# CronJob's own record (host_facts_k8s_cronjobs_json's 600-second threshold)
+# never fires on itself under normal operation, since two missed ticks of a
+# 5-minute schedule is exactly 600 seconds.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-ops-collector
+  labels:
+    app: agent-ops-collector
+spec:
+  schedule: "*/5 * * * *"
+  # A run that overlaps the next tick is not "twice the data", it is two
+  # processes racing to --print to two different Job pods' logs — no shared
+  # state_dir file for them to race on for once, but no reason to allow the
+  # overlap either.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # The collector never needs more than a few seconds against the API
+      # server; a hung run should not occupy a Job slot until the next
+      # schedule tick arrives.
+      activeDeadlineSeconds: 120
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: agent-ops-collector
+        spec:
+          serviceAccountName: agent-ops-collector
+          # Explicit even though it is the pod-spec default whenever
+          # serviceAccountName is set: this is the one line that actually
+          # supplies /var/run/secrets/kubernetes.io/serviceaccount/
+          # {token,ca.crt,namespace}, which lib/host-facts-kubernetes.sh's
+          # _host_facts_k8s_token/_cacert/_namespace read directly
+          # (HOST_FACTS_K8S_TOKEN_FILE and its two siblings default to
+          # exactly those paths) — stated here because a reader auditing
+          # this manifest for "how does curl authenticate" should not have
+          # to know Kubernetes' own implicit default.
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          containers:
+            - name: collector
+              # Same image every compose node runs — see
+              # deploy/docker/compose.yaml's own AGENT_OPS_IMAGE default.
+              # This manifest has no .env to read that override from, so
+              # edit this field directly (or point a Kustomize/Helm overlay
+              # at it) to pin a different tag or digest.
+              image: ghcr.io/pullwright/agent-ops:latest
+              args: ["/app/scripts/collect-host-facts.sh", "--print"]
+              env:
+                - name: AGENT_OPS_COLLECTOR_DRIVER
+                  value: kubernetes
+                # Must be a name that is stable across every run of this
+                # CronJob, unlike this pod's own $HOSTNAME, which is fresh
+                # every tick (a Job's pod name is generated, not reused) —
+                # host_facts_node_name() falls back to `hostname` only when
+                # this is unset, and a different "node" identity on every
+                # run would never accumulate into one record. Name it after
+                # this cluster, not after any pod or Kubernetes Node.
+                - name: NODE_NAME
+                  value: "CHANGE-ME-cluster-name"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                allowPrivilegeEscalation: false

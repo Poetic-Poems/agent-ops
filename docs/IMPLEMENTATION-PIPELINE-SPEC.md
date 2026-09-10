@@ -3375,8 +3375,8 @@ implements.
    strictly ordered across generations, a replacement always starting after
    what it replaced. Each line also
    carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
-   `scheduler`, `dashboard` or `dashboard-local`, `"unknown"` if unset) the
-   writing container ran as. This field has a live limitation
+   `scheduler`, `dashboard`, `dashboard-local` or `collector`, `"unknown"` if
+   unset) the writing container ran as. This field has a live limitation
    (agent-ops#1072): watchtower clones the writing container's environment
    forward the same way it clones its hostname, so a compose-level addition
    of `AGENT_OPS_SERVICE` never reaches a container created by a roll — every
@@ -13304,11 +13304,38 @@ implements.
     6. moves a trust boundary of the pipeline itself — `merge_autonomy`,
        `escalation_autonomy`, `merge_autonomy_protected_paths`, a kill switch,
        the Approver's identity;
-    7. depends on an external service or account the pipeline does not hold;
+    7. depends on an external service or account the pipeline does not
+       hold — narrowed by the host-facts carve-out below;
     8. needs information that exists only in someone's head and is not
-       recoverable from the repository, its threads or the fleet log;
+       recoverable from the repository, its threads or the fleet log — the
+       same carve-out narrows this one too;
     9. was explicitly reserved by the item's author — "owner must choose", or
        a filer-named owner-decision label.
+
+    **The host-facts carve-out.** Conditions 7 and 8 are refused, not
+    reached, whenever `state_dir/host-facts/<node>.json` — this node's own
+    record, or the copy state-sync has carried in from a peer, at
+    `<peers_dir>/<peer>/host-facts/<peer>.json` — already carries the fact
+    an ask would ask for (`docs/HOST-FACTS-SCHEMA.md`): a container's state,
+    restart count, or running-versus-registry image digest; a container's
+    cgroup memory figures; the watchtower ledger tail and last completed
+    session; the host's own disk, memory and load; the host's egress MTU
+    against the configured value; or, on a Kubernetes node, a pod's phase
+    and restart count, a rollout's stall, a CronJob's scheduling, a
+    node-pressure condition, a PVC's identity, or either driver's own
+    viewer-vantage probe of a node's dashboard `data.js`. The fact is then
+    available mechanically, from an account the installation already
+    holds — the collector's own — and an `escalate` reaching for condition 7
+    or 8 on its account is a bug in the Enabler, not a use of this boundary.
+    Neither condition narrows any further than that: a field the record
+    carries as `null`, a driver-specific section absent because the node
+    runs the other driver, a fact this document does not carry at all, or
+    an ask for something the record was never for — deciding an action on
+    the strength of a fact, rather than reading one
+    (`docs/HOST-FACTS-SCHEMA.md`'s own "What this record is not for") —
+    still escalates exactly as before, and so does every account the
+    installation does not hold and every fact that exists only in someone's
+    head.
 
     Everything else is tactical, and a `decide-tactical` pass (requirement
     36d) may settle or decide it: an engineering trade-off among options the

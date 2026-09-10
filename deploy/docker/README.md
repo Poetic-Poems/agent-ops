@@ -144,7 +144,9 @@ ip link show <interface>    # gives its mtu
 dashboard over your tailnet, `local` for the dashboard on this machine's own
 loopback, `auto-update` for watchtower. The scheduler starts regardless: it is
 in no profile, because a node that runs no cycles and no heartbeat is not a
-node.
+node. So does the `collector` (issue #1283) — the container that holds the
+read-only Docker socket and cgroup mounts that let `scripts/collect-host-facts.sh`
+read a host fact none of the others can (see `docs/HOST-FACTS-SCHEMA.md`).
 
 ### 4. Give this node model credentials
 

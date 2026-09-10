@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The host-facts collector** (issue #1283, requirement 36a):
+  `scripts/collect-host-facts.sh` writes one record per node,
+  `state_dir/host-facts/<node>.json`, of facts no container running the
+  pipeline can read for itself, because the runtime deliberately holds
+  neither the Docker socket nor the Kubernetes API (the agent-ops#603
+  property, unchanged). Two drivers share one envelope
+  (`lib/host-facts.sh`) and each add their own vantage-specific section
+  (`lib/host-facts-compose.sh`, `lib/host-facts-kubernetes.sh`): `compose`
+  reads the Docker Engine over a **read-only** socket mount — container
+  state, restart counts, cgroup memory figures, and running-versus-registry
+  image digest, one entry per container; `kubernetes` reads the cluster
+  over a read-only Role — pods, rollout stalls, CronJob scheduling,
+  node-pressure conditions and PVC identity. Both also read the host's own
+  disk/memory/load, the host's egress MTU against the configured
+  `DOCKER_MTU`, the watchtower ledger tail and last session, and run the
+  **viewer-vantage probe** (agent-ops#1286) — fetching every peer's own
+  dashboard `data.js` to confirm it actually serves, the self-certification
+  gap the 2026-08-08 four-day silent outage burned this installation on
+  once already. The record is as-built at `docs/HOST-FACTS-SCHEMA.md` and
+  carried to the rest of the fleet by the ordinary `state-sync.sh`
+  push/fetch, no dedicated sync code needed. Ships as a `collector` compose
+  service (`deploy/docker/compose.yaml`) and a sample Kubernetes CronJob
+  manifest (`deploy/kubernetes/collector-cronjob.yaml`); `scripts/doctor.sh`'s
+  Egress section now surfaces an MTU mismatch this node's own container
+  could never detect on its own, and the dashboard's node card gains a
+  `host` line folding in this node's own record and each peer's. Requirement
+  36a's "The owner-only boundary" is narrowed to match, and
+  `prompts/enabler.md`'s own `escalate` verdict with it: an `escalate` under
+  condition 7 (an external account) or condition 8 (information only in
+  someone's head) is refused when this record already answers the fact
+  being asked for — everything else the boundary reserves still escalates
+  exactly as before. The `collector` service joins the host's docker group
+  (`DOCKER_GID` in `.env`, defaulting to 999) so it can actually open the
+  read-only socket it mounts, and carries the workspaces volume so the
+  viewer-vantage probe can enumerate this node's peers.
+
 - **Overrun-slot skips** (issue #1287, requirement 11a): supercronic drops a
   firing silently when the previous cycle's job is still running, logging
   only to a container log the fleet never reads — a cycle running long lost

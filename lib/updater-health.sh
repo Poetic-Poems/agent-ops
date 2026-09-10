@@ -32,8 +32,8 @@
 # across a roll, and so the only thing that can answer "did the container
 # reading this line write it?" Each line also carries
 # `service` — the compose service name (`AGENT_OPS_SERVICE`: `scheduler`,
-# `dashboard` or `dashboard-local`) the writing container ran as, `"unknown"`
-# when unset. `updater_status` reads that ledger back and answers one of:
+# `dashboard`, `dashboard-local` or `collector`) the writing container ran
+# as, `"unknown"` when unset. `updater_status` reads that ledger back and answers one of:
 #
 #   {status:"rolled", at, seconds}
 #     the newest "allow" invocation this ledger can show was *not* written by

@@ -89,6 +89,8 @@ source "$SCRIPT_DIR/lib/disk-space.sh"
 source "$SCRIPT_DIR/lib/memory.sh"
 # shellcheck source=lib/token-expiry.sh
 source "$SCRIPT_DIR/lib/token-expiry.sh"
+# shellcheck source=lib/host-facts.sh
+source "$SCRIPT_DIR/lib/host-facts.sh"
 # doctor.sh has no other trap and exits from several points below (bad
 # arguments, an unusable config, the ordinary end of a clean pass) — a single
 # EXIT trap, armed as soon as the library that owns the cache directory is
@@ -1965,6 +1967,36 @@ else
     fail "direct egress works despite HTTPS_PROXY being set: the scheduler is not on the internal-only egress network, so the fence is advisory — this node's compose.yaml predates the fence; update it and 'docker compose up -d'"
   else
     ok "direct egress is blocked (the internal-only network holds)"
+  fi
+fi
+
+# The host-facts collector (scripts/collect-host-facts.sh, agent-ops#1283)
+# measures this host's own egress MTU from a vantage doctor.sh does not
+# have: this script runs inside the scheduler container (or a developer's
+# checkout), on the near side of the D24 fence — the container's own MTU
+# says nothing about the host's, and the three probes above already show
+# why doctor.sh cannot even reach the far side directly. This reads what
+# the collector already measured and already compared
+# (docs/HOST-FACTS-SCHEMA.md's `host.network.mtu_match`), rather than
+# guessing at a fact only a real host vantage can read.
+if ((offline)); then
+  skip "host egress MTU (--offline)"
+elif [[ -z "${AGENT_OPS_ROLE:-}" ]]; then
+  skip "host egress MTU (AGENT_OPS_ROLE unset — not a fleet node, no host-facts collector runs here)"
+else
+  host_facts_file="$state_dir/host-facts/$(host_facts_node_name).json"
+  if [[ ! -r "$host_facts_file" ]]; then
+    skip "host egress MTU: $host_facts_file does not exist yet — the host-facts collector has not run on this node"
+  else
+    mtu_match="$(jq -r '.host.network.mtu_match as $m | if $m == null then "null" elif $m then "true" else "false" end' \
+      "$host_facts_file" 2>/dev/null)"
+    docker_mtu="$(jq -r '.host.network.docker_mtu_configured // "unknown"' "$host_facts_file" 2>/dev/null)"
+    egress_mtu="$(jq -r '.host.network.egress_mtu // "unknown"' "$host_facts_file" 2>/dev/null)"
+    case "$mtu_match" in
+      true)  ok "this host's measured egress MTU ($egress_mtu) matches DOCKER_MTU ($docker_mtu)" ;;
+      false) warn "DOCKER_MTU ($docker_mtu) does not match this host's measured egress MTU ($egress_mtu) — an MTU black hole through the fence looks exactly like a working proxy that silently drops the larger packets; see deploy/docker/README.md for how to set DOCKER_MTU" ;;
+      *)     skip "host egress MTU: $host_facts_file carries no host.network.mtu_match — unmeasurable on this node" ;;
+    esac
   fi
 fi
 

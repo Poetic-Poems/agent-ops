@@ -506,6 +506,147 @@ services:
       com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
       com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
 
+  # The host-facts collector (issue #1283, scripts/collect-host-facts.sh):
+  # the one container that holds the Docker socket, so the record it writes
+  # is the fleet's only window onto facts no pipeline container can see for
+  # itself (agent-ops#603's own postmortem is why the scheduler and dashboard
+  # hold neither the socket nor a cgroup mount). In no profile, like
+  # `scheduler` and `egress-proxy` above: this file has no profile literally
+  # named "default" — Compose does not have one — a service with no
+  # `profiles:` key simply always starts regardless of COMPOSE_PROFILES, and
+  # that is what "default profile" means in this file's own vocabulary.
+  #
+  # Deliberately not `<<: *agent-ops` / `*agent-ops-env`: those anchors carry
+  # GH_TOKEN, ANTHROPIC_API_KEY and the two GitHub Apps' private-key mounts,
+  # none of which a container that only ever curls a read-only socket and an
+  # in-cluster API needs. Handing them over would only widen this
+  # container's blast radius for nothing gained — the same reasoning
+  # `egress-proxy` above already applies by skipping the same anchors.
+  collector:
+    image: ${AGENT_OPS_IMAGE:-ghcr.io/pullwright/agent-ops:latest}
+    restart: unless-stopped
+    # No supercronic/crontab.tmpl entry: this runs its own loop rather than
+    # a cron line, so a schedule change here is a compose edit and an
+    # `up -d`, not a crontab render and an image roll. Kept deliberately this
+    # simple while the collector is new; folding it into the crontab instead
+    # is worth revisiting only if it turns out to need the same
+    # lock/lifecycle machinery agent-cycle.sh already carries, which as of
+    # this pass it does not — it takes no lock and holds no state the
+    # pre-update hook needs to protect.
+    command:
+      - bash
+      - -c
+      - |
+        while true; do
+          /app/scripts/collect-host-facts.sh || true
+          sleep "$$AGENT_OPS_COLLECTOR_INTERVAL_SECONDS"
+        done
+    environment:
+      NODE_NAME: ${NODE_NAME:-unnamed}
+      AGENT_OPS_SERVICE: collector
+      AGENT_OPS_COLLECTOR_DRIVER: compose
+      # Read by the loop above, escaped as `$$` so Compose does not
+      # substitute it once at `up` time and bake today's value into the
+      # container's argv — moot for a non-secret like this one, but kept
+      # consistent with how this file treats every other runtime-read value.
+      AGENT_OPS_COLLECTOR_INTERVAL_SECONDS: ${AGENT_OPS_COLLECTOR_INTERVAL_SECONDS:-300}
+      # Optional: enables the registry-digest comparison
+      # (image.registry_digest / digest_match in the record). Unset, both
+      # read null — an honest degradation, not an error
+      # (docs/HOST-FACTS-SCHEMA.md).
+      HOST_FACTS_IMAGE_REPO: ${HOST_FACTS_IMAGE_REPO:-}
+      # Optional: where the viewer-vantage probe (agent-ops#1286) fetches
+      # each peer's dashboard data.js. Left unset, the script's own default
+      # (https://{node}/data.js) applies — which this service cannot
+      # currently reach: it carries no tailnet route (see the note below),
+      # so viewer_probe entries degrade to an honest failed-fetch rather
+      # than a wrong success until that wiring exists.
+      AGENT_OPS_VIEWER_URL_TEMPLATE: ${AGENT_OPS_VIEWER_URL_TEMPLATE:-}
+      # Matches the cgroup mount below: this is where *this* container's
+      # copy of the host's cgroup tree lands.
+      HOST_FACTS_CGROUP_ROOT: /host/sys/fs/cgroup
+      # The one container that needs DOCKER_MTU as an *environment* value
+      # rather than as the `driver_opts` substitution every other use of it
+      # in this file is (see the two `com.docker.network.driver.mtu` lines
+      # near the bottom). Compose reads `.env` for substitution only, never
+      # into a container's environment, so without this line
+      # host.network.docker_mtu_configured would always take
+      # lib/host-facts.sh's own 1500 fallback — and a node that correctly
+      # set DOCKER_MTU=1400 to match a 1400-byte egress path would publish
+      # mtu_match: false and be warned, by doctor.sh and by the dashboard's
+      # `host degraded` badge, to fix what it had already fixed. Same
+      # `:-1500` default as the driver_opts lines, so the two can never
+      # disagree about what "unset" means.
+      DOCKER_MTU: ${DOCKER_MTU:-1500}
+    volumes:
+      # Read-write, unlike the dashboard's read-only mount of the same
+      # volume: this is the one container that writes into it
+      # (host-facts/<node>.json), and it also reads updater-ledger/ for the
+      # compose driver's watchtower-ledger section.
+      - state:/home/agent/.local/state/poetic-agents
+      # The workspaces volume, for two facts that live under `workspace_root`
+      # and nowhere else: the peer directory the viewer-vantage probe
+      # enumerates its targets from (`fleet_peers_dir`, which is
+      # `<workspace_root>/.agent-ops-peers`), and the filesystem
+      # `host.disk.workspace_root` reports on. Without it, `entrypoint.sh`
+      # creates an empty `workspace_root` in this container's own writable
+      # layer and both facts come out wrong-but-plausible: a probe that only
+      # ever reaches this node itself, and a disk figure measuring the
+      # container overlay. Read-write, not `:ro`, because `entrypoint.sh`'s
+      # `require_writable "$workspace_root"` refuses to start a container
+      # that cannot write it; the collector itself only reads.
+      - workspaces:/home/agent/.cache/poetic-agents/workspaces
+      # The first *read-only* Docker-socket mount in this file — watchtower's
+      # own mount below is read-write, because it recreates containers; this
+      # collector only ever inspects one, so it does not need the write half
+      # of that socket at all. `ro` matters here specifically: the socket is
+      # a full remote-control API, and read-only merely refuses writes at the
+      # mount, not at the API's own authorization model, which Docker does
+      # not have — this container therefore reads containers' inspect/logs
+      # for every stack on the host, not only this project's, the same
+      # exposure watchtower already carries, just one-directional.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The host's own cgroup tree, read-only: Docker's API exposes a
+      # container's memory.current but not its memory.high/max/events, and
+      # those three are exactly what the compose driver's per-container
+      # memory section needs (lib/host-facts-compose.sh).
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+    # The one thing a read-only socket mount does *not* grant: permission to
+    # open it. This image runs as `agent` (uid/gid 1000 — see the Dockerfile's
+    # own `USER agent`), and a host's `/var/run/docker.sock` is ordinarily
+    # `srw-rw---- root:docker`, so without a supplementary group this
+    # container reads `Permission denied` on every Engine-API call — and
+    # because lib/host-facts-compose.sh degrades rather than fails, the
+    # symptom is a record that publishes `containers: []` forever rather than
+    # anything that looks like an error. `DOCKER_MTU`'s neighbour in .env:
+    # set `DOCKER_GID` on each node to that host's own docker group id
+    # (`getent group docker | cut -d: -f3`). The 999 fallback is Debian and
+    # Ubuntu's usual value and nothing more — a wrong number here degrades to
+    # exactly the empty record above, never to broader access, because an
+    # unmatched gid grants nothing.
+    #
+    # Deliberately not `user: root`, which would also solve the socket: this
+    # container shares the `state` volume with the scheduler (uid 1000), and a
+    # root-written host-facts/<node>.json is a file the scheduler could not
+    # replace on the next roll.
+    group_add:
+      - "${DOCKER_GID:-999}"
+    # Small and bursty — a handful of curl+jq calls per tick, no `claude`,
+    # no clone. Ceilings reuse the shared sidecar-sized vars every other
+    # small helper in this file already uses.
+    mem_limit: ${AGENT_OPS_COLLECTOR_MEMORY:-256m}
+    cpus: ${AGENT_OPS_COLLECTOR_CPUS:-0.5}
+    pids_limit: ${AGENT_OPS_SIDECAR_PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
+        max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
+
   # --- tailnet profile ---------------------------------------------------
   # Tailscale in a sidecar, with the dashboard sharing its network namespace.
   # This is what lets a remote browser reach a server that binds 127.0.0.1:
