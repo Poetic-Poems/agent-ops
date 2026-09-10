@@ -24,7 +24,8 @@
 # land in the ordinary log.jsonl, and `notify_min_interval_seconds`'s
 # per-(event, key) coalescing is a read over that log (READ_LOG, ordinarily
 # `${union_log:-$log_file}` — fleet-wide where a union exists, so two nodes
-# racing the same key still coalesce), not a cache.
+# racing the same key still coalesce; per node where one does not yet, see
+# notify_post_cycle below), not a cache.
 
 # notify_resolve_webhook_url NOTIFY_URL ESCALATION_URL
 # `notify_webhook_url` wins when both are set; `escalation_webhook_url` is
@@ -179,9 +180,13 @@ notify_post() {
 # agent-cycle.sh (the same single-sourced-process convention lib/enabler.sh's
 # own header describes) — and forwards to `notify_post`. `${union_log:-
 # $log_file}` for the read side, the same fallback `escalation_autonomy_*`
-# already uses elsewhere: fleet-wide once a union exists, this node's own
-# log before one does (management commands, run before the cycle's union is
-# built).
+# already uses elsewhere: fleet-wide once a union exists, this node's own log
+# before one does. Three bands are on that side of the line, because
+# agent-cycle.sh does not assign `union_log` until the lock band — management
+# commands, the node-switch check and the fleet-switch check. Only the last
+# loses anything by it: `standdown:fleet-switch` is one fleet-wide fact that
+# every node re-posts, so it coalesces per node rather than across the fleet
+# until the union is built earlier (#1369).
 notify_post_cycle() {
   local event="$1" key="$2" title="$3" url="$4" repo="$5" detail="$6"
   notify_post "$event" "$key" "$title" "$url" "$repo" "$detail" \

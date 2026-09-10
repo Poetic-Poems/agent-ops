@@ -20887,10 +20887,20 @@ oblige anyone to edit a test.
    nothing is suppressed, rather than failing a redirect and aborting a
    caller running under `set -e`. The read side prefers the fleet-wide union log
    (`${union_log:-$log_file}`) so two nodes racing the same key still
-   coalesce — `lib/manage.sh`'s management commands, which run before that
-   union exists, fall back to this node's own log, the same degradation
-   `escalation_autonomy_*`'s own `${union_log:-$log_file}` already accepts
-   elsewhere.
+   coalesce; every call site reached before that union is built falls back to
+   this node's own log, the same degradation `escalation_autonomy_*`'s own
+   `${union_log:-$log_file}` already accepts elsewhere. Three bands are on
+   that side of the line: `lib/manage.sh`'s management commands, and — because
+   `union_log` is not assigned until the lock band — both switch checks in
+   `agent-cycle.sh`, the node switch and the fleet switch. The node switch
+   carries the node in its own key (`standdown:node-switch:<node>`), so per-node
+   coalescing is all it ever wanted. `standdown:fleet-switch` does not: one
+   fleet-wide fact, re-posted by every node on every cycle the switch holds,
+   coalesces per node rather than across the fleet, so an operator sees one
+   message per node per `notify_min_interval_seconds` for as long as it is set.
+   Narrowing that to one message for the fleet means building the union
+   earlier in the cycle than the lock band needs it, which is tracked
+   separately (#1369) rather than folded in here.
 
    **Enabling it is two edits per node, not one — unchanged from before this
    rewrite.** The POST leaves the scheduler through the egress fence like
@@ -26175,9 +26185,17 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   reaches into requirement 51's text, so it is tracked separately as #1329
   rather than folded in here. `escalation_webhook_url` stays accepted as an alias for one release
   rather than a breaking rename, so an installation that has already wired
-  the old key into an alerting receiver keeps working through the
-  transition; `scripts/doctor.sh` warns on it so the rename is visible
-  rather than silently indefinite.
+  the old key into an alerting receiver keeps delivering to the same endpoint
+  through the transition; `scripts/doctor.sh` warns on it so the rename is
+  visible rather than silently indefinite. The alias carries the URL only, not
+  the body: the pre-#1279 filing-failure payload was `{reason, detail, repo,
+  item, node, cycle}`, and the one body every class now shares has no
+  `reason`, `item` or `cycle` in it (`reason` became `title`, `item` folded
+  into `key` as `<repo>#<item>`). One body for three classes is the point of
+  the promotion, so the receiver-side edit is the deliberate cost of it rather
+  than something the alias could have absorbed — which is why the CHANGELOG
+  entry states the field-level change alongside the rename rather than leaving
+  an operator to infer it from the key still working.
 - **`notify_min_interval_seconds` coalesces per `(event, key)` pair, not per
   notify class and not per key alone.** A coarser bucket (one shared key per
   class) would suppress a genuine second escalation about a *different* item

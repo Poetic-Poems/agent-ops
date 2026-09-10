@@ -98,6 +98,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fence. New config: `notify_webhook_url`, `notify_events`,
   `notify_min_interval_seconds`.
 
+  **The alias preserves the URL, not the body.** An installation already
+  pointing `escalation_webhook_url` at a receiver keeps delivering to the same
+  endpoint, but the JSON it delivers has changed: the old filing-failure body
+  was `{reason, detail, repo, item, node, cycle}` and there is no `reason`,
+  `item` or `cycle` in the new one. A receiver that reads those fields needs
+  updating — `reason` is now `title`, `item` is folded into `key` (as
+  `<repo>#<item>`), and the filing failure that used to be the only thing this
+  channel sent is now the `escalation-unfiled` event rather than every message
+  on it.
+
 - **The pager: fleet-level invariant evaluation, filing and auto-close**
   (issue #1278, requirement 51): `lib/pager.sh`, a registry of named
   invariants evaluated once per Publisher GitHub tick, each a function over
