@@ -47,6 +47,7 @@
   "enabler_recheck_hours": 72,
   "enabler_escalation_label": "enabler-escalation",
   "escalation_autonomy": "decide-tactical",
+  "standing_decisions_file": "docs/STANDING-DECISIONS.md",
   "crash_loop_after": 4,
   "crash_loop_repo": "Pullwright/agent-ops",
   "unvoid_label": "unvoided",

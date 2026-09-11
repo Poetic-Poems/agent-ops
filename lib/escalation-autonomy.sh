@@ -200,3 +200,60 @@ escalation_event_logged_since() {
   ' 2>/dev/null || echo 0)"
   [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
 }
+
+# enabler_decide_precedents REPO STANDING_FILE ESCALATION_LABEL
+# The `precedents` member of a decide-tactical pass's runtime input
+# (requirement 36d, "Precedent first"): what the installation and REPO have
+# already decided, so the pass answers from the record before it weighs the
+# owner-only boundary at all. The 2026-09-11 review
+# (docs/reviews/2026-09-11-escalation-autonomy-review.md) found the pass
+# refusing questions an interactive session then answered from memory of
+# earlier owner rulings — the pass had no such memory. Three sources, each
+# best-effort (requirement 37) — a failed or empty read leaves its member
+# empty rather than failing the build, since a pass without precedent is
+# still a pass:
+#
+#   standing_decisions   STANDING_FILE read whole and cut at 32 KiB — the
+#                        installation's own dated list of owner answers
+#                        (`standing_decisions_file`); "" when the path is
+#                        empty or unreadable.
+#   decision_log         REPO's newest thirty `pw::decision` issues, --state
+#                        all (an open one is a vetoed one), each reduced to
+#                        number/url/state/title and the first paragraph under
+#                        "## Decision taken by the pipeline", cut at 600
+#                        characters. The label is the fixed name
+#                        `labels_catalogue` (lib/labels.sh) ships, for the
+#                        same reason `scripts/sweep-decision-vetoes.sh`
+#                        searches on it: a renamed label would silently stop
+#                        being found.
+#   closed_escalations   REPO's newest fifteen closed ESCALATION_LABEL
+#                        issues, number/title/url/closed_at only — the pass
+#                        opens one with `gh` where its title bears on the
+#                        question, so the listing costs one read, not fifteen.
+#
+# Prints exactly one JSON object and never fails: a caller that could not
+# build precedents at all still gets the empty shape.
+enabler_decide_precedents() {
+  local repo="$1" standing_file="${2:-}" escalation_label="${3:-}"
+  local standing="" decisions="" closed=""
+  if [[ -n "$standing_file" && -r "$standing_file" ]]; then
+    standing="$(head -c 32768 "$standing_file" 2>/dev/null || true)"
+  fi
+  decisions="$(gh issue list -R "$repo" --label "pw::decision" --state all --limit 30 \
+                 --json number,url,state,title,body 2>/dev/null \
+               | jq -c '[ .[] | {number, url, state, title,
+                   decision: ((.body // "")
+                              | split("## Decision taken by the pipeline") | (.[1] // "")
+                              | sub("^\\s+"; "") | split("\n\n") | (.[0] // "") | .[0:600])} ]' \
+                 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$decisions" >/dev/null 2>&1 || decisions='[]'
+  if [[ -n "$escalation_label" ]]; then
+    closed="$(gh issue list -R "$repo" --label "$escalation_label" --state closed --limit 15 \
+                --json number,title,url,closedAt 2>/dev/null \
+              | jq -c '[ .[] | {number, title, url, closed_at: (.closedAt // "")} ]' 2>/dev/null || true)"
+  fi
+  jq -e 'type == "array"' <<<"$closed" >/dev/null 2>&1 || closed='[]'
+  jq -nc --arg s "$standing" --argjson d "$decisions" --argjson c "$closed" \
+    '{standing_decisions: $s, decision_log: $d, closed_escalations: $c}' 2>/dev/null \
+    || printf '{"standing_decisions":"","decision_log":[],"closed_escalations":[]}'
+}

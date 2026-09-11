@@ -547,6 +547,16 @@
         "value": "`3`"
       }
     },
+    "standing_decisions_file": {
+      "type": "string",
+      "default": "",
+      "description": "Path of the installation's standing-decisions file — one dated line per owner answer the `decide-tactical` pass is to stay consistent with, read whole (cut at 32 KiB) into the pass's `precedents.standing_decisions` (requirement 36d, \"Precedent first\"). Relative to the directory holding `config.json` unless absolute. Empty (the default) supplies no standing decisions; the pass still receives the repository's own `pw::decision` records and its recently closed escalations. The file changes only through the pull-request gate, like any other file in the installation.",
+      "x-docs": {
+        "readme": "The installation's standing-decisions file: one dated line per answer you have given the pipeline, which its `decide-tactical` pass reads before deciding anything, so a question you have already answered is answered the same way again rather than escalated — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Relative to the installation directory unless absolute. Leave it empty to supply none; the pass still sees the repository's own decision records and its recently closed escalations.",
+        "spec": "The path `enabler_decide_precedents` (`lib/escalation-autonomy.sh`) reads whole, cut at 32 KiB, into a decide-tactical pass's `precedents.standing_decisions` (requirement 36d): one dated line per owner answer the pipeline is to stay consistent with, the owner's own record or a delegate's on their behalf, changed only through the pull-request gate. Resolved against the directory holding `config.json` when relative (`agent-cycle.sh`); empty or `null` supplies none, and the pass runs on the repository's `pw::decision` records and closed escalations alone. Unreadable at run time reads as empty — best-effort like every other input the Enabler builds (requirement 37).",
+        "value": "`docs/STANDING-DECISIONS.md`"
+      }
+    },
     "escalation_refile_after_hours": {
       "description": "The re-filing guard for an escalation issue closed without the releasing act (agent-ops#779, decided on #784): a per-close rate limit on `open_question_escalate` (requirement 8f) and `approver_escalate` (requirement 8c) alike. Once a human closes an escalation issue for an item, the next filing for that same item is suppressed for this many hours from the close — unless it is the one immediate re-escalation a failed post-close adjudication owes (requirement 38), which always files regardless of the window. `0` disables the guard outright: every refusing round files, exactly as before this key existed.",
       "type": "number",

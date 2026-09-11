@@ -814,11 +814,21 @@ run_enabler_decide() {
   local repo="$1" item="$2" claimed_entry="$3" ex="$4" cycle_dir="$5" idx="$6"
   local input prompt out rc=0 result parsed verdict evidence decision rationale options
   local critical_model="${enabler_model_critical:-$enabler_model}"
+  local precedents
 
   if [[ ! -f "$PROMPTS_DIR/enabler-decide.md" ]]; then
     printf '{"verdict":"escalate","evidence":"no prompts/enabler-decide.md in this installation"}'
     return 0
   fi
+
+  # Requirement 36d's `precedents`: the standing-decisions file, the repo's
+  # own decision log and its closed escalations, so the pass answers from the
+  # record before it weighs the boundary. Best-effort — the empty shape is
+  # still a valid input, and a pass without precedent is still a pass.
+  precedents="$(enabler_decide_precedents "$repo" "${standing_decisions_file:-}" \
+                  "${enabler_escalation_label:-}" 2>/dev/null || true)"
+  jq -e 'type == "object"' <<<"$precedents" >/dev/null 2>&1 \
+    || precedents='{"standing_decisions":"","decision_log":[],"closed_escalations":[]}'
 
   input="$(jq -nc --arg r "$repo" --arg i "$item" \
     --arg kind "$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)" \
@@ -826,7 +836,8 @@ run_enabler_decide() {
     --argjson reflag "$(jq -c '{reason: (.reason // ""), detail: (.detail // ""), unblock_condition: (.unblock_condition // "")}' \
        <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
     --argjson escalation "$(jq -c '{title: (.issue.title // ""), body: (.issue.body // "")}' <<<"$ex" 2>/dev/null || printf '{}')" \
-    '{repo: $r, item: $i, kind: $kind, refinement: $refinement, reflag: $reflag, escalation: $escalation}' \
+    --argjson precedents "$precedents" \
+    '{repo: $r, item: $i, kind: $kind, refinement: $refinement, reflag: $reflag, escalation: $escalation, precedents: $precedents}' \
     2>/dev/null || true)"
   if [[ -z "$input" ]]; then
     printf '{"verdict":"escalate","evidence":"could not build the decide-tactical input"}'

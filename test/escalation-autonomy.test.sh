@@ -10,6 +10,8 @@
 #   - escalation_autonomy_configured_level — the same
 #     top-level-default/per-repo-override precedence stage_timeouts and
 #     merge_autonomy_configured_level both use.
+#   - enabler_decide_precedents — requirement 36d's `precedents` builder: three
+#     best-effort members, the empty shape on every failure, one read per list.
 #   - escalation_autonomy_adjudicated_before — requirement 36b's "bounded, not
 #     a loop" guard, read off the log the same way `crash_loop_escalated_since`
 #     reads its own already-escalated fact. What makes it worth a test of its
@@ -426,6 +428,63 @@ assert_eq "close failure: still returns the number and url" \
 assert_contains "close failure: a warning names the repo and issue" \
   "could not close it" "$(cat "$gh_calls")"
 
+# --- enabler_decide_precedents (requirement 36d, "Precedent first") ---
+# The three members are independent and each best-effort: a missing file, a
+# failed `gh` read or an unparseable list leaves its member empty and the
+# object still prints, exit 0 — a pass without precedent is still a pass.
+precedents_dir="$(mktemp -d)"
+printf -- '- 2026-09-11 · #1310 · **accept the GC tail** — private repo.\n' > "$precedents_dir/standing.md"
+GH_PRECEDENTS_DECISIONS='[{"number":501,"url":"https://github.com/acme/widgets/issues/501","state":"CLOSED","title":"widgets: decision","body":"<!-- agent-ops:decision-log item=42 repo=acme/widgets -->\n\n## Decision taken by the pipeline\n\nKeep the claim-excluded bands as the live set.\n\n**Rationale:** cost saving.\n"},{"number":502,"url":"https://github.com/acme/widgets/issues/502","state":"OPEN","title":"widgets: vetoed decision","body":"no decision section here"}]'
+GH_PRECEDENTS_CLOSED='[{"number":700,"title":"widgets: decide the gate scope","url":"https://github.com/acme/widgets/issues/700","closedAt":"2026-09-04T22:51:10Z"}]'
+GH_PRECEDENTS_FAIL=""
+# shellcheck disable=SC2317  # invoked only by enabler_decide_precedents
+gh() {
+  printf '%s\n' "$*" >> "$gh_calls"
+  [[ -z "$GH_PRECEDENTS_FAIL" ]] || return 1
+  case "$*" in
+    *"--label pw::decision"*) printf '%s' "$GH_PRECEDENTS_DECISIONS" ;;
+    *"--label enabler-escalation"*) printf '%s' "$GH_PRECEDENTS_CLOSED" ;;
+    *) printf '[]' ;;
+  esac
+}
+: > "$gh_calls"
+result="$(enabler_decide_precedents "acme/widgets" "$precedents_dir/standing.md" "enabler-escalation")"
+assert_eq "precedents: the standing file is read whole" \
+  "- 2026-09-11 · #1310 · **accept the GC tail** — private repo." \
+  "$(jq -r '.standing_decisions' <<<"$result" | head -1)"
+assert_eq "precedents: a decision record is reduced to its first decision paragraph" \
+  "Keep the claim-excluded bands as the live set." "$(jq -r '.decision_log[0].decision' <<<"$result")"
+assert_eq "precedents: a record without the section yields an empty decision" \
+  "" "$(jq -r '.decision_log[1].decision' <<<"$result")"
+assert_eq "precedents: a vetoed record keeps its OPEN state" \
+  "OPEN" "$(jq -r '.decision_log[1].state' <<<"$result")"
+assert_eq "precedents: a closed escalation carries number, title, url, closed_at only" \
+  '{"number":700,"title":"widgets: decide the gate scope","url":"https://github.com/acme/widgets/issues/700","closed_at":"2026-09-04T22:51:10Z"}' \
+  "$(jq -c '.closed_escalations[0]' <<<"$result")"
+assert_eq "precedents: each list is read exactly once" "2" "$(grep -c '^issue list' "$gh_calls")"
+assert_contains "precedents: decisions are searched --state all (an open one is a veto)" \
+  "--state all" "$(grep 'pw::decision' "$gh_calls")"
+assert_contains "precedents: escalations are searched --state closed" \
+  "--state closed" "$(grep 'enabler-escalation' "$gh_calls")"
+
+: > "$gh_calls"
+result="$(enabler_decide_precedents "acme/widgets" "$precedents_dir/standing.md" "")"
+assert_eq "precedents: an empty escalation label skips that read" "1" "$(grep -c '^issue list' "$gh_calls")"
+assert_eq "precedents: ...and leaves closed_escalations empty" "[]" "$(jq -c '.closed_escalations' <<<"$result")"
+
+GH_PRECEDENTS_FAIL=1
+result="$(enabler_decide_precedents "acme/widgets" "$precedents_dir/absent.md" "enabler-escalation")"
+rc=$?
+assert_eq "precedents: nothing readable still exits 0" "0" "$rc"
+assert_eq "precedents: nothing readable prints the empty shape" \
+  '{"standing_decisions":"","decision_log":[],"closed_escalations":[]}' "$result"
+GH_PRECEDENTS_FAIL=""
+
+head -c 40000 /dev/zero | tr '\0' 'x' > "$precedents_dir/big.md"
+result="$(enabler_decide_precedents "acme/widgets" "$precedents_dir/big.md" "")"
+assert_eq "precedents: the standing file is cut at 32 KiB" "32768" \
+  "$(jq -r '.standing_decisions | length' <<<"$result")"
+rm -rf "$precedents_dir"
 echo
 if (( failures == 0 )); then
   echo "all assertions passed"

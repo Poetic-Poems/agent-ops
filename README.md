@@ -411,6 +411,7 @@ Keys:
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the issue is still raised, just unlabelled. |
 | `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary...[continued below](#extended-notes-escalation_autonomy) |
 | `escalation_adjudication_max_passes` | `3` | How many `decide-tactical` passes one item may spend in total, whatever their reason — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). A fresh reason still gets its own pass under this cap, and closing an escalation about the item grants one further pass regardless of it; only a run of unrelated tactical questions on the same item is what this bounds. |
+| `standing_decisions_file` | `docs/STANDING-DECISIONS.md` | The installation's standing-decisions file: one dated line per answer you have given the pipeline, which its `decide-tactical` pass reads before deciding anything, so a question you have already answered is answered the same way again rather than escalated — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Relative to the installation directory unless absolute. Leave it empty to supply none; the pass still sees the repository's own decision records and its...[continued below](#extended-notes-standing_decisions_file) |
 | `escalation_refile_after_hours` | `24` | Hours a human's own close of an escalation issue suppresses the *next* filing for the same item (`open_question_escalate`/requirement 8f, `approver_escalate`/requirement 8c) — closing the issue is not the releasing act, so without this guard a human who closes without also releasing the gate gets a fresh issue every refusing round. `0` disables the guard: every refusing round files, as before this key existed. A re-escalation a failed post-close adjudication owes always files...[continued below](#extended-notes-escalation_refile_after_hours) |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
@@ -587,6 +588,10 @@ Cycle and review directories whose derived files are kept — the stage event st
 The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary blocked item as much as a refinement disagreement — and either settles it, decides a tactical trade-off on the pipeline's own authority, or escalates anyway; an owner-only decision always escalates, at every rung). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos).
 
 The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). That path runs its own bounded pass only at `adjudicate-first` exactly — `decide-tactical` behaves the same as `adjudicate-first` there, not a further widening — so you cannot enable one Enabler-side rung without also getting the open-question path at its `adjudicate-first` behaviour.
+
+### Extended notes: `standing_decisions_file`
+
+The installation's standing-decisions file: one dated line per answer you have given the pipeline, which its `decide-tactical` pass reads before deciding anything, so a question you have already answered is answered the same way again rather than escalated — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Relative to the installation directory unless absolute. Leave it empty to supply none; the pass still sees the repository's own decision records and its recently closed escalations.
 
 ### Extended notes: `escalation_refile_after_hours`
 
@@ -1537,6 +1542,19 @@ already decided over something else still gets its own pass, up to
 one further pass beyond that cap, each time you do. The same question a
 second time still comes to you, on the same terms `adjudicate-first`'s own
 bound already uses.
+
+Before it weighs any of that, the pass reads what has already been decided:
+the installation's standing-decisions file (`standing_decisions_file` — one
+dated line per answer you have given the pipeline), this repository's own
+`pw::decision` records, and its most recently closed escalations. A question
+you have already answered — for a sibling item, or as a principle — is
+answered the same way again, as a `decide` that cites the earlier answer,
+rather than escalated afresh. Keep that file current: it is the cheapest
+lever this ladder has. And only two things reserve a choice to you: the
+`pw::owner-decision` label on an issue, or an `Owner decision: yes` line in a
+record — a body that merely calls a choice "one for a human" does not, a
+threshold nobody has set is set by the pass rather than asked, and an option
+the pipeline may take is taken even when its siblings would need you.
 
 **Every `decide` verdict also files a closed, unassigned issue** labelled
 `pw::decision` — a durable log of the decision, not a further ask — with the

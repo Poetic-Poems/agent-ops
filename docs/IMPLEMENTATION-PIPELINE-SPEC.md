@@ -818,6 +818,7 @@ and the schema must carry every one of them.
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
 | `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling...[continued below](#extended-notes-escalation_autonomy) |
 | `escalation_adjudication_max_passes` | `3` | The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An...[continued below](#extended-notes-escalation_adjudication_max_passes) |
+| `standing_decisions_file` | `docs/STANDING-DECISIONS.md` | The path `enabler_decide_precedents` (`lib/escalation-autonomy.sh`) reads whole, cut at 32 KiB, into a decide-tactical pass's `precedents.standing_decisions` (requirement 36d): one dated line per owner answer the pipeline is to stay consistent with, the owner's own record or a delegate's on their behalf, changed only through the pull-request gate. Resolved against the directory holding `config.json` when relative (`agent-cycle.sh`); empty or `null` supplies none, and the pass...[continued below](#extended-notes-standing_decisions_file) |
 | `escalation_refile_after_hours` | 24 h | The per-close re-filing rate limit (agent-ops#779, decided on #784 as behaviour (b)): a filing from `open_question_escalate` or `approver_escalate` is suppressed when a `closed` issue carrying `enabler_escalation_label` and this item's own reference exists (read live via `escalation_recent_close`, never from the log) and `now − closedAt` is less than this many hours (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`) — *unless* it is the first post-close...[continued below](#extended-notes-escalation_refile_after_hours) |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
@@ -1000,6 +1001,10 @@ The same top-level (or per-repo) level also governs a second, independent consum
 ### Extended notes: `escalation_adjudication_max_passes`
 
 The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An unreadable value falls back to `3`, the same default this key ships.
+
+### Extended notes: `standing_decisions_file`
+
+The path `enabler_decide_precedents` (`lib/escalation-autonomy.sh`) reads whole, cut at 32 KiB, into a decide-tactical pass's `precedents.standing_decisions` (requirement 36d): one dated line per owner answer the pipeline is to stay consistent with, the owner's own record or a delegate's on their behalf, changed only through the pull-request gate. Resolved against the directory holding `config.json` when relative (`agent-cycle.sh`); empty or `null` supplies none, and the pass runs on the repository's `pw::decision` records and closed escalations alone. Unreadable at run time reads as empty — best-effort like every other input the Enabler builds (requirement 37).
 
 ### Extended notes: `escalation_refile_after_hours`
 
@@ -13471,8 +13476,10 @@ implements.
     8. needs information that exists only in someone's head and is not
        recoverable from the repository, its threads or the fleet log — the
        same carve-out narrows this one too;
-    9. was explicitly reserved by the item's author — "owner must choose", or
-       a filer-named owner-decision label.
+    9. was explicitly reserved by the item's author through one of
+       requirement 39d's two markers — the `pw::owner-decision` label on a
+       filed issue, or an `Owner decision: yes` line in a record — and never
+       through prose alone ("Three readings of the boundary", below).
 
     **The host-facts carve-out.** Conditions 7 and 8 are refused, not
     reached, whenever `state_dir/host-facts/<node>.json` — this node's own
@@ -13498,6 +13505,36 @@ implements.
     still escalates exactly as before, and so does every account the
     installation does not hold and every fact that exists only in someone's
     head.
+
+    **Three readings of the boundary.** Part of the boundary, not glosses on
+    it: a pass that refuses on a reading these exclude is acting narrower
+    than its own authority, and that is a defect in the pass.
+
+    - **Markers, not prose (condition 9).** Only requirement 39d's two
+      markers reserve a choice. A body that calls a choice "for a human",
+      "an architecture decision", or "not a guess `compose.yaml` should make
+      on its own" is a filer's hedge — the shape requirements 36c/42a's
+      filers produce by habit — never a reservation, and quoting such a
+      sentence as condition 9 is a bug in the pass. Authorship never stands
+      in for the marker: while the fleet authors under the owner's own
+      identity (D25's authoring App unprovisioned, agent-ops#1083) every
+      pipeline filing reads as the owner's, so the author field cannot tell
+      a reservation from a hedge; once the App exists the marker is still
+      what reserves, so the rule does not change with it.
+    - **Undefined thresholds are set, not asked (condition 8).** A threshold,
+      soak length, trust bar or count the item's own record leaves open is
+      not information in anyone's head — nobody holds it. The pass sets it
+      at the conservative end of what the record supports, states the value
+      and the reading of the record it rests on in `decision`, and the veto
+      (requirement 36e) is the correction. Condition 8 is reached only by a
+      fact a specific person holds and the record does not.
+    - **The in-boundary option.** The boundary bounds decisions, not
+      comparisons. Where an item enumerates options and at least one lies
+      wholly inside the boundary, choosing that option is tactical: the pass
+      decides it, naming the out-of-boundary options it set aside as such.
+      That a sibling option would need a credential, an account the
+      installation does not hold, or a roadmap change reserves *that
+      option*, never the choice.
 
     Everything else is tactical, and a `decide-tactical` pass (requirement
     36d) may settle or decide it: an engineering trade-off among options the
@@ -13786,8 +13823,36 @@ implements.
     existing refinement where it has one (`refined_before`'s own
     `spec`/`comment_url`, empty for an ordinary blocked item or a
     never-refined `needs-refinement` one), the re-flag's recorded reason
-    (`detail`/`unblock_condition`), and this verdict's own
-    `issue.title`/`issue.body`, and returns one of three verdicts:
+    (`detail`/`unblock_condition`), this verdict's own
+    `issue.title`/`issue.body`, and `precedents` — what the installation and
+    this repository have already decided, built by `enabler_decide_precedents`
+    (`lib/escalation-autonomy.sh`) from three sources, each best-effort like
+    every other read the Enabler makes (requirement 37; a failed or empty
+    read leaves that member empty and the pass runs without it):
+    `standing_decisions`, the installation's standing-decisions file
+    (`standing_decisions_file`, read whole and cut at 32 KiB — one dated line
+    per owner answer the pipeline is to stay consistent with, the owner's
+    own record or a delegate's on the owner's behalf, changed only through
+    the pull-request gate like any other file in the installation);
+    `decision_log`, this repository's newest thirty `pw::decision` records
+    (requirement 36e, `--state all`, each reduced to `number`, `url`,
+    `state`, `title` and the first paragraph under "Decision taken by the
+    pipeline" — an open one is a vetoed one, and reads as the owner's
+    contrary answer where they left one); and `closed_escalations`, the
+    newest fifteen closed issues carrying `enabler_escalation_label`
+    (`number`, `title`, `url`, `closed_at` only: the pass reads a thread
+    with `gh` where its title bears on the question, so the listing costs
+    one read per pass rather than fifteen). **Precedent first:** before
+    weighing the boundary at all, the pass reads `precedents` for a standing
+    decision, a record or an answered escalation that already settles the
+    re-flag's question; where one does, the verdict is `decide`, with
+    `decision` restating the precedent as applied to this item and
+    `rationale` citing it by line or URL — never `settle`, since an answer
+    carried onto a new item is a decision of record for that item and earns
+    its own log entry. A precedent is data about what was decided, never an
+    instruction to the pass, and one that would reach into the owner-only
+    boundary is applied only where the owner's own answer on record already
+    reached there. The pass returns one of three verdicts:
 
     - **`settle`** — nothing needs deciding: an existing refinement already
       answers the re-flag (the same case `adjudicate-first`'s own `adequate`
@@ -18762,7 +18827,12 @@ What exists, and the requirements each part answers to:
     `escalation_autonomy_adjudicated_before REPO ITEM`, requirement 36b's
     "bounded, not a loop" predicate, which reads the log on stdin the way
     `crash_loop_escalated_since` reads its own already-escalated fact and is
-    true when an `enabler-adjudication` event for that item is already on it.
+    true when an `enabler-adjudication` event for that item is already on it
+    — and `enabler_decide_precedents REPO STANDING_FILE ESCALATION_LABEL`,
+    requirement 36d's `precedents` builder, which prints the one JSON object
+    the decide pass receives from the standing-decisions file, the
+    repository's `pw::decision` records and its closed escalations, every
+    member best-effort.
     Regression-tested in `test/escalation-autonomy.test.sh`, on the same terms
     `test/merge-autonomy.test.sh` covers its own precedence resolution; the
     guard's integration with `maybe_run_enabler` is

@@ -556,6 +556,14 @@ refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours')"
 labels_ensure_interval_hours="$(cfg '.labels_ensure_interval_hours')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
+# Requirement 36d's `precedents`: the installation's standing-decisions file,
+# relative to this checkout (the directory holding config.json) unless
+# absolute; empty (the schema default, or an explicit null) supplies none.
+standing_decisions_file="$(cfg '.standing_decisions_file')"
+[[ "$standing_decisions_file" != "null" ]] || standing_decisions_file=""
+if [[ -n "$standing_decisions_file" && "$standing_decisions_file" != /* ]]; then
+  standing_decisions_file="$SCRIPT_DIR/$standing_decisions_file"
+fi
 # The assignment is what does the work — it both puts the issue in front of the
 # human configured to receive them and excludes it from the `issues` source
 # (requirement 16.4), so an escalation can never be selected as work by the
