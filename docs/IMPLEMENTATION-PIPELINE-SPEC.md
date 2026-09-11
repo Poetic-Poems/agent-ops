@@ -2246,6 +2246,16 @@ implements.
       correctly configured first, so it still fires on a `livelocked` or
       `unconfirmed` node, which is the exact gap this incident fell through.
 
+      The script refuses to run inside a container, and refuses on the
+      `/.dockerenv` sentinel (`lib/compose-drift.sh`'s own) rather than on
+      `docker` being absent from `PATH`: that second test answered the
+      question only while this image carried no Docker CLI, and it carries
+      one now for the `reconciler` service (requirement 2.5a). Both checks
+      stand, the sentinel first, because a CLI that resolves inside a
+      container and then reaches no daemon fails several lines later as an
+      unreadable `docker info` — which reads like a broken host rather than a
+      script run in the wrong place.
+
       On a `cgroupfs` host the parent is a plain cgroup directory, and
       `scripts/cgroup-parent-setup.sh` delegates the `memory` controller down
       every ancestor of that directory — writing `+memory` to each

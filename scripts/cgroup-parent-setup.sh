@@ -199,6 +199,18 @@ swap_val="$(to_ceiling "$swap")"
 # in each one's own vocabulary.
 systemd_ceiling() { [[ "${1:-}" == "max" ]] && printf 'infinity' || printf '%s' "$1"; }
 
+# Two checks, not one, and the second is the load-bearing half now. "Is
+# `docker` on PATH" used to answer "am I on the host", because this image
+# carried no Docker CLI — and it stopped answering it the moment the image
+# gained one for the `reconciler` service (IMPLEMENTATION-PIPELINE-SPEC
+# requirement 2.5a). Inside a container the CLI now resolves and then talks to
+# no daemon, so the guard would pass and the failure would surface several
+# lines later as an unreadable `docker info`, which reads like a broken host
+# rather than a script run in the wrong place. `/.dockerenv` is the same
+# sentinel `lib/compose-drift.sh` uses for the same question, and it is
+# checked first because it is the more specific diagnosis.
+[[ ! -e "${CGROUP_SETUP_CONTAINER_SENTINEL:-/.dockerenv}" ]] \
+  || die "this is running inside a container; lift it out and run it on the host (deploy/docker/compose.yaml's scheduler service documents the two commands)"
 command -v docker >/dev/null 2>&1 || die "docker is not on PATH; run this on the host, not in a container"
 driver="$(docker info --format '{{.CgroupDriver}}' 2>/dev/null)" \
   || die "cannot read 'docker info' — run this as root on the host"
