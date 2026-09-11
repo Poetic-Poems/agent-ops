@@ -83,74 +83,77 @@ safe_won="${slug_won//\//_}"
 # --- The stub gh for CLAIM_GH (same filesystem CAS as test/claim.test.sh) -----
 stub_bin="$tmp_dir/claim-bin"
 mkdir -p "$stub_bin"
-cat > "$stub_bin/gh" <<STUB
+cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
-d="\${GH_STUB_DIR:?}"
-[[ "\${GH_STUB_FAIL:-0}" == "1" ]] && exit 1
+d="${GH_STUB_DIR:?}"
+[[ "${GH_STUB_FAIL:-0}" == "1" ]] && exit 1
 
-if [[ "\${1:-}" == "pr" ]]; then printf '%s\n' "\${GH_STUB_PRS:-0}"; exit 0; fi
+if [[ "${1:-}" == "pr" ]]; then printf '%s\n' "${GH_STUB_PRS:-0}"; exit 0; fi
 
 method=GET; path=""; jqf=""; declare -A f=()
-args=("\$@")
-for (( i=0; i<\${#args[@]}; i++ )); do
-  case "\${args[i]}" in
-    -X)   method="\${args[i+1]}"; (( i++ )) ;;
-    -f)   kv="\${args[i+1]}"; f["\${kv%%=*}"]="\${kv#*=}"; (( i++ )) ;;
-    --jq) jqf="\${args[i+1]}"; (( i++ )) ;;
-    repos/*) path="\${args[i]}" ;;
+args=("$@")
+for (( i=0; i<${#args[@]}; i++ )); do
+  case "${args[i]}" in
+    -X)   method="${args[i+1]}"; (( i++ )) ;;
+    -f)   kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
+    --jq) jqf="${args[i+1]}"; (( i++ )) ;;
+    repos/*) path="${args[i]}" ;;
   esac
 done
 
-# $slug_err needs every call to fail outright — a claim that cannot reach
-# GitHub at all, not one that reaches it and loses (that is \$slug_lost,
-# below, via the ordinary create-only CAS logic).
-[[ "\$path" == *"/error-repo/"* ]] && exit 1
+# GH_STUB_ERROR_SLUG (the test's $slug_err) needs every call to fail
+# outright — a claim that cannot reach GitHub at all, not one that reaches
+# it and loses (that is $slug_lost, below, via the ordinary create-only CAS
+# logic). Read from the environment like GH_STUB_DIR above, so this stub
+# stays a single-quoted here-document: nothing in it is expanded by the
+# test's own shell, which is what keeps its every $ safe to write plainly.
+[[ -n "${GH_STUB_ERROR_SLUG:-}" && "$path" == *"repos/$GH_STUB_ERROR_SLUG/"* ]] && exit 1
 
 emit() {
-  if [[ -n "\$jqf" ]]; then jq -r "\$jqf" <<<"\$1"; else printf '%s\n' "\$1"; fi
+  if [[ -n "$jqf" ]]; then jq -r "$jqf" <<<"$1"; else printf '%s\n' "$1"; fi
 }
 
-case "\$method \$path" in
+case "$method $path" in
   "POST "*/git/refs)
-    slug="\${path#repos/}"; slug="\${slug%/git/refs}"
-    ref="\${f[ref]#refs/heads/}"
-    file="\$d/refs/\$slug/\$ref"
-    mkdir -p "\$(dirname "\$file")"
-    ( set -C; printf '%s' "\${f[sha]}" > "\$file" ) 2>/dev/null || exit 1
+    slug="${path#repos/}"; slug="${slug%/git/refs}"
+    ref="${f[ref]#refs/heads/}"
+    file="$d/refs/$slug/$ref"
+    mkdir -p "$(dirname "$file")"
+    ( set -C; printf '%s' "${f[sha]}" > "$file" ) 2>/dev/null || exit 1
     exit 0 ;;
   "GET "*/git/ref/heads/*)
-    slug="\${path#repos/}"; slug="\${slug%%/git/*}"
-    ref="\${path#*/git/ref/heads/}"
-    if [[ "\$ref" == "main" && ! -f "\$d/refs/\$slug/\$ref" ]]; then
+    slug="${path#repos/}"; slug="${slug%%/git/*}"
+    ref="${path#*/git/ref/heads/}"
+    if [[ "$ref" == "main" && ! -f "$d/refs/$slug/$ref" ]]; then
       emit '{"object":{"sha":"basesha000"}}'; exit 0
     fi
-    [[ -f "\$d/refs/\$slug/\$ref" ]] || exit 1
-    emit "{\"object\":{\"sha\":\"\$(cat "\$d/refs/\$slug/\$ref")\"}}"; exit 0 ;;
+    [[ -f "$d/refs/$slug/$ref" ]] || exit 1
+    emit "{\"object\":{\"sha\":\"$(cat "$d/refs/$slug/$ref")\"}}"; exit 0 ;;
   "DELETE "*/git/refs/heads/*)
-    slug="\${path#repos/}"; slug="\${slug%%/git/*}"
-    ref="\${path#*/git/refs/heads/}"
-    rm -f "\$d/refs/\$slug/\$ref"; exit 0 ;;
+    slug="${path#repos/}"; slug="${slug%%/git/*}"
+    ref="${path#*/git/refs/heads/}"
+    rm -f "$d/refs/$slug/$ref"; exit 0 ;;
   "PUT "*/contents/*)
-    p="\$d/contents/\${path#*/contents/}"
-    mkdir -p "\$(dirname "\$p")"
-    ( set -C; printf '%s' "\${f[content]}" > "\$p" ) 2>/dev/null || exit 1
+    p="$d/contents/${path#*/contents/}"
+    mkdir -p "$(dirname "$p")"
+    ( set -C; printf '%s' "${f[content]}" > "$p" ) 2>/dev/null || exit 1
     exit 0 ;;
   "GET "*/contents/*)
-    p="\$d/contents/\${path#*/contents/}"
-    if [[ -d "\$p" ]]; then
-      out="\$(cd "\$p" && for e in *; do
-               [[ -e "\$e" ]] || continue
-               [[ -d "\$e" ]] && t=dir || t=file
-               printf '{"type":"%s","name":"%s"}\n' "\$t" "\$e"
+    p="$d/contents/${path#*/contents/}"
+    if [[ -d "$p" ]]; then
+      out="$(cd "$p" && for e in *; do
+               [[ -e "$e" ]] || continue
+               [[ -d "$e" ]] && t=dir || t=file
+               printf '{"type":"%s","name":"%s"}\n' "$t" "$e"
              done | jq -sc '.')"
-      emit "\$out"; exit 0
+      emit "$out"; exit 0
     fi
-    [[ -f "\$p" ]] || exit 1
-    emit "{\"sha\":\"stubsha\",\"content\":\"\$(cat "\$p")\"}"; exit 0 ;;
+    [[ -f "$p" ]] || exit 1
+    emit "{\"sha\":\"stubsha\",\"content\":\"$(cat "$p")\"}"; exit 0 ;;
   "DELETE "*/contents/*)
-    p="\$d/contents/\${path#*/contents/}"
-    rm -f "\$p"; exit 0 ;;
+    p="$d/contents/${path#*/contents/}"
+    rm -f "$p"; exit 0 ;;
 esac
 exit 1
 STUB
@@ -193,7 +196,7 @@ home="$tmp_dir/node"
 mkdir -p "$home/.local/state/poetic-agents" "$home/.cache/poetic-agents/workspaces"
 env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
   PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false \
-  CLAIM_GH="$stub_bin/gh" GH_STUB_DIR="$GH_STUB_DIR" \
+  CLAIM_GH="$stub_bin/gh" GH_STUB_DIR="$GH_STUB_DIR" GH_STUB_ERROR_SLUG="$slug_err" \
   CLONE_GIT=/bin/false \
   AGENT_OPS_CONFIG="$claim_config" \
   STATE_SYNC_REMOTE="$state_remote" \
