@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A fourth `escalation_autonomy` rung, `decide-with-veto`** (PR #1389,
+  requirement 36f), answering recommendation 3 of
+  `docs/reviews/2026-09-11-escalation-autonomy-review.md`. The same
+  decide pass, at the same tier, over the same escalations, under a wider
+  **delegate mandate** its runtime input now names (`mandate`: `tactical` at
+  `decide-tactical`, `delegate` here). The mandate adds exactly two reaches
+  to requirement 36a's owner-only boundary and nothing else: accepting a
+  residual exposure or risk in a repository the installation itself owns
+  where the filer named a `## Default` and no credential, ruleset,
+  permission, App or account is touched (the agent-ops#1310/#1298 case, which
+  the owner then accepted exactly as the filer's default proposed); and
+  supplying the **human corroboration of a void** for the three pull-request
+  shapes requirement 34k closes — `pr-<n>-abandoned-…`, `pr-<n>-review-…`,
+  `pr-<n>-superseded-…` — through a `decide` verdict carrying
+  `act: {"kind": "corroborate-void"}`. Never the `-conflict-` or `-dequeued-`
+  shapes, which 34k excludes by construction. At `decide-tactical` a verdict
+  carrying an act is out of mandate and escalates, with the evidence naming
+  the act.
+  **The veto moves in front of the act.** A decision that carries one is
+  recorded `decision-taken` with `act`/`act_after` and does *not* unblock the
+  item; its `pw::decision` log issue says what the act is and when it becomes
+  due; and a new per-cycle sweep, `run_pending_decision_acts`
+  (`lib/decision-veto.sh`), performs it only after
+  `decision_veto_window_hours` (new key, default 24, `0` meaning the next
+  cycle) have passed **and** a live re-read finds the log issue still closed.
+  A reopen before then cancels the act, recorded as `decision-acted` with
+  `outcome: "cancelled"`; an unreadable log issue refuses the act rather than
+  taking it; and a pending act whose log issue could not be filed at all is
+  abandoned and escalated, because an act nobody could veto is the one thing
+  this rung must never take. Performing `corroborate-void` writes the item's
+  ordinary `item-void` with `stage: "decision"`, and requirement 34k's
+  existing close does the rest — the void record and the close already
+  existed; the corroboration was what was missing. A decision carrying no act
+  (a pure acceptance) unblocks immediately, exactly as at `decide-tactical`.
+  The dashboard's Decisions panel gains a `pending act` badge for a decision
+  still inside its window. The product default stays `always-escalate`; the
+  Poetic fleet's own `config.json` opts in.
+
 - **The host-facts collector** (issue #1283, requirement 36a):
   `scripts/collect-host-facts.sh` writes one record per node,
   `state_dir/host-facts/<node>.json`, of facts no container running the

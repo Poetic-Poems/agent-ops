@@ -118,9 +118,9 @@ configuration change is.
       today.
     - **`approver_app_id`, `approver_model_default`/`_complex`/`_critical`,
       `escalation_autonomy`, `enabler_model`/`_critical`** — already set
-      fleet-wide (agent-ops#936: `escalation_autonomy` ships at
-      `decide-tactical`, the rung agent-ops itself runs at, as at 2026-08-29);
-      nothing repository-specific to add.
+      fleet-wide (agent-ops#936, PR #1389: `escalation_autonomy` ships at
+      `decide-with-veto`, the rung agent-ops itself runs at, as at
+      2026-09-11); nothing repository-specific to add.
     - `sources` must actually gather every source
       `merge_autonomy_routine_sources` names (`scripts/doctor.sh` warns
       otherwise) — the list above mirrors agent-ops's own for that reason.

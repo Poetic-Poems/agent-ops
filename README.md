@@ -409,8 +409,10 @@ Keys:
 | `refinement_after_coordinator_cycles` | *(same as `enabler_after_coordinator_cycles`)* | The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower. |
 | `enabler_recheck_hours` | `72` | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the issue is still raised, just unlabelled. |
-| `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_autonomy` | `decide-with-veto` | The D18 escalation-autonomy ladder, four rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary blocked...[continued below](#extended-notes-escalation_autonomy) |
 | `escalation_adjudication_max_passes` | `3` | How many `decide-tactical` passes one item may spend in total, whatever their reason — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). A fresh reason still gets its own pass under this cap, and closing an escalation about the item grants one further pass regardless of it; only a run of unrelated tactical questions on the same item is what this bounds. |
+| `standing_decisions_file` | `docs/STANDING-DECISIONS.md` | The installation's standing-decisions file: one dated line per answer you have given the pipeline, which its `decide-tactical` pass reads before deciding anything, so a question you have already answered is answered the same way again rather than escalated — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Relative to the installation directory unless absolute. Leave it empty to supply none; the pass still sees the repository's own decision records and its...[continued below](#extended-notes-standing_decisions_file) |
+| `decision_veto_window_hours` | `24` | Hours a `decide-with-veto` decision that carries an *act* — closing an abandoned draft behind its void — waits before the act is taken, so you can veto it by reopening the decision's log issue *before* anything happens rather than after. `0` acts on the next cycle. A decision that merely accepts something (no act) is unaffected: it takes effect at once, and reopening its log issue is still the correction. Only `escalation_autonomy: decide-with-veto` can produce an act at all...[continued below](#extended-notes-decision_veto_window_hours) |
 | `escalation_refile_after_hours` | `24` | Hours a human's own close of an escalation issue suppresses the *next* filing for the same item (`open_question_escalate`/requirement 8f, `approver_escalate`/requirement 8c) — closing the issue is not the releasing act, so without this guard a human who closes without also releasing the gate gets a fresh issue every refusing round. `0` disables the guard: every refusing round files, as before this key existed. A re-escalation a failed post-close adjudication owes always files...[continued below](#extended-notes-escalation_refile_after_hours) |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
@@ -587,9 +589,17 @@ Cycle and review directories whose derived files are kept — the stage event st
 
 ### Extended notes: `escalation_autonomy`
 
-The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary blocked item as much as a refinement disagreement — and either settles it, decides a tactical trade-off on the pipeline's own authority, or escalates anyway; an owner-only decision always escalates, at every rung). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos).
+The D18 escalation-autonomy ladder, four rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary blocked item as much as a refinement disagreement — and either settles it, decides a tactical trade-off on the pipeline's own authority, or escalates anyway), or `decide-with-veto` (the same pass under a wider mandate: it may also accept a residual exposure in a repository you own where the filer named a default, and corroborate an abandoned draft's void — and where a decision carries such an act, the act waits out `decision_veto_window_hours` first, so reopening the decision's own log issue vetoes it *before* anything happens). An owner-only decision always escalates, at every rung. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos).
 
-The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). That path runs its own bounded pass only at `adjudicate-first` exactly — `decide-tactical` behaves the same as `adjudicate-first` there, not a further widening — so you cannot enable one Enabler-side rung without also getting the open-question path at its `adjudicate-first` behaviour.
+The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). That path runs its own bounded pass only at `adjudicate-first` exactly — `decide-tactical` and `decide-with-veto` both behave the same as `adjudicate-first` there, not a further widening — so you cannot enable one Enabler-side rung without also getting the open-question path at its `adjudicate-first` behaviour.
+
+### Extended notes: `standing_decisions_file`
+
+The installation's standing-decisions file: one dated line per answer you have given the pipeline, which its `decide-tactical` pass reads before deciding anything, so a question you have already answered is answered the same way again rather than escalated — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Relative to the installation directory unless absolute. Leave it empty to supply none; the pass still sees the repository's own decision records and its recently closed escalations.
+
+### Extended notes: `decision_veto_window_hours`
+
+Hours a `decide-with-veto` decision that carries an *act* — closing an abandoned draft behind its void — waits before the act is taken, so you can veto it by reopening the decision's log issue *before* anything happens rather than after. `0` acts on the next cycle. A decision that merely accepts something (no act) is unaffected: it takes effect at once, and reopening its log issue is still the correction. Only `escalation_autonomy: decide-with-veto` can produce an act at all, so at every other rung this key does nothing.
 
 ### Extended notes: `escalation_refile_after_hours`
 
@@ -1541,13 +1551,61 @@ one further pass beyond that cap, each time you do. The same question a
 second time still comes to you, on the same terms `adjudicate-first`'s own
 bound already uses.
 
+Before it weighs any of that, the pass reads what has already been decided:
+the installation's standing-decisions file (`standing_decisions_file` — one
+dated line per answer you have given the pipeline), this repository's own
+`pw::decision` records, and its most recently closed escalations. A question
+you have already answered — for a sibling item, or as a principle — is
+answered the same way again, as a `decide` that cites the earlier answer,
+rather than escalated afresh. Keep that file current: it is the cheapest
+lever this ladder has. And only two things reserve a choice to you: the
+`pw::owner-decision` label on an issue, or an `Owner decision: yes` line in a
+record — a body that merely calls a choice "one for a human" does not, a
+threshold nobody has set is set by the pass rather than asked, and an option
+the pipeline may take is taken even when its siblings would need you.
+
+**One rung further: `decide-with-veto`.** Set `escalation_autonomy` to
+`decide-with-veto` and the same pass runs, at the same model, over the same
+escalations — with two things added to what it may reach, and one change to
+when a decision takes effect.
+
+The two additions, and nothing else. It may **accept a residual** — an
+exposure or a risk left over in a repository you own, where the issue's own
+filer already wrote down what they would do by default and where nothing
+about the answer mints, rotates, edits or grants a credential, a secret, an
+App, a ruleset, a permission or an account. And it may **corroborate a
+void**: say, of a draft pull request this pipeline raised and abandoned, that
+it is genuinely unwanted — the one judgement the void machinery otherwise
+only accepts from your own `obsolete` label on the pull request. Everything
+else stays exactly where it was: money and caps, licence and pricing,
+roadmap decisions, ongoing obligations you would have to keep, this system's
+own trust boundaries, an account the pipeline does not hold, and anything you
+reserved with the `pw::owner-decision` label or an `Owner decision: yes`
+line — all still yours, at this rung as at every other.
+
+**The veto moves in front of the act.** Where a decision at this rung carries
+something to *do* — closing that abandoned draft — the pipeline does not do
+it straightaway. It records the decision, files the log issue with the
+instant the act becomes due, and waits `decision_veto_window_hours` (24 by
+default; `0` means the next cycle). Reopen the log issue before then and the
+act is cancelled, with the cancellation written to the record, and nothing
+ever happened. A decision that merely *accepts* something carries nothing to
+do, so it takes effect at once, exactly as at `decide-tactical` — reopening
+its log issue afterwards is still the correction.
+
+The product default stays `always-escalate`: every rung above it is
+something you switch on, per installation or per repository, and this one
+most of all.
+
 **Every `decide` verdict also files a closed, unassigned issue** labelled
 `pw::decision` — a durable log of the decision, not a further ask — with the
-decision, the rationale and the options considered. Reopen it to veto the
-decision: the pipeline re-blocks the item, comments on it, flips any open
+decision, the rationale and the options considered — and, where the decision
+carries an act, what that act is and when it becomes due. Reopen it to veto
+the decision: the pipeline re-blocks the item, comments on it, flips any open
 pull request for it back to draft, and waits for your own decision, posted
 as a comment on the reopened issue, before you close it again. No window —
-a reopen is honoured whenever it comes. If the item has already merged or
+a reopen is honoured whenever it comes, and a reopen that arrives before an
+act is due cancels the act outright. If the item has already merged or
 closed by the time you veto it, there is nothing left to re-block, so the
 pipeline instead files a fresh "revisit: …" issue quoting your comment. Every
 decision taken in the last 7 days shows on the dashboard's Decisions panel,

@@ -58,6 +58,17 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 assert_eq_n() {  # assert_eq_n DESC EXPECTED_COUNT NEEDLE HAYSTACK — count of NEEDLE lines in HAYSTACK
   local desc="$1" expected="$2" needle="$3" haystack="$4" actual
   actual="$(grep -c -- "$needle" <<<"$haystack" || true)"
@@ -178,6 +189,192 @@ run "$terminal_actions"
 calls="$(log_event_calls)"
 assert_eq_n "logs the decision-vetoed event for a terminal item too" "1" "^decision-vetoed" "$calls"
 assert_eq_n "logs no escalated event — there is no re-block to register it against" "0" "^escalated" "$calls"
+
+
+# ============================================================================
+# run_pending_decision_acts (PR #1389, requirement 36f): the other half
+# of `decide-with-veto` — the act a decision deferred behind its veto window,
+# performed once the window has passed and nobody pulled the lever.
+#
+# `pending_decision_acts` (lib/cycle-state.sh) runs for real here, off a real
+# union log: what makes the sweep safe is precisely which decisions it finds,
+# so stubbing the finder would leave the interesting half untested. `gh` is a
+# function, shadowing the binary, and is the only thing stood in for.
+#
+# The two directions that matter, stated once: the act is irreversible and
+# the window is not, so anything this cannot establish — an unreadable log
+# issue, an `act_after` that will not parse — refuses the act rather than
+# taking it. That is the opposite of the veto sweep's own unreadable-events
+# read, which fails *open* toward honouring a veto, and for the same reason.
+# ============================================================================
+
+GH_ISSUE_STATE="CLOSED"
+GH_ISSUE_FAIL=""
+GH_CALLS_FILE="$tmp_dir/gh_calls"
+# shellcheck disable=SC2317  # invoked only by run_pending_decision_acts
+gh() {
+  printf '%s\n' "$*" >> "$GH_CALLS_FILE"
+  [[ -z "$GH_ISSUE_FAIL" ]] || return 1
+  printf '%s' "$GH_ISSUE_STATE"
+}
+
+taken_evt() {  # taken_evt ISSUE_NUMBER ACT_AFTER [ITEM] -> one decision-taken log line
+  jq -nc --arg n "$1" --arg aa "$2" --arg i "${3:-pr-363-abandoned-aaaaaaaaaaaa}" \
+    '{ts: "2026-09-01T00:00:00Z", event: "decision-taken", repo: "acme/widgets", item: $i,
+      decision: "close the abandoned draft", rationale: "nothing on it is wanted",
+      issue_number: ($n | tonumber), issue_url: ("https://github.com/acme/widgets/issues/" + $n),
+      act: {kind: "corroborate-void"}, act_after: $aa}'
+}
+
+run_acts() {  # run_acts LOG_LINES — union log, then one sweep
+  printf '%s\n' "$1" > "$union_log"
+  : > "$GH_CALLS_FILE"
+  reset_log_event_calls
+  run_pending_decision_acts
+}
+
+future="$(date -u -d '+6 hours' +%Y-%m-%dT%H:%M:%SZ)"
+past="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- Before the window: nothing happens, and nothing is said. A decision
+# merely waiting is the ordinary case, not an event. ------------------------
+run_acts "$(taken_evt 601 "$future")"
+calls="$(log_event_calls)"
+assert_eq "before the window: nothing at all is logged" "" "$calls"
+assert_eq "before the window: the log issue is not even read" "0" \
+  "$(wc -l < "$GH_CALLS_FILE" | tr -d ' ')"
+
+# --- After it, with the lever un-pulled: the act runs ----------------------
+GH_ISSUE_STATE="CLOSED"
+run_acts "$(taken_evt 602 "$past")"
+calls="$(log_event_calls)"
+assert_eq_n "after the window: exactly one item-void is written" "1" "^item-void" "$calls"
+void_fields="$(grep '^item-void' <<<"$calls" | cut -f2-)"
+assert_eq "the void carries stage \"decision\" — requirement 34d's second writer outside the guard" \
+  "decision" "$(jq -r '.stage' <<<"$void_fields")"
+assert_eq "...naming the item the decision was about" "pr-363-abandoned-aaaaaaaaaaaa" \
+  "$(jq -r '.item' <<<"$void_fields")"
+assert_eq "...carrying the decision itself as the reason" "close the abandoned draft" \
+  "$(jq -r '.detail' <<<"$void_fields")"
+assert_contains "...and evidence naming the log issue that nobody reopened" \
+  "https://github.com/acme/widgets/issues/602" "$(jq -r '.evidence' <<<"$void_fields")"
+assert_eq_n "after the window: exactly one decision-acted" "1" "^decision-acted" "$calls"
+acted_fields="$(grep '^decision-acted' <<<"$calls" | cut -f2-)"
+assert_eq "the decision-acted says the act was performed" "performed" \
+  "$(jq -r '.outcome' <<<"$acted_fields")"
+assert_eq "...and names the act" "corroborate-void" "$(jq -r '.act.kind' <<<"$acted_fields")"
+assert_eq_n "after the window: the item is unblocked, the ordinary way" "1" "^unblocked" "$calls"
+unblk_fields="$(grep '^unblocked' <<<"$calls" | cut -f2-)"
+assert_eq "the unblock credits the enabler, like every other decision's does" "enabler" \
+  "$(jq -r '.by' <<<"$unblk_fields")"
+assert_eq "after the window: no warning" "0" "$(grep -c '^warning' <<<"$calls" || true)"
+
+# --- A window of 0 is due the moment it is written ------------------------
+run_acts "$(taken_evt 603 "$now")"
+calls="$(log_event_calls)"
+assert_eq_n "a zero window acts on the very next cycle" "1" "^item-void" "$calls"
+
+# --- The lever, pulled: an open log issue performs nothing and says nothing.
+# The veto sweep owns the record of a veto; a second one here would double it.
+GH_ISSUE_STATE="OPEN"
+run_acts "$(taken_evt 604 "$past")"
+calls="$(log_event_calls)"
+assert_eq "a reopened log issue performs no act and logs nothing" "" "$calls"
+GH_ISSUE_STATE="CLOSED"
+
+# --- The lever, unreadable: refuse and say so. This is the fail-closed half:
+# an act nobody could confirm was un-vetoed must not be taken on a guess. ---
+GH_ISSUE_FAIL=1
+run_acts "$(taken_evt 605 "$past")"
+calls="$(log_event_calls)"
+assert_eq_n "an unreadable log issue performs no act" "0" "^item-void" "$calls"
+assert_eq_n "...and logs exactly one warning" "1" "^warning" "$calls"
+assert_contains "...naming the issue it could not read" \
+  "https://github.com/acme/widgets/issues/605" "$(grep '^warning' <<<"$calls" | cut -f2- | jq -r '.detail')"
+GH_ISSUE_FAIL=""
+
+# --- An act_after nothing can parse leaves the decision standing rather than
+# acting early: an unestablished window is not a window that has passed. ----
+run_acts "$(taken_evt 606 "not a timestamp")"
+calls="$(log_event_calls)"
+assert_eq "an unparseable act_after acts on nothing" "" "$calls"
+
+# --- Retirement: an act already performed is never performed twice, and a
+# vetoed one is never performed at all ------------------------------------
+run_acts "$(taken_evt 607 "$past")
+$(jq -nc '{ts: "2026-09-02T00:00:00Z", event: "decision-acted", repo: "acme/widgets",
+           item: "pr-363-abandoned-aaaaaaaaaaaa", issue_number: 607, outcome: "performed"}')"
+calls="$(log_event_calls)"
+assert_eq "an act already performed is never performed again" "" "$calls"
+
+run_acts "$(taken_evt 608 "$past")
+$(jq -nc '{ts: "2026-09-02T00:00:00Z", event: "decision-vetoed", repo: "acme/widgets",
+           item: "pr-363-abandoned-aaaaaaaaaaaa", issue_number: 608, by: "warwickallen"}')"
+calls="$(log_event_calls)"
+assert_eq "a vetoed decision's act is never performed" "" "$calls"
+
+# --- A decision carrying no act is not a pending act at all ---------------
+run_acts "$(jq -nc '{ts: "2026-09-01T00:00:00Z", event: "decision-taken", repo: "acme/widgets",
+                     item: "TD26080001", decision: "accept the residual", rationale: "r",
+                     issue_number: 609, issue_url: "u"}')"
+calls="$(log_event_calls)"
+assert_eq "an actless decision is never swept for an act" "" "$calls"
+
+# --- The per-cycle cap defers rather than flooding, and says how many ------
+PENDING_DECISION_ACT_MAX=2
+run_acts "$(taken_evt 610 "$past" pr-610-abandoned-aaaaaaaaaaaa)
+$(taken_evt 611 "$past" pr-611-abandoned-aaaaaaaaaaaa)
+$(taken_evt 612 "$past" pr-612-abandoned-aaaaaaaaaaaa)"
+calls="$(log_event_calls)"
+assert_eq_n "the cap performs only as many acts as it allows" "2" "^item-void" "$calls"
+assert_eq_n "...and reports the overflow rather than dropping it silently" "1" "^warning" "$calls"
+assert_contains "...naming how many were left for a later cycle" \
+  "1 due act(s) were left for a later cycle" "$(grep '^warning' <<<"$calls" | cut -f2- | jq -r '.detail')"
+PENDING_DECISION_ACT_MAX=3
+
+# --- A dry run acts on nothing, here as everywhere -------------------------
+DRY_RUN=1
+run_acts "$(taken_evt 613 "$past")"
+calls="$(log_event_calls)"
+assert_eq "--dry-run performs no act" "" "$calls"
+DRY_RUN=0
+
+# ============================================================================
+# The veto sweep's own half of requirement 36f: a veto of a decision whose
+# act is still pending cancels the act, on the record. The retirement is
+# already mechanical — `pending_decision_acts` excludes anything a
+# `decision-vetoed` names — so what this asserts is the *record*: without it,
+# a cancelled act simply stops appearing, and nothing says the reopen is what
+# stopped it.
+# ============================================================================
+
+pending_veto_actions='{"action":"vetoed","repo":"acme/widgets","item":"pr-363-abandoned-aaaaaaaaaaaa","issue_number":701,"issue_url":"https://github.com/acme/widgets/issues/701","by":"warwickallen","terminal":false}
+{"action":"needs-refinement","repo":"acme/widgets","item":"pr-363-abandoned-aaaaaaaaaaaa","reason":"vetoed","missing":"the owner decision","evidence":"reopened"}'
+
+printf '%s\n' "$(taken_evt 701 "$future")" > "$union_log"
+reset_log_event_calls
+reset_record_calls
+run "$pending_veto_actions"
+calls="$(log_event_calls)"
+assert_eq_n "a veto of a pending act logs the veto itself" "1" "^decision-vetoed" "$calls"
+assert_eq_n "...and one decision-acted recording the cancellation" "1" "^decision-acted" "$calls"
+cancel_fields="$(grep '^decision-acted' <<<"$calls" | cut -f2-)"
+assert_eq "the cancellation says so plainly" "cancelled" "$(jq -r '.outcome' <<<"$cancel_fields")"
+assert_eq "...and names the act that will now never run" "corroborate-void" \
+  "$(jq -r '.act.kind' <<<"$cancel_fields")"
+
+# --- and a veto of an ordinary, actless decision cancels nothing -----------
+printf '%s\n' "$(jq -nc '{ts: "2026-09-01T00:00:00Z", event: "decision-taken", repo: "acme/widgets",
+                          item: "pr-363-abandoned-aaaaaaaaaaaa", decision: "d", rationale: "r",
+                          issue_number: 701, issue_url: "u"}')" > "$union_log"
+reset_log_event_calls
+reset_record_calls
+run "$pending_veto_actions"
+calls="$(log_event_calls)"
+assert_eq_n "a veto with no pending act still logs the veto" "1" "^decision-vetoed" "$calls"
+assert_eq_n "...and logs no cancellation, because there was nothing to cancel" "0" "^decision-acted" "$calls"
+: > "$union_log"
 
 echo
 if (( failures > 0 )); then

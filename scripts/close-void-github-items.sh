@@ -51,6 +51,16 @@
 # id) names something that is not a GitHub object to close and is left alone
 # here entirely.
 #
+# One further writer is eligible without passing that guard:
+# `stage: "decision"`, the `item-void` requirement 36f's `corroborate-void`
+# act writes (`run_pending_decision_acts`, lib/decision-veto.sh). Its
+# corroboration is the one an open draft that still changes files can never
+# get from an API call — a decision taken under the delegate mandate, filed
+# as a closed `pw::decision` issue, and left un-reopened for the whole of
+# `decision_veto_window_hours`. That is the same judgement the human-applied
+# `obsolete` label carries, made by the pipeline under a mandate the owner
+# switched on, with the lever in front of the act rather than behind it.
+#
 # And only a void whose writer's verdict passes requirement 34d's
 # corroboration guard — every stage, now that issue #243 made
 # `void_guard_reason` the one path all three (`coordinator`, `enabler`,
@@ -145,12 +155,15 @@ while IFS=$'\t' read -r item detail evidence stage; do
   [[ -n "$item" ]] || continue
 
   # The corroboration gate (see header): every stage's voids pass requirement
-  # 34d's guard (issue #243), so all three writers are eligible here. Anything
-  # else — a stageless entry, or a stage this script does not recognise — is
-  # skipped before the action cap: an ineligible item must not eat a slot, nor
-  # count as deferred work that a later pass could do.
+  # 34d's guard (issue #243), so all three writers are eligible here, and so
+  # is `decision` — requirement 36f's delegate-mandate act, whose
+  # corroboration is the decision, its unpulled veto lever and its elapsed
+  # window rather than the guard (requirement 34d's second Script-side
+  # writer). Anything else — a stageless entry, or a stage this script does
+  # not recognise — is skipped before the action cap: an ineligible item must
+  # not eat a slot, nor count as deferred work that a later pass could do.
   case "$stage" in
-    coordinator|enabler|implementer) ;;
+    coordinator|enabler|implementer|decision) ;;
     *) continue ;;
   esac
 

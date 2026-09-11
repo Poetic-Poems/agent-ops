@@ -245,7 +245,7 @@ create_decision_log_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
-# enabler_decision_log_body DECISION RATIONALE OPTIONS MODEL CYCLE COMMENT_URL REPO ITEM REASON_KEY
+# enabler_decision_log_body DECISION RATIONALE OPTIONS MODEL CYCLE COMMENT_URL REPO ITEM REASON_KEY [ACT_KIND ACT_AFTER]
 # The body of the decision-log issue `create_decision_log_issue` files
 # (agent-ops#937): the "## Decision taken by the pipeline" section the issue
 # asks for, plus the same machine-readable item-ref footer
@@ -255,9 +255,15 @@ create_decision_log_issue() {
 # reads `item=`/`repo=`; `create_decision_log_issue`'s own duplicate guard
 # reads `reason_key=`, so a second decision over a distinct reason_key is
 # never mistaken for a repeat of this one — agent-ops#1198, review round 2).
+#
+# ACT_KIND/ACT_AFTER are requirement 36f's veto window: where the decision
+# carries an act, the body says what the act is and states the instant it
+# becomes due, so the lever a reader is being offered is a lever *before* the
+# fact rather than only after it. Both empty for every decision that carries
+# no act, which is every decision at every rung below `decide-with-veto`.
 enabler_decision_log_body() {
   local decision="$1" rationale="$2" options="$3" model="$4" cycle="$5" comment_url="$6" repo="$7" item="$8"
-  local reason_key="${9:-}"
+  local reason_key="${9:-}" act_kind="${10:-}" act_after="${11:-}"
   local body
   body="<!-- agent-ops:decision-log item=$item repo=$repo reason_key=$reason_key -->
 
@@ -274,6 +280,16 @@ $decision
 Model: \`$model\` · cycle \`$cycle\`"
   [[ -n "$comment_url" ]] && body="$body
 Comment: $comment_url"
+  if [[ -n "$act_kind" ]]; then
+    body="$body
+
+**Act:** \`$act_kind\`
+**Acts after:** $act_after
+
+This decision carries an act, so nothing has happened yet: the pipeline
+performs it on the first cycle after the instant above, and only while this
+issue is still closed. Reopening it before then cancels the act outright."
+  fi
   body="$body
 
 Reopening this issue vetoes the decision: the pipeline will re-block the
@@ -786,7 +802,7 @@ escalation_autonomy_decide_pass_available() {
   return 0
 }
 
-# run_enabler_decide REPO ITEM CLAIMED_ENTRY_JSON EX_JSON CYCLE_DIR IDX
+# run_enabler_decide REPO ITEM CLAIMED_ENTRY_JSON EX_JSON CYCLE_DIR IDX [MANDATE]
 # One bounded decide-tactical pass (agent-ops#936, D18 pattern,
 # `escalation_autonomy: "decide-tactical"`): before the Script files the
 # escalation issue for *any* `escalate` verdict — not only a refinement
@@ -796,21 +812,42 @@ escalation_autonomy_decide_pass_available() {
 # `run_enabler_adjudication` in shape and runs at the same tier
 # (`enabler_model_critical`, falling back to `enabler_model`).
 #
+# MANDATE is `tactical` at `decide-tactical` and `delegate` at
+# `decide-with-veto` (requirement 36f), and reaches the pass verbatim as the
+# input's own `mandate` field: it is what tells the pass which of the two
+# reaches the delegate mandate adds — condition 2's acceptance clause, and
+# the human corroboration of a void — are open to it this run. Only the
+# delegate mandate may return an `act`, and this function is where that is
+# enforced rather than in the caller, so every refusal reads the same way an
+# unreadable verdict does (below) whichever rung produced it.
+#
 # Prints `{"verdict": "settle"|"decide"|"escalate", "evidence": "...",
-# "decision": "...", "rationale": "...", "options_considered": "..."}` on
-# stdout. A missing prompt file, a stage failure, or an unparseable verdict
-# all print `escalate` with an `evidence` string naming why — "cannot settle"
-# reads the same way the Approver's own adjudication reads it: not as
-# "nothing wrong" (requirement 8c).
+# "decision": "...", "rationale": "...", "options_considered": "...",
+# "act": {...}}` on stdout. A missing prompt file, a stage failure, or an
+# unparseable verdict all print `escalate` with an `evidence` string naming
+# why — "cannot settle" reads the same way the Approver's own adjudication
+# reads it: not as "nothing wrong" (requirement 8c).
 run_enabler_decide() {
   local repo="$1" item="$2" claimed_entry="$3" ex="$4" cycle_dir="$5" idx="$6"
+  local mandate="${7:-tactical}"
   local input prompt out rc=0 result parsed verdict evidence decision rationale options
+  local act act_kind
   local critical_model="${enabler_model_critical:-$enabler_model}"
+  local precedents
 
   if [[ ! -f "$PROMPTS_DIR/enabler-decide.md" ]]; then
     printf '{"verdict":"escalate","evidence":"no prompts/enabler-decide.md in this installation"}'
     return 0
   fi
+
+  # Requirement 36d's `precedents`: the standing-decisions file, the repo's
+  # own decision log and its closed escalations, so the pass answers from the
+  # record before it weighs the boundary. Best-effort — the empty shape is
+  # still a valid input, and a pass without precedent is still a pass.
+  precedents="$(enabler_decide_precedents "$repo" "${standing_decisions_file:-}" \
+                  "${enabler_escalation_label:-}" 2>/dev/null || true)"
+  jq -e 'type == "object"' <<<"$precedents" >/dev/null 2>&1 \
+    || precedents='{"standing_decisions":"","decision_log":[],"closed_escalations":[]}'
 
   input="$(jq -nc --arg r "$repo" --arg i "$item" \
     --arg kind "$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)" \
@@ -818,7 +855,9 @@ run_enabler_decide() {
     --argjson reflag "$(jq -c '{reason: (.reason // ""), detail: (.detail // ""), unblock_condition: (.unblock_condition // "")}' \
        <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
     --argjson escalation "$(jq -c '{title: (.issue.title // ""), body: (.issue.body // "")}' <<<"$ex" 2>/dev/null || printf '{}')" \
-    '{repo: $r, item: $i, kind: $kind, refinement: $refinement, reflag: $reflag, escalation: $escalation}' \
+    --argjson precedents "$precedents" \
+    --arg mandate "$mandate" \
+    '{repo: $r, item: $i, kind: $kind, mandate: $mandate, refinement: $refinement, reflag: $reflag, escalation: $escalation, precedents: $precedents}' \
     2>/dev/null || true)"
   if [[ -z "$input" ]]; then
     printf '{"verdict":"escalate","evidence":"could not build the decide-tactical input"}'
@@ -876,9 +915,43 @@ $(jq . <<<"$input")
     verdict="escalate"
     evidence="${evidence:-the decide-tactical pass reached \"decide\" but returned no decision or rationale to record}"
   fi
+
+  # The act (requirement 36f). Only a `decide` verdict under the delegate
+  # mandate may carry one, and only the one kind the mandate names, on only
+  # the three pull-request shapes requirement 34k actually closes. Each of
+  # the three refusals below is an `escalate` naming the act, on exactly the
+  # reading the missing-decision check above uses: a verdict this system may
+  # not act on is not a decision, whatever it called itself. Enforced here
+  # rather than in the caller so that a pass which proposes an act at the
+  # wrong rung — the ordinary way a prompt drifts ahead of its config — is
+  # refused identically wherever `run_enabler_decide` is called from.
+  act=""
+  if [[ "$verdict" == "decide" ]]; then
+    act="$(jq -c 'if ((.act // null) | type) == "object" then .act else empty end' \
+      <<<"$parsed" 2>/dev/null || true)"
+  fi
+  if [[ -n "$act" ]]; then
+    act_kind="$(jq -r '.kind // ""' <<<"$act" 2>/dev/null || true)"
+    if [[ "$mandate" != "delegate" ]]; then
+      verdict="escalate"
+      evidence="the decide pass proposed the act \"${act_kind:-(unnamed)}\", which is out of mandate at this rung: only escalation_autonomy \"decide-with-veto\" carries the delegate mandate (requirement 36f) that may perform one.${evidence:+ The pass reported: $evidence}"
+      act=""
+    elif [[ "$act_kind" != "corroborate-void" ]]; then
+      verdict="escalate"
+      evidence="the decide pass proposed the act \"${act_kind:-(unnamed)}\", which the delegate mandate does not name — requirement 36f reaches exactly one act, \"corroborate-void\".${evidence:+ The pass reported: $evidence}"
+      act=""
+    elif [[ ! "$item" =~ ^pr-[0-9]+-(abandoned|review|superseded)- ]]; then
+      verdict="escalate"
+      evidence="the decide pass proposed the act \"corroborate-void\" for item \"$item\", which is not one of the three pull-request shapes requirement 34d corroborates and requirement 34k closes (pr-<n>-abandoned-…, pr-<n>-review-…, pr-<n>-superseded-…).${evidence:+ The pass reported: $evidence}"
+      act=""
+    fi
+  fi
+
   jq -nc --arg v "$verdict" --arg e "$evidence" --arg d "$decision" --arg ra "$rationale" --arg o "$options" \
+    --argjson act "${act:-null}" \
     '{verdict: $v, evidence: $e}
-     + (if $v == "decide" then {decision: $d, rationale: $ra, options_considered: $o} else {} end)' 2>/dev/null \
+     + (if $v == "decide" then {decision: $d, rationale: $ra, options_considered: $o} else {} end)
+     + (if $v == "decide" and $act != null then {act: $act} else {} end)' 2>/dev/null \
     || printf '{"verdict":"escalate","evidence":"could not encode the decide-tactical verdict"}'
 }
 
@@ -945,6 +1018,7 @@ maybe_run_enabler() {
   local e_decided e_decision e_dec_verdict e_dec_evidence e_dec_reason_key e_refined_dec
   local e_dec_decision_text e_dec_rationale e_dec_options e_dec_comment_url
   local e_dec_log_number e_dec_log_url e_dec_log_title e_dec_log_body_file e_dec_log_created
+  local e_dec_mandate e_dec_act e_dec_act_kind e_dec_act_after e_dec_pending e_dec_window
   local e_file_debt fd_title fd_body fd_result fd_number fd_url \
     fd_default_fix fd_owner_decision
   local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url \
@@ -1511,12 +1585,20 @@ $(jq . <<<"$input")
         e_decided=0
         e_decision=""
         e_dec_verdict=""
+        e_dec_pending=0
+        # Requirement 36f: `decide-with-veto` runs the same pass over the same
+        # verdicts as `decide-tactical`, differing only in the `mandate` the
+        # input carries and in what the Script then does with a verdict that
+        # carries an `act`.
+        e_dec_mandate="tactical"
+        [[ "$e_ea_level" == "decide-with-veto" ]] && e_dec_mandate="delegate"
         if (( ! e_adjudicated )) \
              && [[ -n "$issue_title" && -s "$issue_body_file" ]] \
-             && [[ "$e_ea_level" == "decide-tactical" ]] \
+             && [[ "$e_ea_level" == "decide-tactical" || "$e_ea_level" == "decide-with-veto" ]] \
              && escalation_autonomy_decide_pass_available "$e_repo" "$e_item" "$claimed_entry" \
                   "$escalation_adjudication_max_passes"; then
-          e_decision="$(run_enabler_decide "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j")"
+          e_decision="$(run_enabler_decide "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j" \
+                          "$e_dec_mandate")"
           e_dec_verdict="$(jq -r '.verdict // "escalate"' <<<"$e_decision" 2>/dev/null || printf 'escalate')"
           e_dec_evidence="$(jq -r '.evidence // ""' <<<"$e_decision" 2>/dev/null || true)"
           e_dec_reason_key="$(escalation_autonomy_decide_reason_key "$claimed_entry")"
@@ -1531,8 +1613,27 @@ $(jq . <<<"$input")
               e_dec_decision_text="$(jq -r '.decision // ""' <<<"$e_decision" 2>/dev/null || true)"
               e_dec_rationale="$(jq -r '.rationale // ""' <<<"$e_decision" 2>/dev/null || true)"
               e_dec_options="$(jq -r '.options_considered // ""' <<<"$e_decision" 2>/dev/null || true)"
+
+              # Requirement 36f's act. `run_enabler_decide` has already
+              # refused an act the mandate does not reach, so anything still
+              # here is one the delegate mandate carries — and it is what
+              # makes this decision *pending*: the item is not unblocked, the
+              # act is not performed, and both wait on the veto window below.
+              e_dec_act="$(jq -c '.act // empty' <<<"$e_decision" 2>/dev/null || true)"
+              [[ "$e_dec_act" == "null" ]] && e_dec_act=""
+              e_dec_act_kind=""
+              e_dec_act_after=""
+              if [[ -n "$e_dec_act" ]]; then
+                e_dec_pending=1
+                e_dec_act_kind="$(jq -r '.kind // ""' <<<"$e_dec_act" 2>/dev/null || true)"
+                e_dec_window="${decision_veto_window_hours:-24}"
+                [[ "$e_dec_window" =~ ^[0-9]+$ ]] || e_dec_window=24
+                e_dec_act_after="$(date -u -d "+${e_dec_window} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+                [[ -n "$e_dec_act_after" ]] || e_dec_act_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              fi
+
               e_dec_comment_url=""
-              if [[ "$e_item" =~ ^[0-9]+$ ]]; then
+              if (( ! e_dec_pending )) && [[ "$e_item" =~ ^[0-9]+$ ]]; then
                 e_dec_comment_url="$(enabler_decision_comment "$e_repo" "$e_item" \
                   "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" "$e_refined_before_present")"
               fi
@@ -1553,7 +1654,8 @@ $(jq . <<<"$input")
               e_dec_log_body_file="$cycle_dir/decision-log-$j.md"
               enabler_decision_log_body "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" \
                 "${enabler_model_critical:-$enabler_model}" "$cycle_id" "$e_dec_comment_url" \
-                "$e_repo" "$e_item" "$e_dec_reason_key" > "$e_dec_log_body_file"
+                "$e_repo" "$e_item" "$e_dec_reason_key" \
+                "$e_dec_act_kind" "$e_dec_act_after" > "$e_dec_log_body_file"
               if e_dec_log_created="$(create_decision_log_issue "$e_repo" "$e_item" "pw::decision" \
                                         "$e_dec_log_title" "$e_dec_log_body_file" "$e_dec_reason_key")" \
                    && [[ -n "$e_dec_log_created" ]]; then
@@ -1563,18 +1665,48 @@ $(jq . <<<"$input")
                   --arg d "enabler: could not file the decision-log issue for $e_repo $e_item (see enabler-decision-issue.err) — the decision is recorded on the log but has no durable issue and no veto lever" \
                   '{detail: $d, repo: $r, item: $i}')"
               fi
+            fi
+          fi
 
+          # Requirement 36f: a pending act with no log issue has no veto
+          # lever, and the lever is the whole of what makes this rung's wider
+          # mandate safe — a decision whose act nobody could stop is exactly
+          # the thing `decide-with-veto` promises never to take. So a failed
+          # filing does not merely cost the record here, as it does for an
+          # ordinary decision (requirement 37's best-effort): the decision is
+          # abandoned and the item escalates to a person instead, carrying
+          # the pass's own evidence the ordinary way.
+          if (( e_decided )) && (( e_dec_pending )) && [[ -z "$e_dec_log_number" ]]; then
+            log_event "warning" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+              --arg d "enabler: the decide pass for $e_repo $e_item decided an act, but its decision-log issue could not be filed — there is no veto lever, so the act is abandoned and the item escalates instead (requirement 36f)" \
+              '{detail: $d, repo: $r, item: $i}')"
+            e_decided=0
+            e_dec_pending=0
+          fi
+
+          if (( e_decided )); then
+            if [[ "$e_dec_verdict" == "decide" ]]; then
               log_event "decision-taken" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
                 --arg d "$e_dec_decision_text" --arg ra "$e_dec_rationale" --arg op "$e_dec_options" \
                 --arg cu "$e_dec_comment_url" --arg m "${enabler_model_critical:-$enabler_model}" \
                 --arg rk "$e_dec_reason_key" --arg n "$e_dec_log_number" --arg u "$e_dec_log_url" \
+                --argjson act "${e_dec_act:-null}" --arg aa "$e_dec_act_after" \
                 '{repo: $r, item: $i, decision: $d, rationale: $ra, options_considered: $op}
                  + (if $cu == "" then {} else {comment_url: $cu} end)
                  + (if $n == "" then {} else {issue_number: ($n | tonumber), issue_url: $u} end)
+                 + (if $act == null then {} else {act: $act, act_after: $aa} end)
                  + {model: $m, reason_key: $rk}')"
-              log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
-                --arg reason "decided: $e_dec_decision_text" \
-                '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+              # Requirement 36f: a decision carrying an act does *not* unblock
+              # the item. The act is what resolves it, and the act has not
+              # happened yet — `run_pending_decision_acts` (lib/decision-veto.sh)
+              # logs the `unblocked` alongside the act once the window has
+              # passed. A decision carrying no act is unchanged: it unblocks
+              # here, exactly as at `decide-tactical`.
+              if (( ! e_dec_pending )); then
+                log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
+                  --arg reason "decided: $e_dec_decision_text" \
+                  '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+              fi
             else
               log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
                 --arg reason "settled${e_dec_evidence:+: $e_dec_evidence}" \
@@ -1595,8 +1727,12 @@ $(jq . <<<"$input")
             # waiting on requirement 39f's stale sweep to notice. Every
             # neighbouring path releases it on `kind` alone — the ordinary
             # `unblocked` verdict, `void`, and `adjudicate-first`'s own
-            # `adequate` — and so does this one.
-            if [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" ]]; then
+            # `adequate` — and so does this one. Both are held to
+            # `e_dec_pending` all the same (requirement 36f): a pending act
+            # has cleared nothing yet, so a label that projects a block still
+            # standing must stay projected, and a refinement re-record whose
+            # only purpose is to survive the unblock has nothing to survive.
+            if (( ! e_dec_pending )) && [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" ]]; then
               if [[ -n "$e_refined_before_present" ]]; then
                 e_refined_dec="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
                                          | with_entries(select(.value != ""))' \
@@ -1624,7 +1760,16 @@ $(jq . <<<"$input")
               fi
               release_refinement_label "$e_item" "$e_repo"
             fi
-            outcome="unblocked"
+            # The examination is real either way — the item is not looked at
+            # again until `enabler_recheck_hours` — but only one of the two
+            # outcomes cleared the block. `decision-pending` is the other:
+            # the decision is recorded, the item is still blocked, and the
+            # act it waits on is requirement 36f's.
+            if (( e_dec_pending )); then
+              outcome="decision-pending"
+            else
+              outcome="unblocked"
+            fi
           fi
         fi
 

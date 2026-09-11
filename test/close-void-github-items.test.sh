@@ -158,6 +158,26 @@ assert_eq "an enabler void closes the pull request" \
   '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
 
+# --- Case 3b-i: the delegate mandate's own writer (requirement 36f) ---------------
+# `stage: "decision"` is the `item-void` `run_pending_decision_acts`
+# (lib/decision-veto.sh) writes once a `decide-with-veto` decision's act has
+# stood through its veto window un-reopened. It passes no part of requirement
+# 34d's guard — an open draft that still changes files never could — and it
+# does not have to: the decision, its closed `pw::decision` log issue and the
+# elapsed window are the corroboration, which is why this gate admits it by
+# name rather than by the guard. From here on it is an ordinary void, and
+# that is the whole assertion.
+c="$tmp_dir/case3b-decision"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"close the abandoned draft","evidence":"corroborated by the pipeline own decision, unvetoed through its window","stage":"decision"}]')"
+assert_eq "a delegate-mandate void closes the pull request like any other" \
+  '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
+  "$(jq -c . <<<"$out")"
+
+c="$tmp_dir/case3b-decision-conflict"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-264-conflict-abc123def456","detail":"whatever it claims","stage":"decision"}]')"
+assert_eq "...but the -conflict- exclusion still binds it, stage notwithstanding" "" "$out"
+assert_eq "...with no gh call made for it either" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+
 # --- Case 3b-ii: a stageless void — no writer this script recognises — acts on nothing
 # `item-void` has never been written without a `stage` in production; this
 # pins the fail-closed default for a malformed or future-unknown entry.
