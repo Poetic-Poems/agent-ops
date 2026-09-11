@@ -236,14 +236,16 @@ jobs:
             cache-scope: arm64
     runs-on: ${{ matrix.runner }}
 
-    # The full `test/` suite alone runs ~45-50 minutes on comparable
-    # hardware (README.md's "Running the tests"); the image build and the
-    # toolchain/crontab/stamp checks around it add more. 90 minutes leaves
-    # margin over that without falling back to Actions' implicit 6-hour job
-    # timeout, which is the actual gap this bound closes — a hung test (this
-    # suite exercises real signal/process-group handling with background
-    # `sleep` stand-ins) would otherwise spin, unexplained, for hours before
-    # anyone noticed.
+    # The `test/` suite is the bulk of this job and takes ~20 minutes per
+    # architecture inside the image (this workflow's own run history is the
+    # measurement — README.md's "Running the tests" figure is a developer
+    # host's, and slower); the image build and the toolchain/crontab/stamp
+    # checks around it add the rest. 90 minutes is deliberately generous
+    # margin over that, because the point of the bound is not to grade a slow
+    # run but to stop falling back to Actions' implicit 6-hour job timeout —
+    # a hung test (this suite exercises real signal/process-group handling
+    # with background `sleep` stand-ins) would otherwise spin, unexplained,
+    # for hours before anyone noticed.
     timeout-minutes: 90
 
     # Resolved once here and read by every step's `if:` below, so the rule is
