@@ -9,7 +9,8 @@
 #
 #   - escalation_autonomy_configured_level — the same
 #     top-level-default/per-repo-override precedence stage_timeouts and
-#     merge_autonomy_configured_level both use.
+#     merge_autonomy_configured_level both use, for every rung the schema
+#     admits including `decide-with-veto` (requirement 36f).
 #   - enabler_decide_precedents — requirement 36d's `precedents` builder: three
 #     best-effort members, the empty shape on every failure, one read per list.
 #   - escalation_autonomy_adjudicated_before — requirement 36b's "bounded, not
@@ -104,6 +105,23 @@ assert_eq "an explicit null repo override falls through to the top-level key, no
 
 assert_eq "malformed config falls back to always-escalate" "always-escalate" \
   "$(escalation_autonomy_configured_level 'not json' "acme/widgets")"
+
+# The fourth rung (requirement 36f, PR #1389) resolves on exactly the
+# same precedence as the three below it — this function reads whatever word
+# the schema admits and never enumerates them, so what these two assert is
+# that nothing here has to learn a new value for a new rung to work, from
+# either source.
+with_veto_cfg='{"escalation_autonomy": "decide-with-veto"}'
+assert_eq "the fourth rung resolves from the top-level key" "decide-with-veto" \
+  "$(escalation_autonomy_configured_level "$with_veto_cfg" "acme/widgets")"
+
+with_veto_override_cfg='{"escalation_autonomy": "decide-tactical", "repos": [
+  {"slug": "acme/widgets", "escalation_autonomy": "decide-with-veto"}
+]}'
+assert_eq "...and from a repo's own override, over a lower top-level rung" "decide-with-veto" \
+  "$(escalation_autonomy_configured_level "$with_veto_override_cfg" "acme/widgets")"
+assert_eq "...leaving every other repo on the top-level rung" "decide-tactical" \
+  "$(escalation_autonomy_configured_level "$with_veto_override_cfg" "acme/gizmos")"
 
 # --- escalation_autonomy_adjudicated_before ---
 

@@ -560,6 +560,10 @@ enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 # relative to this checkout (the directory holding config.json) unless
 # absolute; empty (the schema default, or an explicit null) supplies none.
 standing_decisions_file="$(cfg '.standing_decisions_file')"
+# Requirement 36f's veto window, in hours: how long a `decide-with-veto`
+# decision that carries an act waits before the act is performed.
+decision_veto_window_hours="$(cfg '.decision_veto_window_hours')"
+[[ "$decision_veto_window_hours" =~ ^[0-9]+$ ]] || decision_veto_window_hours=24
 [[ "$standing_decisions_file" != "null" ]] || standing_decisions_file=""
 if [[ -n "$standing_decisions_file" && "$standing_decisions_file" != /* ]]; then
   standing_decisions_file="$SCRIPT_DIR/$standing_decisions_file"
@@ -1888,6 +1892,11 @@ compute_refiner_candidates
 # only just set — run_standdown_checks runs before that. See
 # lib/decision-veto.sh's own header.
 run_decision_veto_sweep
+
+# --- Pending decision acts (requirement 36f) ---
+# After the veto sweep, never before: a reopen this cycle has just discovered
+# cancels a pending act, and doing the acts first would race it.
+run_pending_decision_acts
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated

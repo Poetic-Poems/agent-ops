@@ -286,6 +286,56 @@ decision_vetoes_processed_items() {
   printf '%s' "$out"
 }
 
+# pending_decision_acts [LOG_FILE]
+# Print, as a JSON array, every `decide-with-veto` decision whose *act* is
+# still owed (requirement 36f): a `decision-taken` event carrying an `act`
+# object, an `act_after` instant and its own `pw::decision` log issue, for
+# which no later `decision-acted` (the act performed, or cancelled) and no
+# `decision-vetoed` (the owner reopened the log issue) has retired it. Reads
+# LOG_FILE, or stdin if it is omitted or "-".
+#
+# Keyed on the log issue's own number, exactly as
+# `decision_vetoes_processed_items` above is keyed and for the same reason:
+# one item can carry more than one decision over time, and only the log issue
+# tells two of them apart. A decision with no `issue_number` never appears
+# here at all, which is not a gap but the invariant — `lib/enabler.sh` refuses
+# to record a pending act whose log issue could not be filed, because an act
+# nobody could veto is the one thing this rung must never take, so a pending
+# act without a lever cannot exist to be found.
+#
+# Every field the act needs to be performed and logged travels on the event
+# itself: no second read of GitHub, and no dependency on the cycle that took
+# the decision still being around.
+pending_decision_acts() {
+  local src="${1:--}" out=""
+  # shellcheck disable=SC2016  # jq's $retired/$d, not the shell's.
+  local jq_prog='
+    ([ .[] | select(.event == "decision-acted" and (.issue_number // null) != null)
+       | (.issue_number | tostring) ]
+     + [ .[] | select(.event == "decision-vetoed" and (.issue_number // null) != null)
+       | (.issue_number | tostring) ]) as $retired
+    | [ .[] | select(.event == "decision-taken"
+                     and ((.act // null) | type) == "object"
+                     and (.act_after // "") != ""
+                     and (.issue_number // null) != null
+                     and (.repo // "") != "" and (.item // "") != "")
+        | . as $d
+        | select(($retired | index($d.issue_number | tostring)) == null)
+        | {repo, item, issue_number, issue_url: (.issue_url // ""),
+           act, act_after, decision: (.decision // ""), rationale: (.rationale // ""),
+           ts: (.ts // "")} ]
+    | unique_by(.issue_number) | sort_by(.ts)'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # void_retired_items [LOG_FILE]
 # Print, as a JSON array of {repo, item, ts}, the most recent `void-retired`
 # event for every {repo, item} pair one was ever recorded against (requirement
