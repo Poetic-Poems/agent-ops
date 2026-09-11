@@ -4,12 +4,20 @@
 # A node runs its own copy of deploy/docker/compose.yaml on its host; an image
 # roll delivers new code but never compose-level configuration (labels,
 # service environment, mounts), so a merged edit to that file reaches a node
-# only when a human re-fetches the file there and runs `docker compose up -d`.
-# Twice that step went unperformed and a merged fix sat inert on every node
-# while every check in this repository stayed green (issue #131). The
-# heartbeat's compose-drift verdict and the dashboard's badge now catch the
+# only when something there re-fetches the file and runs `docker compose up
+# -d`. Twice that step went unperformed and a merged fix sat inert on every
+# node while every check in this repository stayed green (issue #131). The
+# heartbeat's compose-drift verdict and the dashboard's badge catch the
 # omission after the fact; this comment is the before, posted at the moment
-# the change is being reviewed and the ritual can be planned.
+# the change is being reviewed and the rollout can be planned.
+#
+# Since requirement 2.5a, the "something there" is usually the node's own
+# `reconciler` service, which applies a merged file itself on the first tick
+# the node is idle. The reminder stays, and the comment names both cases:
+# a node without that service still needs the ritual, a merged change can
+# still require a new `${VAR}` in each node's `.env` (which the reconciler
+# refuses to guess at), and a reviewer planning a rollout needs to know which
+# of the two this change is.
 #
 # One comment per pull request, keyed by an HTML marker, not one per push:
 # a reminder that repeats on every rebase is a reminder that gets muted.
@@ -47,12 +55,23 @@ jobs:
           fi
           cat > body.md <<EOF
           $marker
-          **This pull request changes \`deploy/docker/compose.yaml\` — merging it deploys nothing.**
+          **This pull request changes \`deploy/docker/compose.yaml\` — merging it deploys nothing by itself.**
 
           A node runs its own copy of that file on its host, and an image roll cannot
-          carry compose-level changes. After this merges, **each node** needs, at a
-          moment when it is idle (\`--status\` first — a manual \`up -d\` bypasses the
-          pre-update hook and kills a running cycle):
+          carry compose-level changes.
+
+          **On a node running the \`reconciler\` service** (profile \`auto-update\`), nothing
+          is needed: it compares its copy against the image's every five minutes and
+          applies this one on the first tick the node is idle. Two things still stop it,
+          and both are worth checking before merging — a new \`\${VAR}\` with no default
+          that each node's \`.env\` does not already define (it refuses rather than
+          interpolating an empty string, and says so on the dashboard), and a change to
+          the \`reconciler\` service's own definition, which takes two ticks rather than
+          one (TD-PPagop-26091103).
+
+          **On a node without it**, after this merges, at a moment when that node is idle
+          (\`--status\` first — a manual \`up -d\` bypasses the pre-update hook and kills a
+          running cycle):
 
           \`\`\`bash
           docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
@@ -60,10 +79,12 @@ jobs:
           docker compose up -d
           \`\`\`
 
-          On a host running two stacks, repeat from each stack directory. Until that is
-          done, the fleet strip on every dashboard flags the node (**compose drifted** /
-          **compose unverified**), and \`scripts/check-node-compose.sh\`, run on the
-          node's host, verifies the file *and* the running containers. See
-          \`deploy/docker/README.md\`, "Keeping the compose file current".
+          On a host running two stacks, repeat from each stack directory. Until a node has
+          taken the change either way, the fleet strip on every dashboard flags it
+          (**compose drifted** / **compose unverified**, plus **reconcile refused** or
+          **reconcile deferred** where a reconciler ran and did not finish), and
+          \`scripts/check-node-compose.sh\`, run on the node's host, verifies the file
+          *and* the running containers. See \`deploy/docker/README.md\`, "Keeping the
+          compose file current".
           EOF
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md

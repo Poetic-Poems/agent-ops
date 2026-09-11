@@ -121,6 +121,43 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN grep -qaF "no required checks reported on the" "$(command -v gh)" \
     && grep -qaF "no checks reported on the" "$(command -v gh)"
 
+# The Docker CLI and the Compose v2 plugin, from Docker's own apt repository.
+# One service uses them — `reconciler` (deploy/docker/compose.yaml), which
+# applies a merged `compose.yaml` to this node the way watchtower applies a
+# merged image — and it is the only container in the stack that is handed a
+# Docker socket to point them at. The client only: this image runs no daemon
+# and wants none.
+#
+# The size is real and is the price of the feature: ~78 MB installed — 46 MB
+# of `docker-ce-cli` and 32 MB of `docker-compose-plugin`, read from this
+# repository's own `Installed-Size` fields for the newest noble/stable
+# packages on 2026-09-11, and a figure that moves with them — against an
+# image already measured in gigabytes for Node and the Claude CLI. The
+# alternative considered and rejected was a static `docker` binary plus the
+# compose plugin binary fetched by hand: the same order of size, one more
+# pair of pinned checksums to maintain, and no apt repository to deliver a
+# security fix on the next CI rebuild. Left floating on Docker's repository
+# for the same reason the base image's own packages are (see the FROM
+# above): CI rebuilds on every merge, so a fix lands within a cycle.
+#
+# The `grep` first is not decoration. Docker's apt suite is the base image's
+# release codename, and this line names it literally rather than deriving it,
+# because deriving it inside a Dockerfile `RUN` means writing `$VERSION_CODENAME`
+# where the *builder* expands variables before the shell ever sees them. So
+# the assumption is asserted instead: move the FROM off noble and the build
+# fails here, loudly, rather than quietly adding an apt source for the wrong
+# release.
+RUN grep -q '^VERSION_CODENAME=noble$' /etc/os-release \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable\n' \
+        "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
 # Node.js from NodeSource, for the `claude` CLI and for any target repo whose
 # checks are npm-driven.
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \

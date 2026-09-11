@@ -339,6 +339,16 @@ doctor_heartbeat_json="$(jq -c '{timestamp, verdict}' "$doctor_status_file" 2>/d
 # cycle since upgrading has completed.
 stage_health_file="$state_dir/.stage-health.json"
 stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
+# This node's own compose-reconciliation verdict (lib/compose-reconcile.sh,
+# the `reconciler` service) — read rather than recomputed, the same precedent
+# stage_health_json above sets, and here the file is not merely the single
+# source but the only one: the reconciler runs in a different container, on
+# its own schedule, and this script holds neither the Docker socket nor the
+# node's project directory, so it could not re-derive the verdict if it wanted
+# to. `null` on a node with no reconciler, which is every node until its
+# owner's one enabling `docker compose up -d`.
+compose_reconcile_file="$state_dir/.compose-reconcile.json"
+compose_reconcile_json="$(jq -c '.' "$compose_reconcile_file" 2>/dev/null || echo null)"
 # This node's own host-facts record (scripts/collect-host-facts.sh,
 # agent-ops#1283, docs/HOST-FACTS-SCHEMA.md) — read rather than
 # recomputed, the same doctor_status_json/stage_health_json precedent
@@ -2314,6 +2324,7 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   --argjson live "$self_live_json" \
   --argjson version "$self_version_json" \
   --argjson compose "$(compose_drift_status)" \
+  --argjson compose_reconcile "$compose_reconcile_json" \
   --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
@@ -2325,7 +2336,8 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,
     last_cycle: (if $lc == "" then null else $lc end), self: true,
     stale: ($pub.verdict != "fresh"),
-    live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
+    live: $live, version: $version, compose: $compose,
+    compose_reconcile: $compose_reconcile, image: $image, switch: $switch,
     stage_health: $stage_health, updater: $updater, doctor: $doctor, host: $host,
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
@@ -2360,6 +2372,15 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # the node itself can read the compose.yaml on its own host, so a
        # heartbeat carrying no verdict yields null, never a local answer.
        compose: ($h.compose // null),
+       # And for what that peer reconciler did about the drift
+       # (lib/compose-reconcile.sh): only the container on that host holds
+       # that host project directory and its Docker socket, so a heartbeat
+       # carrying no verdict — a peer with no reconciler, or one on an image
+       # built before this existed — yields null rather than this node
+       # answering for a deployment file it cannot see. (No apostrophes in
+       # this block: it is inside the single-quoted jq program, where one
+       # would end the string.)
+       compose_reconcile: ($h.compose_reconcile // null),
        # And for the image-drift verdict (lib/image-drift.sh): only the
        # peer itself can query the registry on its own behalf, so an absent
        # field (a peer on an image built before this check existed) yields

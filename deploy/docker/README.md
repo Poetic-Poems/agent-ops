@@ -101,6 +101,21 @@ for the `tailnet` profile — `TS_AUTHKEY`. Leave `ROLE=standby` unless this nod
 is meant to be the one that spends; see [Which node runs the
 cycles](../../README.md#which-node-runs-the-cycles).
 
+Two more, for the `auto-update` profile's reconciler — the service that keeps
+*this file* current on this node the way watchtower keeps the image current
+(see [Keeping the compose file
+current](#keeping-the-compose-file-current)) — and neither is guessable from
+inside a container, which is why they are set rather than defaulted:
+
+```bash
+printf 'AGENT_OPS_PROJECT_DIR=%s\n' "$PWD" >> .env
+printf 'DOCKER_GID=%s\n' "$(getent group docker | cut -d: -f3)" >> .env
+```
+
+The first is the absolute path of this directory on this host; the second is
+this host's docker group id, which is also what lets the `collector` service
+read the Docker socket it is given.
+
 Every credential above arrives here, as a plain `.env` value — none of them
 need an interactive step inside the running container. The forge authoring
 App (D18 decision 1, the `.env.example` section right after the Pullwright
@@ -266,6 +281,11 @@ notices and restarts the services into it. There is no `git pull` anywhere in
 this design. A merge that only changes documentation publishes nothing and
 rolls nothing — the running image is already the code that merge describes.
 
+That covers the image. The *compose file* a node runs is not in the image and
+a roll cannot replace it; the `reconciler` service, in the same profile, is
+what keeps that current — see "Keeping the compose file current" below, which
+also has the one per-node step that turns it on.
+
 A roll waits for a cycle rather than killing one. Recreating a container kills
 the process group its cycle runs in, so watchtower asks first: with
 `WATCHTOWER_LIFECYCLE_HOOKS` on, it runs
@@ -334,11 +354,85 @@ AGENT_OPS_IMAGE=ghcr.io/pullwright/agent-ops:<sha>
 
 ### Keeping the compose file current
 
-Watchtower delivers new *images*; nothing delivers a new `compose.yaml`.
-Labels, service environment and mounts are read off the file at `up -d` time
-and never afterwards, so **merging a change to `deploy/docker/compose.yaml`
-deploys nothing** — a merged compose fix sits inert on every node until a
-human performs, on each node, at a moment when it is idle:
+Watchtower delivers new *images*. A new `compose.yaml` is delivered by the
+`reconciler` service, in the same `auto-update` profile — because watchtower
+cannot: a roll recreates a container from the **old** container's config, so
+labels, service environment, mounts and whole new services are read off the
+file at `up -d` time and never again. **Merging a change to
+`deploy/docker/compose.yaml` still deploys nothing by itself**; what changed
+is that the node does the deploying rather than you.
+
+Every five minutes the reconciler compares this node's `compose.yaml` against
+the copy inside the image it is running, and when they differ it:
+
+1. checks that every `${VAR}` the **new** file needs without a default is a
+   key in this node's `.env` — one missing name refuses the whole thing,
+   records which, and changes nothing. It never writes `.env`, and never
+   reads a value out of it;
+2. waits while either pipeline holds its lock, exactly as the watchtower
+   pre-update hook waits, and retries five minutes later;
+3. copies the image's file over this node's and runs
+   `docker compose up -d --remove-orphans` here.
+
+No model is involved at any point: the file it installs is the one the image
+shipped, byte for byte. `docker compose logs reconciler` is where it says what
+it decided — nothing at all on the ticks where there was nothing to do.
+
+**Turning it on costs one `docker compose up -d` per node, once.** The
+reconciler is itself compose-level, so it arrives the way everything
+compose-level does. On each existing node, at a moment when it is idle:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
+curl -fsSLO https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/compose.yaml
+printf 'AGENT_OPS_PROJECT_DIR=%s\n' "$PWD" >> .env
+grep -q '^DOCKER_GID=' .env || printf 'DOCKER_GID=%s\n' "$(getent group docker | cut -d: -f3)" >> .env
+docker compose up -d
+docker compose logs reconciler          # should be quiet: nothing to do
+```
+
+`AGENT_OPS_PROJECT_DIR` is the absolute path of the directory you are standing
+in, and it has to be exactly that: the service bind-mounts it at the same
+absolute path it has on the host, which is what makes the file's own relative
+mounts (`./compose.yaml`, `./ts-serve.json`) resolve the same way for the
+daemon as for the container. `DOCKER_GID` is this host's docker group id,
+without which the container cannot open the socket it is given. On a host
+running two stacks, do this from each stack directory, with *that* directory's
+path — never the shared parent. A node built by `cloud-init.yaml` has both
+already.
+
+The `AGENT_OPS_PROJECT_DIR` line is appended unconditionally, and that is
+deliberate: `.env.example` ships the key already present and empty, a later
+definition in `.env` wins over an earlier one, and a `grep -q` guard would
+therefore find the empty one and skip the append that fixes it. `DOCKER_GID`
+carries the guard because `.env.example` leaves that one commented out.
+
+That `up -d` is a recreate, which is why `--status` comes first. It is the
+last compose change on that node that has to be timed by hand.
+
+You do not have to remember any of this unprompted, and you did not before
+either. A pull request that touches `compose.yaml` gets a CI comment saying
+the merge is not the deployment; and each node checks its own copy from
+inside — `compose.yaml` mounts itself read-only at `/host/compose.yaml`,
+`lib/compose-drift.sh` diffs that against the copy baked into the running
+image (comments aside), and the verdict travels in the node's heartbeat, so
+every dashboard's fleet strip carries it:
+
+- **compose drifted** — the node's file differs materially from the copy its
+  image shipped. On a node with the reconciler this clears itself on the
+  first tick the node is idle; on one without, it waits for you;
+- **compose unverified** — the file is not mounted into the containers at
+  all, which means it predates the drift check and is behind regardless;
+- **reconcile refused** (amber) — the node's reconciler will not apply the
+  merged file, and says why in the badge's title: usually a `${VAR}` the new
+  file needs and this node's `.env` does not define, which you add by hand,
+  or `AGENT_OPS_PROJECT_DIR` not set. Nothing has been applied;
+- **reconcile deferred** (grey) — it is waiting on a cycle, or a recreate
+  failed and is being retried. This one clears itself.
+
+**Without the reconciler**, or when it has refused, the ritual it replaces is
+still the way a node is brought current, on each node, at a moment when it is
+idle:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
@@ -350,19 +444,6 @@ docker compose up -d
 pre-update hook and kills a running cycle.) On a host running two stacks,
 repeat from each stack directory — the two files are kept byte-identical, so
 `cp` the fetched file over the second stack's copy and `up -d` from there.
-
-You do not have to remember any of this unprompted. A pull request that
-touches `compose.yaml` gets a CI comment saying the merge is not the
-deployment; and each node checks its own copy from inside — `compose.yaml`
-mounts itself read-only at `/host/compose.yaml`, `lib/compose-drift.sh`
-diffs that against the copy baked into the running image (comments aside),
-and the verdict travels in the node's heartbeat, so every dashboard's fleet
-strip flags the node until the ritual above is done:
-
-- **compose drifted** — the node's file differs materially from the copy its
-  image shipped;
-- **compose unverified** — the file is not mounted into the containers at
-  all, which means it predates the drift check and is behind regardless.
 
 To audit a node from its host — the running containers included, which the
 in-container check cannot see — run `check-node-compose.sh` (fetched at
@@ -572,6 +653,7 @@ two stacks silently share volumes and fight over one identity.
 mkdir ~/poetic-node-2 && cd ~/poetic-node-2
 # compose.yaml + .env as in "Bring up a node", then in .env:
 #   COMPOSE_PROJECT_NAME=agent-ops-2   # distinct volumes — non-negotiable
+#   AGENT_OPS_PROJECT_DIR=$HOME/poetic-node-2   # THIS directory, not the first's
 #   NODE_NAME=<host>-2                 # its own name, its own state branch
 #   GH_TOKEN=<its own PAT>             # one token per node, so one node can be revoked
 #   DASHBOARD_PORT=8789                # the first node has 8787
@@ -579,6 +661,11 @@ mkdir ~/poetic-node-2 && cd ~/poetic-node-2
 docker compose up -d
 docker compose exec scheduler claude   # OAuth path only — skip if ANTHROPIC_API_KEY is set in .env
 ```
+
+`AGENT_OPS_PROJECT_DIR` is the one variable where copying the first stack's
+`.env` is actively wrong: it names the directory whose `compose.yaml` that
+stack's reconciler replaces, so the first node's path here would have the
+second node reconciling the first node's file.
 
 Before setting `ROLE=active` on the newcomer: `docker compose images` in
 **both** directories — the two nodes must run the same image digest (a claim

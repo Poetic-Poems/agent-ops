@@ -486,6 +486,19 @@ file and carries placeholders only; `.env` itself is never committed.
   The hook covers the automatic roll and nothing else: a manual `up -d`,
   `restart`, `down` or host reboot recreates containers without consulting
   watchtower, so the operating rule for those remains `--status` first.
+- **`reconciler`** (profile `auto-update`) — how a node picks up a new
+  *`compose.yaml`*, the half `watchtower` above cannot deliver: a roll
+  recreates a container from the old container's `Config`, so every
+  compose-level change waited on a human until this service existed. The same
+  image, `network_mode: none`, the Docker socket read-write, and this node's
+  own stack directory bind-mounted at the absolute path it has on the host
+  (`AGENT_OPS_PROJECT_DIR`); it takes neither shared anchor, so it carries no
+  credential. `supercronic` runs `scripts/reconcile-compose.sh` every five
+  minutes (`deploy/docker/reconcile-crontab`), which applies the image's own
+  copy of this file when — and only when — the drift check below says the
+  node's copy differs, the new file needs no `${VAR}` the node's `.env` lacks,
+  and neither pipeline holds its lock. Requirement 2.5a is the whole
+  mechanism; its verdict rides the heartbeat beside the drift verdict.
 - **A node's copy of this file is watched for drift.** A node holds its own
   `compose.yaml`, which no image roll can update — labels, service
   environment and mounts arrive only via a human running `docker compose up
@@ -505,14 +518,22 @@ file and carries placeholders only; `.env` itself is never committed.
   old to carry the mount is behind by construction, and the *check* reaches
   every node by image roll with no `up -d` required, so a node that cannot
   be verified says so from its first rolled image until its stack is
-  re-created. What the mount cannot see — whether the running containers
+  re-created. Where the `reconciler` service above runs, the verdict now has
+  an actor rather than only a reader: a `drifted` reading is what that service
+  acts on, and it clears itself on the first tick the node is idle
+  (requirement 2.5a). Where it does not — a node whose owner has not yet run
+  the one enabling `up -d` — the badge and the per-node ritual are exactly
+  what they were. What the mount cannot see — whether the running containers
   were created from the file, and watchtower's own environment, the one
   container nothing ever rolls — needs the Docker socket, which these
   containers rightly lack: `scripts/check-node-compose.sh` (component 12)
   answers those from the host. Merging a change to this file is not
   deploying it, and `.github/workflows/compose-deploy-reminder.yml` says so
-  on every pull request that touches it — one marker-keyed comment naming
-  the per-node ritual, posted once rather than per push.
+  on every pull request that touches it — one marker-keyed comment, posted
+  once rather than per push, naming both what a node running the
+  `reconciler` service needs (nothing, unless the change adds a `${VAR}`
+  with no default or alters that service's own definition) and the per-node
+  ritual a node without it still needs.
 - **A node's running image is watched for staleness against the registry.**
   Comparing nodes with each other (`version`, above) answers *divergence* —
   are the nodes on the same commit — but not *staleness*: a fleet that
@@ -2240,6 +2261,16 @@ implements.
       correctly configured first, so it still fires on a `livelocked` or
       `unconfirmed` node, which is the exact gap this incident fell through.
 
+      The script refuses to run inside a container, and refuses on the
+      `/.dockerenv` sentinel (`lib/compose-drift.sh`'s own) rather than on
+      `docker` being absent from `PATH`: that second test answered the
+      question only while this image carried no Docker CLI, and it carries
+      one now for the `reconciler` service (requirement 2.5a). Both checks
+      stand, the sentinel first, because a CLI that resolves inside a
+      container and then reaches no daemon fails several lines later as an
+      unreadable `docker info` — which reads like a broken host rather than a
+      script run in the wrong place.
+
       On a `cgroupfs` host the parent is a plain cgroup directory, and
       `scripts/cgroup-parent-setup.sh` delegates the `memory` controller down
       every ancestor of that directory — writing `+memory` to each
@@ -3434,7 +3465,7 @@ implements.
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image, switch, stage_health, mirror, updater}`)
+   compose_reconcile, image, switch, stage_health, mirror, updater}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -3444,6 +3475,12 @@ implements.
    the node's own `compose.yaml` still matches the copy its image shipped
    (see "The node stack"), a question only that node can ask because the
    file lives on its host and only its own containers mount it (#131).
+   `compose_reconcile` is `.compose-reconcile.json` read verbatim — what this
+   node's own reconciler last did about that drift (requirement 2.5a), read
+   rather than recomputed for the reason `stage_health` below is: the file is
+   another container's finished verdict, and this script holds neither the
+   Docker socket nor the project directory it was reached through. `null` on
+   a node with no reconciler.
    `image` is `lib/image-drift.sh`'s: whether the node's own commit is the
    one `ghcr.io/pullwright/agent-ops:latest` currently names, read
    anonymously over the registry's own API rather than GitHub's (which would
@@ -3512,8 +3549,8 @@ implements.
    strictly ordered across generations, a replacement always starting after
    what it replaced. Each line also
    carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
-   `scheduler`, `dashboard`, `dashboard-local` or `collector`, `"unknown"` if
-   unset) the writing container ran as. This field has a live limitation
+   `scheduler`, `dashboard`, `dashboard-local`, `collector` or `reconciler`,
+   `"unknown"` if unset) the writing container ran as. This field has a live limitation
    (agent-ops#1072): watchtower clones the writing container's environment
    forward the same way it clones its hostname, so a compose-level addition
    of `AGENT_OPS_SERVICE` never reaches a container created by a roll — every
@@ -3738,6 +3775,124 @@ implements.
    arbitration has no other mechanism: there is no lease and no leader, and
    `claims/` on the state repository's `main` branch — which per-node
    branches never touch — is owned exclusively by `lib/claim.sh`.
+2.5a. **Compose reconciliation.** A node's `compose.yaml` lives on that node's
+   host, and no image roll can replace it: watchtower recreates a container
+   from the *old* container's `Config`, so a label, a service's environment,
+   a mount or a whole new service merged to `main` reaches a node only when
+   something on that host runs `docker compose up -d`. Requirement 2.5's
+   `compose` verdict reports that gap and is all it does. The `reconciler`
+   service (`deploy/docker/compose.yaml`, profile `auto-update`, the same
+   image, `network_mode: none`) closes it: `supercronic` runs
+   `scripts/reconcile-compose.sh` every five minutes from
+   `deploy/docker/reconcile-crontab`, and `lib/compose-reconcile.sh` holds
+   what it decides. No model is in that path and none can be — the file it
+   installs is the one the image shipped, byte for byte, and the only
+   judgement taken is whether now is a safe moment to install it.
+
+   A tick does nothing at all unless `lib/compose-drift.sh` reports drift —
+   the same library requirement 2.5's own verdict comes from, so the actor and
+   the alarm cannot disagree about what drift is. It reads the node's copy
+   through the project directory bind-mounted at the absolute path it has on
+   the host (`AGENT_OPS_PROJECT_DIR` in `.env`, the mount on both sides of
+   that service): the same path on both sides is what makes the file's own
+   relative bind sources (`./compose.yaml`, `./ts-serve.json`) resolve
+   identically for the Compose CLI inside the container and for the daemon
+   outside it. On drift, in order:
+
+   - **Every `${VAR}` the new file requires must be a key in this node's
+     `.env`.** Required means the braced forms with no default and no
+     alternate — `${VAR}`, `${VAR:?…}`, `${VAR?…}`; `${VAR:-…}`, `${VAR-…}`,
+     `${VAR:+…}` and `${VAR+…}` are not, compose's `$$` escape is not a
+     reference at all, and whole-line comments are stripped first (through
+     the identical filter `lib/compose-drift.sh` applies), since compose
+     parses YAML before it interpolates and a comment is gone by then. Bare
+     `$VAR` is deliberately not scanned for: this file does not use it, and a
+     scan loose enough to catch it reads the shell fragments in a surviving
+     comment as node configuration. One missing name refuses the whole apply,
+     records which name, and changes nothing — compose would otherwise
+     interpolate an empty string and deploy it. `.env` is never written and
+     its values are never read: the scan keeps the key name and discards
+     everything after the `=`.
+   - **`lock.json` and `review-lock.json` defer it, exactly as they defer a
+     roll** (`deploy/docker/watchtower-pre-update.sh`), bounded by the same
+     `lock_stale_after` and `project_review.lock_stale_after`, and judged by
+     that hook's *foreign* rule alone: this container writes neither lock and
+     shares no PID namespace with whatever did, so every lock is honoured
+     without a liveness check until it is released or goes stale.
+     `roll-pending.json` (requirement 39c) overrides a held `lock.json` until
+     the time it names, and never `review-lock.json` — the same scope
+     agent-ops#1102 gave it, for the same reason.
+   - **Then the image's copy is written over the node's, in place, and
+     `docker compose up -d --remove-orphans` is run for that project
+     directory.** In place — the existing inode truncated and rewritten from
+     a copy staged beside it and verified byte-for-byte first — because a
+     bind mount of a *file* pins the inode it was created against: a rename
+     would leave every container the recreate did not touch mounting the old
+     content, reporting drift for ever with nothing left to reconcile.
+
+   The verdict is `$state_dir/.compose-reconcile.json`: `in-sync`,
+   `reconciled` (carrying the SHA-256 of both files), `deferred` (a lock, or
+   a `docker compose up -d` that exited non-zero) or `refused` (no project
+   directory, or a missing `${VAR}`). It is local to the node and excluded
+   from replication like `.stage-health.json`, and the verdict alone travels,
+   folded into `heartbeat.json` as `compose_reconcile` beside the `compose`
+   drift verdict it acts on (requirement 2.5; rendered on every dashboard's
+   fleet strip, `DASHBOARD-SPEC.md`). A `deferred` verdict from a failed
+   recreate also carries `pending_apply`, and that is what makes the next tick
+   retry the recreate rather than the drift check: the file is installed
+   before `up -d` runs, so from that moment drift alone would never ask again.
+   Transitions — a status, or a reason, that differs from the one already
+   recorded — append `compose-reconciled`, `compose-reconcile-deferred` or
+   `compose-reconcile-refused` to `log.jsonl` through `lib/log-event.sh`'s
+   envelope with `cycle: null`; an unchanged verdict appends nothing, and
+   `in-sync` never appends at all. **Only `status` and `reason` are compared**
+   for that test, and both are stable while the state is: a deferral's reason
+   names the lock, the container that wrote it and when, and carries no age,
+   and a failed recreate's reason names the exit status alone. Anything that
+   varies run to run — `docker compose`'s own last line of output — is
+   recorded beside them in `detail`, which is never compared, because in
+   `reason` it would make every tick of a long deferral a fresh transition.
+
+   **Two things it does not do.** It does not close the window between reading
+   the lock and Compose stopping a container: a cycle that starts inside those
+   few seconds dies with the recreate, exactly as it would under the manual
+   ritual, and what makes that rare rather than routine is that this runs
+   every five minutes and defers on every tick that finds the lock held, so it
+   lands in an idle window rather than a chosen one. And it does not survive
+   recreating *itself*: a merged change to the `reconciler` service's own
+   definition has Compose replace the container running the command, killing
+   it mid-`up -d`; the stack is left partly applied, and it is the next tick,
+   in the new container, that finishes — reading the same drift, or the same
+   `pending_apply`, and doing what its predecessor did not.
+
+   **Delivery.** The reconciler is itself compose-level, so it reaches an
+   existing node the one way anything compose-level does: one last
+   `docker compose up -d` on that host, with `AGENT_OPS_PROJECT_DIR` set
+   (`deploy/docker/README.md`, `deploy/docker/.env.example`).
+   `deploy/docker/cloud-init.yaml` sets that variable, and this host's
+   `DOCKER_GID`, on a node it provisions, so a node built from it needs no
+   such visit. A node without the service keeps the `compose drifted` badge
+   and the manual ritual, and nothing else about it changes. The Kubernetes
+   target (`deploy/kubernetes/`) needs none of this: a pod's spec is applied
+   by the cluster from the manifest it is reconciled against, so there is no
+   host-held deployment file to fall behind in the first place.
+
+   **What the Docker socket costs.** This is the first container in the stack
+   to hold that socket read-write, which is root on the host by another name,
+   and the same grant `watchtower` has held since the stack existed
+   (`collector` holds it read-only). Three things bound it: the service takes
+   neither shared anchor, so it carries no `GH_TOKEN`, no `ANTHROPIC_API_KEY`
+   and neither App's private key — the container that can create containers
+   holds no credential, and the containers holding credentials cannot reach
+   the socket; it is `network_mode: none`, so nothing it reads has a route
+   out; and it runs one fixed script from the image, on a schedule from the
+   image, over a file from the image. What they do not bound is the image
+   itself: whoever controls what CI publishes already controls the scheduler's
+   credentials by the roll that delivers it, and now also controls this host's
+   daemon. That is a real widening and it is the price of the feature,
+   accepted on the same terms as watchtower's own socket. D24's staged
+   containment is of untrusted *content* reaching a stage; it does not speak
+   to the image supply chain, and this does not change that.
 2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
    `cycles/` and `reviews/` are pruned on every push — but its logs are
    appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
@@ -18395,6 +18550,24 @@ What exists, and the requirements each part answers to:
     bring-up beside `compose.yaml` (component 7). Unit-tested against a
     stubbed `docker` on `PATH` (`test/check-node-image.test.sh`); must pass
     `shellcheck`.
+12b. `scripts/reconcile-compose.sh` and `lib/compose-reconcile.sh`
+    implementing requirement 2.5a — the actor for the compose-drift verdict
+    components 12 and `lib/compose-drift.sh` only ever reported. The library
+    holds the decision (drift, through `lib/compose-drift.sh` itself; the
+    `${VAR}`-against-`.env`-keys check; the lock and roll-pending rules the
+    watchtower pre-update hook uses; the in-place install and the
+    `docker compose up -d --remove-orphans`), and the script is the crontab's
+    entry point, resolving `state_dir` from `config.json` and printing one
+    line per tick — nothing at all on the steady state. It runs in the
+    `reconciler` service (see "The node stack"), the only container given a
+    read-write Docker socket and this node's own project directory; unlike
+    components 12 and 12a it is not run by hand on a host, and unlike them it
+    writes. Exit status is 0 on every verdict including `refused`, since
+    nothing on this image reads a cron job's exit status and a refusal is a
+    recorded state rather than a crashed script; 2 is a usage error alone.
+    Unit-tested against a stubbed `docker` with every path overridden
+    (`test/compose-reconcile.test.sh`, acceptance check 1c-vi); must pass
+    `shellcheck`.
 13. `scripts/preview-deploy.sh` implementing requirement 24a: given a
     repository and a pull request — or, with no arguments at all, the pull
     request for the branch checked out in the working directory, which is how a
@@ -20354,6 +20527,33 @@ oblige anyone to edit a test.
    remains unobserved (#706).
    With `TS_AUTHKEY` set, the same `up -d` starts both containers normally and
    `docker compose exec tailscale tailscale status` succeeds.
+1c-vi. **A node applies its own merged compose.yaml, and only when it is
+   safe to.** `test/compose-reconcile.test.sh` passes against a stubbed
+   `docker` that creates nothing: identical copies read `in-sync`, run no
+   docker command and log nothing; drift with every required `${VAR}` present
+   and no lock held installs the image's copy byte-for-byte, runs exactly one
+   `docker compose --project-directory <dir> up -d --remove-orphans`, keeps
+   the file's **inode** (a bind mount of a file pins the inode it was created
+   against), leaves `.env` untouched, and logs one `compose-reconciled`
+   carrying both digests and `cycle: null`; the tick after it finds nothing to
+   do. A `${VAR}` with no default that `.env` does not define reads `refused`,
+   names the variable and changes nothing — while the same variable carrying
+   a default does not, which is what distinguishes the check from a scan that
+   would refuse every node. A held `lock.json` or `review-lock.json` reads
+   `deferred` and applies nothing; the same lock past `lock_stale_after` does
+   not defer; a live `roll-pending.json` overrides `lock.json` and never
+   `review-lock.json`; and a second and third deferral for the same reason log
+   no further event. A `docker compose up -d` that exits non-zero reads
+   `deferred` with `pending_apply`, having already installed the file, and the
+   next tick retries the recreate although no drift remains — and two further
+   failed ticks whose stubbed `docker` prints a different last line each time
+   still log one event between them, the stub varying deliberately because
+   that line lives in `detail` and only `reason` is compared. `compose.yaml`
+   declares the service in the `auto-update` profile with the socket, the
+   same-absolute-path project mount, `network_mode: none`, neither shared
+   anchor and no secret of its own — the lines through which the reconciler is
+   armed and bounded, the way 1c-iii pins the mount line that arms the drift
+   check.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the

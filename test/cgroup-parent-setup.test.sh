@@ -141,9 +141,34 @@ run_setup() {  # run_setup ENV=val... -- ARG...
     shift
   done
   shift
-  out="$(env PATH="$stub_bin:$PATH" "${envs[@]}" bash "$SETUP" "$@" 2>&1)"
+  # The container sentinel is pointed at a path that does not exist, because
+  # this suite runs *inside* the image, where the real `/.dockerenv` does —
+  # and the script refuses to run in a container (see its own note: the
+  # Docker CLI stopped answering that question once the image gained one for
+  # the `reconciler` service). Every case below is about the script's logic on
+  # a host, so every case below gives it a host to believe in; the guard
+  # itself is asserted once, on its own, further down.
+  out="$(env PATH="$stub_bin:$PATH" \
+    CGROUP_SETUP_CONTAINER_SENTINEL="$tmp_dir/not-a-container" \
+    "${envs[@]}" bash "$SETUP" "$@" 2>&1)"
   rc=$?
 }
+
+# --- The container guard ------------------------------------------------------
+# This script is meant to be lifted out of the image and run on the host, and
+# it used to establish that by asking whether `docker` was on PATH — an answer
+# that was correct only while the image carried no Docker CLI. It carries one
+# now (requirement 2.5a's `reconciler` service), so the sentinel is what
+# answers, and it must actually fire: without it the script passes its own
+# guard inside a container and fails several lines later on an unreadable
+# `docker info`, which reads like a broken host rather than a script run in
+# the wrong place.
+sentinel_present="$tmp_dir/dockerenv"
+: > "$sentinel_present"
+out="$(env PATH="$stub_bin:$PATH" CGROUP_SETUP_CONTAINER_SENTINEL="$sentinel_present" \
+  bash "$SETUP" --name agentops-1 --limit 768m 2>&1)"; rc=$?
+assert_eq "running inside a container hits die, exit 1" "1" "$rc"
+assert_contains "…and says to run it on the host instead" "inside a container" "$out"
 
 # --- Argument parsing ---------------------------------------------------------
 
