@@ -801,6 +801,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`scripts/render-toc.sh` no longer silently passes a target file whose
+  `<!-- toc:start -->` / `<!-- toc:end -->` marker pair is missing or
+  unpaired** (issue #1402). The awk pass only rewrote content already
+  between the markers, so a file with neither marker, only one of the pair,
+  or more than one of either, was copied through unchanged — regeneration
+  was a no-op and `--check` exited 0 even though the ToC region was gone,
+  the one case `.github/workflows/toc.yml` could not catch. Each target
+  file is now checked for exactly one marker pair before rendering, in both
+  the plain and `--check` invocations, matching
+  `render-config-table.sh`'s existing precedent of hard-failing on a
+  malformed region.
+
 - **A review-feedback item whose blocking review has already been answered
   no longer burns a full Implementer/Reviewer/Approver round** (issue
   #1360). `lib/work-gone.sh`'s PR-shaped clearance only asked whether a

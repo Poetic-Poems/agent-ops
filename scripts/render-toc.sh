@@ -104,10 +104,28 @@ generate_toc() {
   done
 }
 
+# True when a file contains exactly one <!-- toc:start --> and exactly one
+# <!-- toc:end --> marker. A file with neither, only one of the pair, or more
+# than one of either has no well-formed region to render into — the awk pass
+# below would otherwise copy such a file through unchanged, making
+# regeneration a silent no-op and --check a false pass.
+markers_ok() {
+  local file="$1"
+  local start_count end_count
+  start_count=$(grep -c '^<!-- toc:start -->$' "$file" || true)
+  end_count=$(grep -c '^<!-- toc:end -->$' "$file" || true)
+  (( start_count == 1 && end_count == 1 ))
+}
+
 # Render ToC for a file between markers
 render_file() {
   local file="$1"
   local temp_file="${file}.toc.tmp"
+
+  if ! markers_ok "$file"; then
+    echo "render-toc: $file does not contain exactly one <!-- toc:start --> / <!-- toc:end --> marker pair" >&2
+    return 1
+  fi
 
   # Extract headings and generate ToC
   local toc_content
