@@ -131,8 +131,9 @@ for no gain.
 
 Three keys this pipeline reads but does not own: `crash_loop_repo` and
 `pager_repo` (where an escalation, a decision record or a page comment goes —
-M14a), `enabler_assignee` (who an escalation is assigned to), and
-`enabler_escalation_label` (what it is labelled). They are the installation's
+M14a — and, resolved by the pager's own fallback rule, where the pages
+themselves are read from: M6), `enabler_assignee` (who an escalation is
+assigned to), and `enabler_escalation_label` (what it is labelled). They are the installation's
 existing answers to "where do escalations go and who gets them", and the
 Monitor reuses them rather than adding a fourth.
 
@@ -246,8 +247,14 @@ M6. **The model never reads a primary record.** The Script assembles a digest
      more than the first time it was seen — and the count already says how
      long it has been going on.
    - **every `pager-fired` and `pager-cleared`** transition in the window, and
-     **every open `pw::pager` issue** in `pager_repo` with its body and its
-     comments. The two are separate arrays, not one joined view: a page can be
+     **every open `pw::pager` issue** with its body and its comments, read
+     from the pager repository resolved exactly as the pager itself resolves
+     it — `pager_repo`, falling back to `crash_loop_repo` when it is empty,
+     the rule `scripts/publish-dashboard.sh` applies beside its own
+     `pager_evaluate` call. Reading the bare key would point the consumer at
+     a different repository from the one the producer writes to, which on an
+     installation that sets only `crash_loop_repo` (this one) means every
+     page is invisible and M15's triage is silently vacuous. The two are separate arrays, not one joined view: a page can be
      open with no transition in the window, and a transition can have no open
      page behind it, and it is the *open pages* the triage duty (M15) is owed
      to.
@@ -480,8 +487,10 @@ M14d. **Nowhere to file is not a failure.** An installation with neither
 ### Pages triage
 
 M15. **The Monitor is the consumer of pager pages.** For every open
-   `pw::pager` issue in its digest the Monitor writes a triage verdict in the
-   report, in one of the three classes above:
+   `pw::pager` issue in its digest — read from, and commented on in, the
+   pager repository resolved by the pager's own rule (M6: `pager_repo`, else
+   `crash_loop_repo`) — the Monitor writes a triage verdict in the report, in
+   one of the three classes above:
 
    - **mechanical** (a phantom — the invariant is firing on a fact that is not
      true, or true for a reason the invariant does not mean — or a defect with
@@ -656,6 +665,14 @@ supplies its own values.
    finding with `monitor_tactical_keys` empty produces a proposal in the
    report and **no** `pw::decision` issue; with the key listed, it produces a
    `pw::decision` that is created and then closed.
+6a. **The pages read targets the repository the pager writes to (M6/M15).**
+   Same file: with `pager_repo` unset and `crash_loop_repo` set, the open-pages
+   listing is made against `crash_loop_repo` and the runtime input's
+   `pager_repository` names it; with both unset the listing is skipped and the
+   run still completes. Assert on the repository the listing actually named,
+   never on the run merely succeeding — the defect this closes produced a run
+   that succeeded, reported no pages, and was wrong.
+
 7. **The stage-health verdict exists (M17).** Same file: after a run,
    `state_dir/.stage-health.json` carries a `monitor` entry, and an
    implementation-pipeline write of the same file does not remove it
@@ -682,6 +699,7 @@ supplies its own values.
 | `monitor-stand-down` with `cause: "not-due"` on every tick for days, including at `schedule.monitor_hour` | A `monitor-report-written` event with today's date already exists in the union — usually because a peer ran it, which is correct. If no peer did, the node's clock or `date -u` is wrong, or `monitor-log.jsonl` is not replicating (check `state-sync.sh` and this file's absence from `EXCLUDES`). |
 | The report is thin and says little, on a day that plainly had faults | Check the run's `digest_rung` on `monitor-digest-built`. A rung of 3 or more means the gotcha sections were shed; rung 5 means the text was cut mid-section. Raise `monitor_max_input_bytes`, or find out why the day's event stream was large enough to force the ladder down. |
 | A finding is restated in every report and never filed | Its key is already open somewhere (M13 is working as designed and the report says `already-open`), or the run's budget was spent before it was reached (`deferred`), or the class is `tactical` and its key is not in `monitor_tactical_keys` (`proposed` — also as designed). The ledger row names which. |
+| The report's pages section says "no open page" while `pw::pager` issues plainly exist | The Monitor is reading a different repository from the one the pager writes to. Both resolve `pager_repo` with a `crash_loop_repo` fallback (M6); check that this script still applies it, and that the repository the pager's own `pager_evaluate` call was given matches. This was a real defect once — the Monitor read the bare key while the pager fell back — and its only symptom was a triage section that looked correctly empty. |
 | A pager page is triaged `mechanical` every run and no comment appears | The linked finding was never filed (deferred, or its repository was refused), so there is nothing to link. The comment is posted only where the finding is actually open. |
 | A page stays open long after the Monitor called it a phantom | Correct and deliberate (M15a). A page retires only through `pager_close` or `page-outlived-item`. If the fact really has cleared and the page has not, the bug is in the invariant's own evaluation, not here. |
 | `.stage-health.json` shows `monitor` as `idle` on a node that runs it | The verdict is written only by a run that actually engaged the stage. A node whose every tick stands down (not due, standby, deferring to a sibling) never writes one, which reads as `idle` — "this stage has had no work" — and is true. |

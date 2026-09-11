@@ -435,6 +435,47 @@ out="$(run_monitor "$d" --once)"
 assert_eq "and a later run, seeing its own marker, posts no second comment" "1" \
   "$(grep -c '^issue comment' "$d/stub/calls.log")"
 
+# --- The pages read must target the repository the pager writes to (M6/M15) ---
+# The pager resolves its own repository as `pager_repo`, falling back to
+# `crash_loop_repo` when that is empty (scripts/publish-dashboard.sh, beside
+# its `pager_evaluate` call). A Monitor reading the bare key points the
+# consumer at a different repository from the one the producer writes to: on
+# an installation that sets only `crash_loop_repo` — which is this
+# repository's own shipped configuration — every page is invisible and M15's
+# triage reports itself correctly empty while pages pile up one repository
+# away. That is what makes the assertion below about the repository the
+# listing actually *named*, never about the run succeeding: the defect this
+# closes produced a run that succeeded and was wrong.
+d="$(make_node pager-repo-fallback \
+  "$BASE | del(.pager_repo) | .crash_loop_repo = \"o/fallback-ops\"")"
+out="$(run_monitor "$d" --once)"
+pages_call="$(grep '^issue list' "$d/stub/calls.log" | grep -- '--label pw::pager' | head -n1)"
+assert_contains "with pager_repo unset, the open-pages listing targets crash_loop_repo" \
+  "-R o/fallback-ops" "$pages_call"
+assert_contains "  ... and it is the pages listing, not some other read" \
+  "--label pw::pager" "$pages_call"
+assert_contains "the stage is told which repository its pages came from" \
+  '"pager_repository": "o/fallback-ops"' "$(cat "$d/stub/prompt.txt")"
+
+# An explicit pager_repo still wins over the fallback — the fallback must not
+# become an override.
+d="$(make_node pager-repo-explicit \
+  "$BASE | .pager_repo = \"o/pages\" | .crash_loop_repo = \"o/fallback-ops\"")"
+out="$(run_monitor "$d" --once)"
+assert_contains "an explicit pager_repo still wins over the fallback" \
+  "-R o/pages" "$(grep '^issue list' "$d/stub/calls.log" | grep -- '--label pw::pager' | head -n1)"
+
+# Neither configured: the listing is skipped, and the run still completes.
+# `pager_enabled` defaults true, so an installation with no repository at all
+# is one the pager files nothing for either — nothing to read, nothing to fail
+# over (lib/pager.sh's own empty-repo reasoning).
+d="$(make_node pager-repo-absent "$BASE | del(.pager_repo) | .crash_loop_repo = \"\"")"
+out="$(run_monitor "$d" --once)"
+assert_eq "with neither configured the run still ends 0" "0" "$RC"
+assert_eq "and no pages listing is attempted at all" "0" \
+  "$(grep '^issue list' "$d/stub/calls.log" | grep -c -- '--label pw::pager')"
+assert_contains "the day's report is still written" "### Filings this run" "$(report_of "$d")"
+
 # ============================================================================
 # 6. The cadence gate (M4)
 # ============================================================================
