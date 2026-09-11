@@ -596,6 +596,14 @@ escalation_refile_after_hours="$(cfg '.escalation_refile_after_hours')"
 crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo')"
+# `crash_loop_min_clear_minutes`: how long a Co-Ordinator-class escalation's
+# clearing success must hold, with the same detail never resuming in the
+# meantime, before `crash_loop_retire_resolved` actually closes the issue
+# (the 2026-09-05 fleet flap — six escalations in four hours, each retired
+# within minutes of a lone success before the same detail resumed). `0`
+# restores instant retirement on the first nameable success.
+crash_loop_min_clear_minutes="$(cfg '.crash_loop_min_clear_minutes')"
+[[ "$crash_loop_min_clear_minutes" =~ ^[0-9]+$ ]] || crash_loop_min_clear_minutes=0
 # Deferred crash-loop escalations this cycle's step-1b block could not file
 # safely (agent-ops#1074): populated by `crash_loop_escalate_or_defer`,
 # drained by `crash_loop_refile_pending` from `cleanup()`, once this cycle's
@@ -1789,7 +1797,7 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
   # verdict this cycle — an open escalation from a run that broke cycles ago
   # is exactly what this closes, whatever this cycle's own union log shows
   # right now.
-  crash_loop_retire_resolved
+  crash_loop_retire_resolved "$union_log_horizon"
 
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then

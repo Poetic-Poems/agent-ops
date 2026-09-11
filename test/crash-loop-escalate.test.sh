@@ -117,6 +117,11 @@ mkdir -p "$cycle_dir"
 crash_loop_repo="o/r"
 enabler_escalation_label="enabler-escalation"
 crash_loop_after=4
+# 0 (the pre-2026-09 default) throughout the pre-existing sections below, so
+# the retirement hysteresis added for the 2026-09-05 fleet flap is inert
+# there — they test the other guards. Its own dedicated section further down
+# sets it non-zero.
+crash_loop_min_clear_minutes=0
 state_dir="$WORKDIR/state"
 peers_dir="$WORKDIR/peers"
 mkdir -p "$state_dir" "$peers_dir"
@@ -250,7 +255,7 @@ escalated_marker_501="$(jq -nc --arg ts "$(jq -r '.first_ts' <<<"$verdict")" --a
 printf '%s\n' "$escalated_marker_501" >> "$union_log"
 success_at 2026-08-01T12:00:00Z n2 >> "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved
+crash_loop_retire_resolved 2026-08-01T12:00:00Z
 assert_eq "an open escalation whose run has broken is closed" "1" "$STUB_GH_CLOSE_CALLS"
 assert_eq "the close comment names the success that cleared it" "1" \
   "$(grep -c '2026-08-01T12:00:00Z' <<<"$STUB_GH_CLOSE_LAST_BODY")"
@@ -260,7 +265,7 @@ union_log="$WORKDIR/union-still-open.jsonl"
 cat <<<"$four_fails" > "$union_log"
 printf '%s\n' "$escalated_marker_501" >> "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved
+crash_loop_retire_resolved 2026-08-01T10:45:00Z
 assert_eq "an open escalation whose run is still active is never closed" "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and nothing is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
 
@@ -278,7 +283,7 @@ union_log="$WORKDIR/union-detail-changed.jsonl"
   fail_at 2026-08-01T11:15:00Z n1 'coordinator was refused by the API before it could run: api_error'
 } > "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved
+crash_loop_retire_resolved 2026-08-01T11:15:00Z
 assert_eq "a run that ended without any success — the fleet still failing under a new detail — is never retired" \
   "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
@@ -304,10 +309,96 @@ union_log="$WORKDIR/union-reactivated.jsonl"
   fail_at 2026-08-01T13:45:00Z n1 'coordinator exited 126'
 } > "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved
+crash_loop_retire_resolved 2026-08-01T13:45:00Z
 assert_eq "an open escalation is never closed while the same detail is active again under a new run" \
   "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
+# --- The retirement hysteresis (2026-09-05 fleet flap) ----------------------
+#
+# Six enabler-escalation issues in four hours, every one the identical
+# detail, each retired within minutes of a lone fleet-wide success before
+# that same detail resumed and re-crossed `crash_loop_after` a few cycles
+# later — a "new" run to every guard above, none of which fire until the
+# resumed failures reach threshold on their own. `crash_loop_
+# detail_recurred_since` and `crash_loop_min_clear_minutes` are what stop
+# retirement from closing the issue while that ramp is still in progress, so
+# the flap's own eventual re-crossing finds the issue still open and reuses
+# it rather than filing a fresh one.
+sep05_detail='hand-applied the needs-refinement label (by warwickallen)'
+sep05_run1_fails="$(fail_at 2026-09-04T23:54:53Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:55:30Z ockham-container "$sep05_detail"
+  fail_at 2026-09-04T23:56:18Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:57:04Z ockham-container "$sep05_detail"
+  fail_at 2026-09-04T23:57:50Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:58:07Z ockham-container "$sep05_detail")"
+sep05_escalated_1164="$(jq -nc --arg d "$sep05_detail" \
+  '{ts: "2026-09-05T00:03:12Z", node: "poetic-2", event: "crash-loop-escalated", stage: "coordinator", detail: $d, first_ts: "2026-09-04T23:54:53Z", issue_number: 1164, issue_url: "https://github.com/o/r/issues/1164"}')"
+
+crash_loop_min_clear_minutes=30
+
+# Barely two minutes past the clearing success — well inside the window, and
+# (as the real incident shows) plenty of time for the same detail to resume
+# without yet having reached this node's own union.
+union_log="$WORKDIR/union-flap-freshly-cleared.jsonl"
+{
+  printf '%s\n' "$sep05_run1_fails"
+  printf '%s\n' "$sep05_escalated_1164"
+  success_at 2026-09-05T00:13:00Z poetic-2
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved 2026-09-05T00:15:00Z
+assert_eq "a clearing success not yet crash_loop_min_clear_minutes old is never retired" \
+  "0" "$STUB_GH_CLOSE_CALLS"
+assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
+# The second flap has already resumed under the identical detail, in this
+# same log, below threshold — nowhere near enough for `active_detail` to see
+# it — but `crash_loop_detail_recurred_since` sees it directly. This holds
+# even with a horizon far past the clear window, since the guard is
+# unconditional, not a tunable.
+union_log="$WORKDIR/union-flap-recurred.jsonl"
+{
+  printf '%s\n' "$sep05_run1_fails"
+  printf '%s\n' "$sep05_escalated_1164"
+  success_at 2026-09-05T00:13:00Z poetic-2
+  fail_at 2026-09-05T00:16:50Z poetic-1 "$sep05_detail"
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved 2026-09-05T04:00:00Z
+assert_eq "a same-detail failure since the clearing success blocks retirement outright" \
+  "0" "$STUB_GH_CLOSE_CALLS"
+assert_eq "and no retirement is logged for it either" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
+# The counterfactual: the same run, the same clearing success, but the
+# window has genuinely elapsed with the detail never recurring — the
+# incident really is over, and retirement proceeds exactly as it always did.
+union_log="$WORKDIR/union-flap-genuinely-clear.jsonl"
+{
+  printf '%s\n' "$sep05_run1_fails"
+  printf '%s\n' "$sep05_escalated_1164"
+  success_at 2026-09-05T00:13:00Z poetic-2
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved 2026-09-05T00:43:00Z
+assert_eq "a clearing success that has held crash_loop_min_clear_minutes, with no recurrence, is retired" \
+  "1" "$STUB_GH_CLOSE_CALLS"
+assert_eq "and the retirement is logged" "1" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
+# 0 restores the pre-2026-09 instant-retirement behaviour even with a
+# clearing success only seconds old.
+crash_loop_min_clear_minutes=0
+union_log="$WORKDIR/union-flap-hysteresis-off.jsonl"
+{
+  printf '%s\n' "$sep05_run1_fails"
+  printf '%s\n' "$sep05_escalated_1164"
+  success_at 2026-09-05T00:13:00Z poetic-2
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved 2026-09-05T00:13:05Z
+assert_eq "crash_loop_min_clear_minutes 0 retires on the first nameable success, as before this key existed" \
+  "1" "$STUB_GH_CLOSE_CALLS"
+crash_loop_min_clear_minutes=30
 
 printf '\n'
 if (( failures )); then

@@ -562,7 +562,7 @@ crash_loop_refile_pending() {
   done
 }
 
-# crash_loop_retire_resolved
+# crash_loop_retire_resolved UNION_LOG_HORIZON
 # Closes any open crash-loop escalation whose run has since broken *and*
 # whose breaking Co-Ordinator success can be named — both conditions, since
 # the detector going quiet alone is not evidence of recovery (see the
@@ -577,7 +577,12 @@ crash_loop_refile_pending() {
 # `$union_log`: unlike a deferred filing, retirement has no same-cycle race
 # to lose to — an open issue's run either broke some earlier cycle (visible
 # in any union snapshot since) or it did not, so the freshest-available
-# snapshot serves exactly as well as one gathered later would.
+# snapshot serves exactly as well as one gathered later would. UNION_LOG_HORIZON
+# is `$union_log`'s own requirement-39f horizon (`log_latest_ts`), passed in
+# rather than read as a global the way every other library that needs it
+# already takes it (lib/label-marker.sh, lib/candidate-gather.sh) — the
+# newest `.ts` the snapshot reaches, used below as this function's own
+# deterministic stand-in for "now".
 #
 # Before touching any open escalation, this also checks whether the same
 # `$union_log` already shows a *fresh* Co-Ordinator run under the very same
@@ -596,10 +601,44 @@ crash_loop_refile_pending() {
 # issue the peer just rebound, on the strength of a union snapshot that is
 # stale only about the rebind, not about the new run's failures themselves —
 # which this same snapshot already shows.
+#
+# Two more guards, added for the 2026-09-05 fleet flap: six escalations in
+# four hours, every one the same detail, each retired within minutes of a
+# lone fleet-wide Co-Ordinator success — one node's own cycle succeeding
+# once — before that same detail resumed failing and re-crossed
+# `crash_loop_after` as a "new" run a few cycles later. The guards above
+# cannot see this coming: `active_detail` only fires once the new run has
+# itself re-crossed threshold, and the ramp from a lone success back to
+# threshold-many fresh failures took as little as two minutes of fleet time
+# — nowhere near enough for `crash_loop_reverify`'s per-cycle recompute to
+# catch it first. Retiring the issue the instant a clearing success is found
+# is what let each flap open a fresh issue: `create_escalation_issue`'s own
+# open-issue dedup is a live query with nothing still open left to find.
+#
+#   - `crash_loop_detail_recurred_since` — the same detail has already
+#     resumed failing, in this very `$union_log`, at or after the clearing
+#     success, whether or not it has reached threshold again. Unconditional,
+#     not a tunable: retiring while the log in hand already contradicts the
+#     "it broke" comment the issue is about to be closed with is the
+#     mistake requirement 2.7's "silence must never retire an alarm" was
+#     always written against, just from the other side of the ledger.
+#   - `crash_loop_min_clear_minutes` — the clearing success itself must be
+#     at least this many minutes older than UNION_LOG_HORIZON before it is
+#     trusted, giving a same-detail recurrence that has not yet synced to
+#     this node's own union time to arrive and trip the guard above instead.
+#     `0` restores the previous instant-retirement behaviour.
+#
+# Together these turn a flapping incident into one issue that stays open,
+# rebound (and re-logged with the flap's own new `detail`-unchanged,
+# `first_ts`-fresh `crash-loop-escalated` event, agent-ops#1140) across
+# every recurrence inside the window, rather than a fresh one per flap.
 crash_loop_retire_resolved() {
+  local union_log_horizon="$1"
   [[ -n "$crash_loop_repo" && -s "$union_log" ]] || return 0
   local entry stage detail first_ts issue_number issue_url success_ts body
-  local active_detail
+  local active_detail min_clear_minutes success_epoch horizon_epoch
+  min_clear_minutes="${crash_loop_min_clear_minutes:-0}"
+  [[ "$min_clear_minutes" =~ ^[0-9]+$ ]] || min_clear_minutes=0
   active_detail="$(jq -r '.detail // empty' <<<"$(crash_loop_verdict "$crash_loop_after" < "$union_log")" 2>/dev/null)"
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
@@ -630,6 +669,19 @@ crash_loop_retire_resolved() {
     # requirement 2.7 says it does. Not nameable: leave it open, and let a
     # human close it.
     [[ -n "$success_ts" ]] || continue
+    # The flap guards (2026-09-05): a same-detail failure already resumed
+    # since the clearing success, in this same log, regardless of whether it
+    # has reached threshold again — or the success has not yet held for
+    # `crash_loop_min_clear_minutes`, leaving room for a recurrence that has
+    # not synced here yet. Either way this is not (or not provably yet) the
+    # end of the incident; leave the issue open for a rebind to reuse.
+    crash_loop_detail_recurred_since "$detail" "$success_ts" < "$union_log" && continue
+    if (( min_clear_minutes > 0 )); then
+      success_epoch="$(date -u -d "$success_ts" +%s 2>/dev/null || echo 0)"
+      horizon_epoch="$(date -u -d "${union_log_horizon:-}" +%s 2>/dev/null || echo 0)"
+      (( success_epoch > 0 && horizon_epoch > 0 )) || continue
+      (( horizon_epoch - success_epoch >= min_clear_minutes * 60 )) || continue
+    fi
     body="The Co-Ordinator has succeeded since this run's first failure (\`$first_ts\`) — at \`$success_ts\`. The loop this escalation reported has broken.
 
 ---

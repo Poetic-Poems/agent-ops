@@ -430,6 +430,118 @@ assert_eq "only the still-open escalation is printed" \
 assert_eq "no crash-loop-escalated events at all yields nothing" \
   "" "$(crash_loop_open_escalations <<<"$four_fails")"
 
+# The stale-binding rebind (agent-ops#1140): `create_escalation_issue`'s own
+# open-issue dedup keys on item ref and label alone, never on detail/
+# first_ts, so a run rebinding to a still-open issue logs a *second*
+# crash-loop-escalated event against the same issue_number, with its own new
+# detail and first_ts. The binding actually in force is that second one;
+# `crash_loop_retire_resolved` must judge retirement against it, not the
+# earliest (input-order) event for that issue_number.
+rebind_same_issue="$(cat <<<"$four_fails"
+  escalated_at 2026-08-01T11:00:00Z 'coordinator exited 126' 501
+  escalated_at 2026-08-01T15:00:00Z 'coordinator refused: api_error' 501)"
+assert_eq "a rebind is judged by the newest event's own detail, not the first" \
+  "coordinator refused: api_error" "$(crash_loop_open_escalations <<<"$rebind_same_issue" | jq -r '.detail')"
+assert_eq "only one entry is printed for the shared issue_number, not two" \
+  "1" "$(crash_loop_open_escalations <<<"$rebind_same_issue" | wc -l | tr -d ' ')"
+
+rebind_out_of_order="$(cat <<<"$four_fails"
+  escalated_at 2026-08-01T15:00:00Z 'coordinator refused: api_error' 501
+  escalated_at 2026-08-01T11:00:00Z 'coordinator exited 126' 501)"
+assert_eq "the newest-by-ts wins regardless of the events' own order in the log" \
+  "coordinator refused: api_error" "$(crash_loop_open_escalations <<<"$rebind_out_of_order" | jq -r '.detail')"
+
+# --- crash_loop_detail_recurred_since (the 2026-09-05 fleet flap) -----------
+#
+# `crash_loop_retire_resolved`'s pre-existing `active_detail` guard only
+# fires once a *re-crossed* run is visible — a same-detail failure that has
+# resumed but not yet reached `crash_loop_after` again reads, to that guard,
+# exactly like a clean recovery. This reads the failures themselves instead
+# of waiting for another verdict.
+detail_recurrence_log="$(cat <<<"$four_fails"
+  success_at 2026-08-01T12:00:00Z n2
+  fail_at 2026-08-01T13:00:00Z n1 'coordinator exited 126')"
+
+if crash_loop_detail_recurred_since 'coordinator exited 126' 2026-08-01T12:00:00Z <<<"$detail_recurrence_log"; then
+  printf 'ok   - a same-detail failure after the clearing success is a recurrence\n'
+else
+  printf 'FAIL - a same-detail failure after the clearing success should be a recurrence\n'
+  failures=$(( failures + 1 ))
+fi
+
+if crash_loop_detail_recurred_since 'coordinator exited 126' 2026-08-01T12:00:00Z <<<"$with_late_success"; then
+  printf 'FAIL - no failure at all after the success should not read as a recurrence\n'
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - no same-detail failure after the success is not a recurrence\n'
+fi
+
+if crash_loop_detail_recurred_since 'coordinator timed out' 2026-08-01T12:00:00Z <<<"$detail_recurrence_log"; then
+  printf 'FAIL - a different detail should never count as this run'\''s own recurrence\n'
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - a different detail after the success is never this run'\''s own recurrence\n'
+fi
+
+if crash_loop_detail_recurred_since 'coordinator exited 126' 2026-08-01T13:00:00Z <<<"$detail_recurrence_log"; then
+  printf 'ok   - a same-detail failure exactly at SINCE_TS counts (the boundary is inclusive)\n'
+else
+  printf 'FAIL - a same-detail failure exactly at SINCE_TS should count\n'
+  failures=$(( failures + 1 ))
+fi
+
+# --- The 2026-09-05 fleet flap, reproduced with the incident's own
+# timestamps (issues #1164-#1170) --------------------------------------------
+#
+# Six enabler-escalation issues in four hours, every one the identical
+# detail, each retired within minutes of a lone fleet-wide success before
+# that same detail resumed failing and re-crossed threshold — read by the
+# guards that existed before this fix as a "new" run each time. This
+# reproduces the real first two runs' own timestamps end to end and proves
+# the two facts requirement 2.7's hysteresis rests on: a verdict computed
+# once a clearing success is already in the log never fires — a resolved
+# run reads as no run at all, so there is no "late" filing decision to make
+# — and the very failures that make the second flap a continuation of the
+# first run's own incident, rather than an unrelated new one, are exactly
+# what `crash_loop_detail_recurred_since` sees. `crash_loop_retire_resolved`
+# consults that primitive before it will close the first run's issue, which
+# is what stops the second flap from ever reaching `create_escalation_issue`
+# with no open issue left to find — one page for the run family, not two.
+sep05_detail='hand-applied the needs-refinement label (by warwickallen)'
+sep05_run1="$(fail_at 2026-09-04T23:54:53Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:55:30Z ockham-container "$sep05_detail"
+  fail_at 2026-09-04T23:56:18Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:57:04Z ockham-container "$sep05_detail"
+  fail_at 2026-09-04T23:57:50Z ockham-2 "$sep05_detail"
+  fail_at 2026-09-04T23:58:07Z ockham-container "$sep05_detail")"
+sep05_run1_verdict="$(crash_loop_verdict 4 <<<"$sep05_run1")"
+assert_eq "the first run's own verdict names its real first failure" \
+  "2026-09-04T23:54:53Z" "$(jq -r '.first_ts' <<<"$sep05_run1_verdict")"
+assert_eq "and its real failure count" "6" "$(jq -r '.count' <<<"$sep05_run1_verdict")"
+
+sep05_with_success="$(cat <<<"$sep05_run1"
+  success_at 2026-09-05T00:13:00Z poetic-2)"
+assert_eq "a filing decision evaluated once the clearing success is already logged never fires" \
+  "" "$(crash_loop_verdict 4 <<<"$sep05_with_success")"
+
+sep05_second_flap="$(cat <<<"$sep05_with_success"
+  fail_at 2026-09-05T00:16:50Z poetic-1 "$sep05_detail"
+  fail_at 2026-09-05T00:17:40Z poetic-2 "$sep05_detail"
+  fail_at 2026-09-05T00:18:20Z poetic-1 "$sep05_detail"
+  fail_at 2026-09-05T00:19:00Z poetic-2 "$sep05_detail"
+  fail_at 2026-09-05T00:19:30Z poetic-1 "$sep05_detail"
+  fail_at 2026-09-05T00:19:59Z poetic-2 "$sep05_detail")"
+sep05_flap_verdict="$(crash_loop_verdict 4 <<<"$sep05_second_flap")"
+assert_eq "the second flap is, on its own, a genuinely new threshold-crossing run" \
+  "2026-09-05T00:16:50Z" "$(jq -r '.first_ts' <<<"$sep05_flap_verdict")"
+
+if crash_loop_detail_recurred_since "$sep05_detail" 2026-09-05T00:13:00Z <<<"$sep05_second_flap"; then
+  printf 'ok   - the second flap recurs under the first run'\''s own detail since its clearing success\n'
+else
+  printf 'FAIL - the second flap should read as a recurrence of the first run'\''s own detail\n'
+  failures=$(( failures + 1 ))
+fi
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

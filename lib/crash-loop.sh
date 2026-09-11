@@ -279,14 +279,52 @@ crash_loop_last_success_since() {
   ' 2>/dev/null || true
 }
 
+# crash_loop_detail_recurred_since DETAIL SINCE_TS < union.jsonl
+# Exit 0 when a Co-Ordinator `attempt-failed` event carrying DETAIL exists
+# with `ts` at or after SINCE_TS — regardless of whether it ever reaches
+# `crash_loop_after` many in a row — and 1 otherwise. The 2026-09-05 fleet
+# flap (six escalations in four hours, every one the same detail, each
+# retired within minutes of a lone clearing success before the very same
+# failure resumed) is what this exists to catch: `crash_loop_retire_
+# resolved`'s own `active_detail` guard only sees a *re-crossed* run, so a
+# same-detail failure that has resumed but not yet reached threshold again
+# looks identical, to that guard, to a clean recovery. This reads the
+# failures themselves rather than waiting for another verdict to fire, so a
+# resolving success is never treated as the end of the incident while its
+# own detail is still visibly recurring in the very log the retirement
+# decision is reading.
+crash_loop_detail_recurred_since() {
+  local detail="$1" since_ts="$2" hits
+  hits="$(jq -r -R -n --arg d "$detail" --arg ts "$since_ts" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
+      | select(.event == "attempt-failed" and (.stage // "") == "coordinator"
+               and (.detail // "") == $d and (.ts // "") >= $ts) ]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}
+
 # crash_loop_open_escalations < union.jsonl
 # Print one JSON object per line — {stage, detail, first_ts, issue_number,
 # issue_url} — for each crash-loop escalation this fleet has filed (a
 # `crash-loop-escalated` event carrying an `issue_number`) that no
 # `crash-loop-retired` event has since named by that same `issue_number`
-# (agent-ops#1074). One entry per `issue_number`: a dedup'd re-attempt at an
-# already-escalated run never logs a second `crash-loop-escalated` for it, so
-# the first is authoritative.
+# (agent-ops#1074). One entry per `issue_number`, keeping the *newest* (by
+# `ts`) `crash-loop-escalated` event bound to it (agent-ops#1140):
+# `create_escalation_issue`'s own open-issue dedup keys on the item ref and
+# label alone, never on `detail`/`first_ts`, so a run rebinding to a
+# still-open issue (a same-detail flap reusing it before it would otherwise
+# retire, or an unrelated coordinator-class run finding it via the coarser
+# item-ref dedup) logs a second `crash-loop-escalated` for the same
+# `issue_number` — new `detail`, new `first_ts`, same number. That second
+# event is the binding actually in force; having an open escalation's
+# retirement reverify against the *first* one instead would leave
+# `crash_loop_retire_resolved` forever evaluating a stale run, able to
+# retire the issue out from under whichever run is actually live (or, if
+# that run itself broke, unable to name its own clearing success). This is
+# only true *across* a rebind — a dedup'd re-attempt *within* one run never
+# logs a second `crash-loop-escalated` for it in the first place, so there is
+# nothing to prefer between there.
 crash_loop_open_escalations() {
   jq -c -R -n '
     [ inputs | select(length > 0) | (fromjson? // empty) ] as $events
@@ -294,7 +332,9 @@ crash_loop_open_escalations() {
                 | map(select(. != ""))) as $retired
     | $events
     | map(select(.event == "crash-loop-escalated" and (.issue_number // empty) != ""))
-    | unique_by(.issue_number)
+    | sort_by(.ts // "")
+    | group_by(.issue_number)
+    | map(last)
     | map(select((.issue_number as $n | $retired | index($n)) == null))
     | .[]
     | {stage, detail, first_ts, issue_number, issue_url}
