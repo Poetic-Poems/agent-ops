@@ -98,8 +98,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `schedule.monitor_hour`, `schedule.monitor_offset_minutes` and
   `prompt_overrides.monitor`. Deferred and recorded:
   `tech-debt/TD-PPagop-26091101.md` (the report is not surfaced on the
-  dashboard) and `tech-debt/TD-PPagop-26091102.md` (the Monitor writes no
-  `node-state` transition).
+  dashboard), `tech-debt/TD-PPagop-26091102.md` (the Monitor writes no
+  `node-state` transition) and `tech-debt/TD-PPagop-26091105.md` (its
+  filings do not reach requirement 2m's push channel, which landed while
+  this was in flight).
 
 - **The host-facts collector** (issue #1283, requirement 36a):
   `scripts/collect-host-facts.sh` writes one record per node,

@@ -459,6 +459,16 @@ M14c. **Strategic, or owner-only under requirement 36a** — a trade-off, a
    `issues` work source (requirement 16.4). **This is the only path from this
    pipeline to the owner.**
 
+M14c1. **A filing reaches GitHub and nothing else.** None of M14's three
+   classes posts to the installation's push channel (`lib/notify.sh`,
+   requirement 2m): that requirement's `escalation` class is scoped to the
+   issues `create_escalation_issue` creates, and this pipeline files through
+   its own creator. M14c's escalation is therefore the one owner-facing
+   filing in the system that arrives on the forge and nowhere else. Recorded
+   as deferred work at `tech-debt/TD-PPagop-26091105.md`; agent-ops#1279 was
+   an open pull request when this pipeline was specified and worked, and
+   landed while it was in flight.
+
 M14d. **Nowhere to file is not a failure.** An installation with neither
    `crash_loop_repo` nor `pager_repo` configured has nowhere to put an
    escalation or a decision record; such a finding is recorded as `proposed`
