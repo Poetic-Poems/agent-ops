@@ -42,9 +42,13 @@
 #
 # `pager_file`/`pager_close` post to the installation's notify channel
 # (lib/notify.sh, issue #1279) through `notify_post` — never called directly,
-# always behind `declare -F notify_post`, so this file stays sourceable
+# always behind an `if declare -F notify_post`, so this file stays sourceable
 # standalone (test/pager.test.sh does exactly that) whether or not
 # lib/notify.sh is alongside it. scripts/publish-dashboard.sh sources both.
+# An `if` and not a `&&` list, because the guard has to leave the calling
+# function's own exit status alone: a `&&` whose left-hand side fails carries
+# that 1 out as the function's result, and a caller running under `set -e`
+# then dies on the one path this guard exists to make harmless.
 #
 # An invariant's lifecycle is event-sourced over the union log, exactly the
 # transition-only convention lib/crash-loop.sh's `crash_loop_escalate`/
@@ -436,10 +440,16 @@ pager_file() {
     # Guarded by `declare -F`, the same seam `_pager_ensure_label_role` uses
     # for lib/labels.sh: this file must stay sourceable standalone (test/
     # pager.test.sh does exactly that), without lib/notify.sh alongside it.
-    declare -F notify_post >/dev/null 2>&1 && notify_post "pager-fired" "$key" \
-      "Pager: $key" "$url" "$pager_repo" "$evidence" "$webhook_url" \
-      "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
-      "$log_file" "$node" "$cycle"
+    # An `if`, not a `&&` list: a failed `declare -F` is the ordinary
+    # standalone case, and as the left-hand side of a `&&` it would make this
+    # function's own exit status 1 — which `set -e` at a caller reads as a
+    # failure, killing the very process the guard exists to keep working.
+    if declare -F notify_post >/dev/null 2>&1; then
+      notify_post "pager-fired" "$key" \
+        "Pager: $key" "$url" "$pager_repo" "$evidence" "$webhook_url" \
+        "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
+        "$log_file" "$node" "$cycle"
+    fi
   fi
   if [[ "$remedy_class" == "config-lever" && -n "$pager_repo" ]]; then
     local dec_body dec_created
@@ -483,10 +493,15 @@ Retired automatically by lib/pager.sh (issue #1278)."
   fields="$(jq -nc --arg k "$key" --arg ca "$cleared_at" --arg e "$evidence" \
     '{key: $k, cleared_at: $ca, evidence: $e}')"
   pager_log_event "$log_file" "$node" "$cycle" "pager-cleared" "$fields"
-  declare -F notify_post >/dev/null 2>&1 && notify_post "pager-cleared" "$key" \
-    "Pager: $key" "" "$pager_repo" "$evidence" "$webhook_url" \
-    "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
-    "$log_file" "$node" "$cycle"
+  # An `if`, not a `&&` list — see `pager_file`'s own guard above. This one
+  # is the function's last command, so a `&&` whose left-hand side failed
+  # would make `pager_close` itself return 1 on every standalone source.
+  if declare -F notify_post >/dev/null 2>&1; then
+    notify_post "pager-cleared" "$key" \
+      "Pager: $key" "" "$pager_repo" "$evidence" "$webhook_url" \
+      "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
+      "$log_file" "$node" "$cycle"
+  fi
 }
 
 # --- Evaluation --------------------------------------------------------------
