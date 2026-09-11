@@ -401,6 +401,12 @@ running two stacks, do this from each stack directory, with *that* directory's
 path — never the shared parent. A node built by `cloud-init.yaml` has both
 already.
 
+The `AGENT_OPS_PROJECT_DIR` line is appended unconditionally, and that is
+deliberate: `.env.example` ships the key already present and empty, a later
+definition in `.env` wins over an earlier one, and a `grep -q` guard would
+therefore find the empty one and skip the append that fixes it. `DOCKER_GID`
+carries the guard because `.env.example` leaves that one commented out.
+
 That `up -d` is a recreate, which is why `--status` comes first. It is the
 last compose change on that node that has to be timed by hand.
 
