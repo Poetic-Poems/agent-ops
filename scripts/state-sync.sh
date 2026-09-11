@@ -249,6 +249,14 @@ EXCLUDES=(
   --exclude=doctor.log
   --exclude=.doctor-status.json
   --exclude=.stage-health.json
+  # .compose-reconcile.json (lib/compose-reconcile.sh, the `reconciler`
+  # service): this node's own record of what its compose reconciler last did
+  # to its own compose.yaml — a fact about one host's deployment file, which
+  # on a peer would answer for a file that is not there. Local on the same
+  # reasoning as .stage-health.json above, and like it, its *verdict* does
+  # reach peers: folded into heartbeat.json's `compose_reconcile` below,
+  # beside the `compose` drift verdict it acts on.
+  --exclude=.compose-reconcile.json
   # revert-rate.log (scripts/publish-revert-rate.sh, agent-ops#579): the
   # daily pass's own text output, local to this node on the same reasoning
   # as doctor.log above. Its structured sibling, revert-rate.jsonl, is
@@ -615,12 +623,14 @@ do_push() {
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
     --argjson switch "$heartbeat_switch_json" \
     --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
+    --argjson compose_reconcile "$(jq -c '.' "$state_dir/.compose-reconcile.json" 2>/dev/null || echo null)" \
     --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
     --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
       "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)" \
     --argjson doctor "$(jq -c '{timestamp, verdict}' "$state_dir/.doctor-status.json" 2>/dev/null || echo null)" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image, switch: $switch,
+      compose: $compose, compose_reconcile: $compose_reconcile,
+      image: $image, switch: $switch,
       stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater,
       doctor: $doctor}' > "$mirror/heartbeat.json"
 

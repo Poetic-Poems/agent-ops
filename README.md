@@ -850,7 +850,12 @@ scheduler's environment turns off at the source.
 
 **Rolling it onto an existing node** — the fence is compose-level, so no
 image roll delivers it (the node's own heartbeat reports the compose drift
-until you act):
+until you act). On a node running the `reconciler` service, a compose-level
+change like this one now arrives on its own within a few minutes of the merge
+— see [Keeping the compose file
+current](deploy/docker/README.md#keeping-the-compose-file-current), including
+the one per-node step that enables it; the steps below are what a node without
+it still needs:
 
 ```sh
 cd ~/agent-ops   # wherever this node keeps compose.yaml and .env

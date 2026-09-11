@@ -1,0 +1,29 @@
+# deploy/docker/reconcile-crontab — the compose reconciler's schedule.
+#
+# supercronic reads this in the `reconciler` service (deploy/docker/
+# compose.yaml, profile `auto-update`). It is deliberately *not*
+# deploy/docker/crontab: that file is the pipelines' own, rendered per node by
+# render-crontab.sh so several active nodes do not fire their heavy cycles on
+# the same minute, and this job is neither heavy nor in need of jitter — it
+# reads two local files, and does nothing at all unless they differ.
+#
+# Every five minutes, matching watchtower's own default poll interval
+# (WATCHTOWER_POLL_INTERVAL) rather than coinciding with anything: the two
+# halves of "this node is current" — a new image, a new compose.yaml — should
+# arrive on the same cadence, and five minutes is what makes a deferral cheap.
+# A tick that finds a cycle in flight defers and says so once; the retry is
+# five minutes away, not a day.
+#
+# Not a placeholder and not configurable from config.json, unlike every line
+# in crontab.tmpl. The cadence is not load-bearing — a node is reconciled
+# within a cycle's length whatever this says — and a schedule baked into the
+# image is one that arrives by image roll, which is the whole point of this
+# service: a value in .env would need the per-node visit this exists to
+# abolish.
+#
+# The job prints nothing when there is nothing to do. Its output is the
+# container's stdout, so `docker compose logs reconciler` is where a human
+# reads what it decided, and the durable record is the verdict in
+# state_dir/.compose-reconcile.json, which travels in the node's heartbeat.
+
+*/5 * * * *  /app/scripts/reconcile-compose.sh

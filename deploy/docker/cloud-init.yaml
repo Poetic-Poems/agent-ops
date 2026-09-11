@@ -19,9 +19,14 @@
 # The node deliberately holds no clone of agent-ops: compose.yaml,
 # ts-serve.json, watch-node.sh and check-node-compose.sh are fetched from the
 # repository, and everything else arrives in the image. Updating is
-# watchtower's job, not git's — except for compose.yaml itself, which no
-# image roll can touch; check-node-compose.sh is what audits that copy, and
-# the containers created from it, against the running image (#131).
+# watchtower's job, not git's — and compose.yaml, which no image roll can
+# touch, is the `reconciler` service's (deploy/docker/compose.yaml,
+# `AGENT_OPS_PROJECT_DIR` below): it copies the image's own copy over this
+# node's and runs `docker compose up -d` when the two differ and the node is
+# idle, so a node built from this file needs no visit for a merged compose
+# change either. check-node-compose.sh remains the host-side audit of that
+# copy, and of the containers created from it, against the running image
+# (#131).
 
 package_update: true
 package_upgrade: true
@@ -51,6 +56,12 @@ write_files:
 
       COMPOSE_PROFILES=tailnet,auto-update
 
+      # Where this stack lives on this host. The `reconciler` service needs
+      # its project directory bind-mounted at the same absolute path it has
+      # here, or the relative bind sources inside compose.yaml resolve to
+      # paths the daemon cannot find. See deploy/docker/.env.example.
+      AGENT_OPS_PROJECT_DIR=/opt/poetic-node
+
       GH_TOKEN=__GH_TOKEN__
       TS_AUTHKEY=__TS_AUTHKEY__
 
@@ -73,6 +84,15 @@ runcmd:
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/ts-serve.json"]
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/watch-node.sh https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts/watch-node.sh && chmod +x /opt/poetic-node/watch-node.sh"]
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/check-node-compose.sh https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts/check-node-compose.sh && chmod +x /opt/poetic-node/check-node-compose.sh"]
+
+  # This host's own docker group id, appended rather than templated: it is a
+  # property of the machine Docker was just installed on, not of this file,
+  # and the two containers that mount the Docker socket — `collector` and
+  # `reconciler` — can only open it as a member of that group. The 999
+  # fallback in compose.yaml is Debian's and Ubuntu's usual value and nothing
+  # more, and a wrong one here costs the collector its container facts and
+  # the reconciler its whole job.
+  - [sh, -c, 'printf "DOCKER_GID=%s\n" "$(getent group docker | cut -d: -f3)" >> /opt/poetic-node/.env']
 
   - [sh, -c, "cd /opt/poetic-node && docker compose up -d"]
 

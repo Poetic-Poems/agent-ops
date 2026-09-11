@@ -957,6 +957,18 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   compose.yaml against its
                                             //   image's copy (#131); null if
                                             //   unreported
+                         compose_reconcile: { status, at,   // what that
+                                              reason, from, //   node's own
+                                              to },         //   reconciler did
+                                            //   about that drift (2.5a):
+                                            //   "in-sync", "reconciled"
+                                            //   (carrying both files' SHA-256
+                                            //   as `from`/`to`), "deferred"
+                                            //   or "refused" (both carrying
+                                            //   `reason`); null on a node
+                                            //   with no reconciler, which is
+                                            //   every node until its owner's
+                                            //   one enabling `up -d`
                          image: { status, registry_commit,  // the node's own
                                   registry_created_at },     //   commit against
                                             //   the registry's newest
@@ -3264,13 +3276,34 @@ number's twins elsewhere on the page.
   the containers at all, which itself means the file predates the check and
   is behind. Both are amber where `behind` is grey, deliberately: `behind`
   resolves itself on the next idle poll, while a drifted compose resolves
-  only when a human re-fetches the file and runs `up -d` on that host, and
-  an amber that never clears by itself is exactly the alarm that was
-  missing. `in-sync` renders nothing, and so does an absent verdict — a peer
-  on an image from before the check, or an install that is no container —
-  because for an image the roll already on its way will start answering, and
-  a node whose rolls have stopped is the version line's `behind` failing to
-  clear, already caught above.
+  only when something acts on it, and an amber that never clears by itself is
+  exactly the alarm that was missing. `in-sync` renders nothing, and so does
+  an absent verdict — a peer on an image from before the check, or an install
+  that is no container — because for an image the roll already on its way
+  will start answering, and a node whose rolls have stopped is the version
+  line's `behind` failing to clear, already caught above.
+
+  Beside those badges, on the same line, is what that node's own reconciler
+  did about the drift: the heartbeat's `compose_reconcile` verdict
+  (implementation spec 2.5a, `lib/compose-reconcile.sh` — the actor the drift
+  badge had no counterpart for until the `reconciler` service existed). It
+  renders on the same discipline as everything else here, which leaves only
+  one of its four states visible. **reconcile refused** is amber: the node
+  will not apply the merged file — its project directory is not configured,
+  or the new file needs a `${VAR}` this node's `.env` does not define — and
+  nothing will change until a human acts, which is the one state that stays
+  put. **reconcile deferred** is grey, `behind`'s colour and `behind`'s
+  reasoning: a cycle is in flight, or a recreate failed, and the next tick a
+  few minutes away retries it. `reconciled` and `in-sync` render nothing,
+  because a `reconciled` verdict has already cleared the drift badge beside
+  it. Each badge's title carries the recorded reason verbatim. An absent
+  verdict also renders nothing, and that is the common case rather than an
+  edge one: a node whose owner has not run the one enabling `up -d` has no
+  reconciler, and its card reads exactly as every card did before this
+  existed — the drift badge, and the per-node ritual in its title. The
+  verdict is the node's own and is never derived here for a peer, on the
+  same rule the compose verdict above follows: only that node's container
+  holds that node's project directory and its Docker socket.
 - **The `behind` version marker cannot tell a uniformly stale fleet from a
   healthy one, so a second badge compares against the registry instead
   (#155).** `behind` (above) compares nodes with each other —

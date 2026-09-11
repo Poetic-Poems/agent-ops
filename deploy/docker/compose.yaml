@@ -13,7 +13,10 @@
 #                deployment; needs TS_AUTHKEY)
 #   local        the dashboard on the host's own loopback instead, for a
 #                machine with no tailnet or no authkey to hand
-#   auto-update  watchtower, which pulls new images and restarts into them
+#   auto-update  watchtower, which pulls new images and restarts into them,
+#                and the reconciler, which applies a merged copy of *this
+#                file* to this node the same way — the two halves of keeping
+#                a node current without visiting it
 #
 # The scheduler belongs to no profile: it runs on every node under every
 # profile, because a node that runs no cycles and no heartbeat is not a node.
@@ -886,6 +889,122 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+  # The other half of "a node keeps itself current". watchtower above delivers
+  # a merged *image*; this delivers a merged *compose.yaml* — the file it is
+  # itself declared in — because a roll cannot: watchtower recreates a
+  # container from the OLD container's Config, so a label, a service's
+  # environment, a mount or a whole new service merged to `main` sat inert on
+  # every node until a human ran `docker compose up -d` on that host. Issue
+  # #131 built the alarm for that (`lib/compose-drift.sh`, the mount on the
+  # shared block above); this is the actor the alarm never had. Two
+  # escalations in one week — agent-ops#1266's `memory.high` parent and
+  # agent-ops#1339's collector change — existed only to ask the owner to
+  # perform that visit.
+  #
+  # Deterministic, with no model anywhere in it: it installs the copy that
+  # arrived through the image, byte for byte, and the only judgement it makes
+  # is whether now is a safe moment. It runs `scripts/reconcile-compose.sh`
+  # every five minutes (deploy/docker/reconcile-crontab, matching watchtower's
+  # own poll), and on each tick it does nothing at all unless
+  # `lib/compose-drift.sh` — the same library the dashboard badge reads —
+  # reports drift. When it does: every `${VAR}` the *new* file requires is
+  # checked against this node's `.env` keys and a missing one refuses the
+  # whole apply; `lock.json` and `review-lock.json` are honoured exactly as
+  # `watchtower-pre-update.sh` honours them, roll-pending override included,
+  # so a compose recreate can no more kill a cycle than a roll can; and only
+  # then is the file replaced and the project recreated. It never writes
+  # `.env`: that file is the owner's, it is the one file that legitimately
+  # differs between two nodes, and the variable check reads key names only.
+  #
+  # In the `auto-update` profile, with watchtower and for the same reason: a
+  # node that has opted out of taking new images has opted out of taking new
+  # deployment files too, and the two must not disagree about which of them a
+  # node is running.
+  #
+  # **What it costs, stated plainly.** This is the second container in this
+  # file to hold the Docker socket and the first to hold it read-write, which
+  # is root on the host by any other name. It is the same grant watchtower has
+  # carried since this stack existed and is held for the same purpose — the
+  # update channel — but it is a real widening for *this* image, which until
+  # now could not create a container anywhere. It is priced three ways. It
+  # takes none of the anchors above, exactly as `collector` does not, so it
+  # carries no GH_TOKEN, no ANTHROPIC_API_KEY and neither App's private key —
+  # the credentials a compromised stage would want are in a container that
+  # cannot reach the socket, and the container that can reach the socket has
+  # no credentials. It is `network_mode: none`: it talks to a unix socket and
+  # needs no network at all, so there is no route out of it to carry anything
+  # anywhere. And it runs one fixed script from the image, on a schedule from
+  # the image, over a file from the image.
+  reconciler:
+    image: ${AGENT_OPS_IMAGE:-ghcr.io/pullwright/agent-ops:latest}
+    profiles: [auto-update]
+    restart: unless-stopped
+    # Its own crontab, not the pipelines' — see deploy/docker/reconcile-crontab
+    # for why this job wants neither render-crontab.sh's per-node jitter nor a
+    # schedule anybody has to deliver to a node by hand.
+    command: ["supercronic", "/app/deploy/docker/reconcile-crontab"]
+    # Deliberately not `<<: *agent-ops` / `*agent-ops-env`, for the reason
+    # `collector` above states and one more of its own: those anchors carry
+    # every credential on this node, and this is the one container that can
+    # create containers.
+    environment:
+      NODE_NAME: ${NODE_NAME:-unnamed}
+      AGENT_OPS_SERVICE: reconciler
+      # Where this node's stack lives *on its host* — an absolute path, and
+      # the same one the bind mount below uses on both sides. Compose resolves
+      # a file's relative bind sources (`./compose.yaml`, `./ts-serve.json`
+      # above) against the project directory and hands the daemon the absolute
+      # result, and the daemon resolves that against the *host's* filesystem —
+      # so a project directory mounted anywhere else would have this container
+      # asking the daemon to bind paths that do not exist there. Unset, the
+      # mount below degrades to the same /dev/null no-op the two private keys
+      # use, and the reconciler records `refused` in its verdict rather than
+      # guessing at a path.
+      AGENT_OPS_PROJECT_DIR: ${AGENT_OPS_PROJECT_DIR:-}
+      TZ: ${TZ:-Pacific/Auckland}
+    # No network of any kind. The Docker socket is a unix socket and
+    # `docker compose up -d` needs nothing else — the daemon does any pull, on
+    # the host's own network, not this container's. A container holding the
+    # socket and no route out cannot exfiltrate what it can read.
+    network_mode: none
+    volumes:
+      # Read-write: the lock files and the roll-pending marker it honours live
+      # here, and so do the two things it writes — `.compose-reconcile.json`
+      # (the verdict the heartbeat carries) and its transition events in
+      # `log.jsonl`.
+      - state:/home/agent/.local/state/poetic-agents
+      # Read-write, unlike `collector`'s read-only mount of the same socket:
+      # recreating containers is the whole job. See the note above this
+      # service for what that grants and why it is priced the way it is.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The node's own stack directory, at the same absolute path on both
+      # sides — see AGENT_OPS_PROJECT_DIR above. Read-write because replacing
+      # `compose.yaml` is the act; nothing else in that directory is ever
+      # written, and `.env` in particular is only ever read for its key names.
+      - ${AGENT_OPS_PROJECT_DIR:-/dev/null}:${AGENT_OPS_PROJECT_DIR:-/dev/null}
+    # The same thing a read-write socket mount does not grant: permission to
+    # open it. See `collector`'s own note above — this image runs as uid 1000
+    # and the host's socket is `root:docker`, so `DOCKER_GID` must name that
+    # host's docker group id or every call here reads `Permission denied`.
+    # Unlike the collector, that failure is not silent: it lands in the
+    # verdict as a deferral with the docker error in it.
+    group_add:
+      - "${DOCKER_GID:-999}"
+    # Two small files diffed and, rarely, one `docker compose up -d`. Ceilings
+    # reuse the shared sidecar-sized vars every other small helper here uses.
+    mem_limit: ${AGENT_OPS_RECONCILER_MEMORY:-256m}
+    cpus: ${AGENT_OPS_RECONCILER_CPUS:-0.5}
+    pids_limit: ${AGENT_OPS_SIDECAR_PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
+        max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
 
 networks:
   default:

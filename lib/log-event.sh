@@ -23,6 +23,14 @@
 # worth a cycle. stderr stays unredirected on the final jq for the same
 # reason the wrap exists: if this still fails somehow, cron.log should show
 # it, not swallow it.
+#
+# An empty ID_VALUE is recorded as `null`, never as the empty string. Not
+# every event has a cycle: `lib/compose-reconcile.sh` runs in its own
+# container on its own schedule and emits into the same `log.jsonl`, and an
+# `""` there would be a cycle id that reads as present to every `// empty`
+# and `!= null` guard downstream while naming no cycle at all. Null is what
+# the one out-of-cycle writer that predates this function already hand-rolled
+# for the same reason (`scripts/publish-revert-rate.sh`'s `rework` rows).
 
 # log_event_append LOG_FILE ID_FIELD ID_VALUE NODE EVENT [FIELDS_JSON]
 log_event_append() {
@@ -37,6 +45,7 @@ log_event_append() {
   fi
   jq -nc --arg ts "$ts" --arg idf "$id_field" --arg idv "$id_value" \
     --arg node "$node" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts} + {($idf): $idv, node: $node, event: $event} + $fields' \
+    '{ts: $ts} + {($idf): (if $idv == "" then null else $idv end),
+       node: $node, event: $event} + $fields' \
     >> "$log_file" || true
 }

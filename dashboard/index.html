@@ -1219,22 +1219,47 @@
   // install that is no container) — for an image the roll that is already on
   // its way will start answering, and the version line's own "behind" covers
   // a node whose rolls have stopped.
+  //
+  // Beside the drift badge, and only ever beside it, is what this node's own
+  // reconciler did about that drift (lib/compose-reconcile.sh, the
+  // `reconciler` service): the actor this badge had no counterpart for until
+  // that service existed. It follows the same discipline — the states that
+  // resolve themselves render nothing. A `reconciled` verdict has already
+  // cleared the drift badge above it, and a `deferred` one clears itself on
+  // the next tick; only `refused` is a state that stays put until somebody
+  // acts, so only `refused` is amber. A node with no reconciler at all
+  // carries no verdict and renders exactly what it always did: the drift
+  // badge, and the manual ritual in its title.
   function composeLine(n) {
-    var c = n.compose;
-    if (!c || !c.status || c.status === "in-sync") return null;
-    var badge = c.status === "drifted"
-      ? el("span", {class:"badge b-amber", text:"compose drifted",
-          title: (c.diff_lines != null ? c.diff_lines + " material line(s) differ: " : "") +
-                 "this node's compose.yaml no longer matches the copy its image shipped — " +
-                 "a merged compose change deploys nothing by itself; re-fetch the file and run " +
-                 "docker compose up -d on that host when it is idle (deploy/docker/README.md, " +
-                 "“Keeping the compose file current”)"})
-      : el("span", {class:"badge b-amber", text:"compose unverified",
-          title: "this node's compose.yaml is not mounted into its containers, so it cannot be " +
-                 "checked — which itself means the file predates the drift check and is behind. " +
-                 "Re-fetch compose.yaml and run docker compose up -d on that host when it is idle " +
-                 "(deploy/docker/README.md, “Keeping the compose file current”)"});
-    return el("div", {class:"ver"}, badge);
+    var c = n.compose, r = n.compose_reconcile, kids = [];
+    if (c && c.status && c.status !== "in-sync") {
+      kids.push(c.status === "drifted"
+        ? el("span", {class:"badge b-amber", text:"compose drifted",
+            title: (c.diff_lines != null ? c.diff_lines + " material line(s) differ: " : "") +
+                   "this node's compose.yaml no longer matches the copy its image shipped. " +
+                   "Where the reconciler service runs, it applies the image's copy itself on its " +
+                   "next idle tick and this clears without anyone acting; where it does not, a " +
+                   "merged compose change deploys nothing by itself — re-fetch the file and run " +
+                   "docker compose up -d on that host when it is idle (deploy/docker/README.md, " +
+                   "“Keeping the compose file current”)"})
+        : el("span", {class:"badge b-amber", text:"compose unverified",
+            title: "this node's compose.yaml is not mounted into its containers, so it cannot be " +
+                   "checked — which itself means the file predates the drift check and is behind. " +
+                   "Re-fetch compose.yaml and run docker compose up -d on that host when it is idle " +
+                   "(deploy/docker/README.md, “Keeping the compose file current”)"}));
+    }
+    if (r && r.status === "refused") {
+      kids.push(el("span", {class:"badge b-amber", text:"reconcile refused",
+        title: "this node's compose reconciler will not apply the merged compose.yaml: " +
+               (r.reason || "no reason recorded") +
+               ". Nothing was applied, and nothing will be until this is dealt with by hand."}));
+    } else if (r && r.status === "deferred") {
+      kids.push(el("span", {class:"badge b-grey", text:"reconcile deferred",
+        title: "this node's compose reconciler is waiting: " + (r.reason || "no reason recorded") +
+               ". It retries on its own every few minutes; this is the mechanism working."}));
+    }
+    if (!kids.length) return null;
+    return el("div", {class:"ver"}, kids);
   }
 
   // Whether this node is running the registry's newest published image —
