@@ -227,17 +227,20 @@ rung rises and has not been reported yet.
 
 ## 7. Disposition
 
-Recorded on 2026-09-11 when this review was written; the pull requests below
-were opened from the same interactive session on the owner's instruction to
-act rather than file.
+Recorded on 2026-09-11 when this review was written and updated the same day
+once every carrier existed; the pull requests below were opened from the same
+interactive session on the owner's instruction to act rather than file.
+Merge state is GitHub's to report — the numbers are stable, the states below
+are as of the update.
 
-| Recommendation | Carried by | Status when written |
+| Recommendation | Carried by | State at update |
 |---|---|---|
-| 1 — #1051 pass cap since last touch | branch `agent/1051` | in progress |
-| 1 — boundary narrowing + 4 — precedent input | branch `feat/decide-boundary-precedent` | in progress |
-| 3 — `decide-with-veto` rung | branch `feat/decide-with-veto` | in progress |
-| 5 — Pipeline Monitor (#1284), pages triage | branch `agent/1284` | in progress |
-| 5 — crash-loop flap dedupe | branch `fix/crash-loop-flap` | in progress |
-| 6 — compose reconciler | branch `feat/compose-reconcile` | in progress |
-| 2 — authoring App (#1083) | owner act | pending |
-| 5 — ordering against #1279 | owner: do not land PR #1327 before the Monitor, or set `notify_events` without `pager` until it lands | pending |
+| Record of this review | PR #1381 | merged 2026-09-11T03:08Z |
+| 1 — boundary narrowing; 4 — precedent input and `docs/STANDING-DECISIONS.md` | PR #1384 (`feat/decide-boundary-precedent`) | open, Approver-approved |
+| 3 — `decide-with-veto` rung (requirement 36f, `decision_veto_window_hours`) and the Poetic opt-in | PRs #1389 and #1390, squash-merged by the owner into #1384's branch at 04:03Z; land with #1384 | carried by #1384 |
+| 1 — #1051 pass cap since the last human touch | PR #1385 (`agent/1051`) | open |
+| 5 — Pipeline Monitor #1284 with pages triage | PR #1388 (`agent/1284`) | open, Approver-approved |
+| 5 — crash-loop flap dedupe, and #1140's newest-binding fix | PR #1386 (`agent/1140`) | open |
+| 6 — compose reconciler | PR #1387 (`feat/compose-reconcile`) | open, Approver-approved; adoption is one last manual `docker compose up -d` per existing node |
+| 2 — authoring App | #1083 | owner act, pending |
+| 5 — ordering against #1279 | #1327 merged at 04:26Z, before the Monitor; `escalation_webhook_url` is unset on the Poetic fleet, so no page pushes anywhere until a channel is configured — if one is configured before #1388 lands, set `notify_events` without `pager` | owner act, conditional |
