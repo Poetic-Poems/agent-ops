@@ -317,7 +317,10 @@ M7. **Bounded by `monitor_max_input_bytes`, on a stated ladder.** The digest
 
 ### The Monitor stage (`prompts/monitor.md`)
 
-M9. **One stage, one model.** `monitor_model` (default `claude-sonnet-5`) —
+M9. **One stage, one model.** `monitor_model` (default `claude-sonnet-5`), its
+   value validated by `resolve_model_id` before the stage is launched and by
+   `scripts/doctor.sh`'s Models section on every unattended pass, so an
+   unsupported provider is reported once an hour rather than once a day —
    the same tier the repository review runs, for the same reason: the input is
    a bounded digest rather than a repository, and the judgement asked of it is
    the one a human operator would make reading the same records. An empty
@@ -512,7 +515,10 @@ M18. **Streams.** Monitor *operational* events go to
    `lib/log-event.sh`'s envelope. Events: `monitor-start`,
    `monitor-stand-down`, `monitor-skipped`, `monitor-digest-built`,
    `monitor-stage-start`, `stage-end`, `attempt-failed`,
-   `monitor-report-written`, `monitor-end`, `warning`. Common fields: an
+   `monitor-report-written`, `monitor-end`, `warning`, and — written by
+   `lib/github-limit.sh`'s `github_budget_record` through this script's own
+   `log_event`, as it does for every stage of the other two pipelines
+   (requirement 2.0d) — `github-budget`. Common fields: an
    ISO-8601 `ts`, a `monitor` id, `node`, an `event`. `stage-end` carries
    `stage: "monitor"`, `exit_code`, an optional `kill_reason`, and the
    metering record of requirement 33a via `lib/metering.sh`

@@ -736,7 +736,13 @@ if [[ -n "$watchdog_warning" ]]; then
 fi
 if (( ONCE )); then
   cat "$out_file"
-  [[ -s "$out_file.stderr" ]] && cat "$out_file.stderr" >&2
+  # `if`, not a trailing `&&`: an empty stderr file is the common case, and a
+  # trailing `&&` whose test fails leaves a non-zero status at exactly the
+  # place `set -e` acts on — the trap review-cycle.sh's own dump_stage_output
+  # comment records paying for once.
+  if [[ -s "$out_file.stderr" ]]; then
+    cat "$out_file.stderr" >&2
+  fi
 fi
 
 detect_and_log_limit_hit "$out_file" || true
@@ -1033,8 +1039,11 @@ fi
     # with two consumers) — a short form here would need the derivation to
     # know about this table's own layout.
     printf '| Finding | Class | Key | Outcome | Where |\n|---|---|---|---|---|\n'
+    # Index 0 is the one row with no citation to print: a finding refused
+    # before it was numbered, because its key was unusable. `M-00` there would
+    # read as a citation a reader could grep for and never find.
     jq -r --arg d "$monitor_date" '
-      "| `Monitor: monitor/\($d) M-\(.index | tostring | if length < 2 then "0" + . else . end)` "
+      "| \(if .index == 0 then "—" else "`Monitor: monitor/\($d) M-\(.index | tostring | if length < 2 then "0" + . else . end)`" end) "
       + "| \(.class) | `\(.key)` | \(.outcome) — \(.detail) "
       + "| \(if .url then .url else "—" end) |"' "$ledger_file"
   else

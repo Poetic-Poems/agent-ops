@@ -717,6 +717,7 @@ done < <(jq -r '
     {k: "approver_model_critical",    v: .approver_model_critical},
     {k: "enabler_model",              v: .enabler_model},
     {k: "refiner_model",              v: .refiner_model},
+    {k: "monitor_model",              v: .monitor_model},
     {k: "project_review.defaults.model", v: .project_review.defaults.model}
   ]
   + [ (.project_review.repos // [])[] | select(has("model"))
