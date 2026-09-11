@@ -62,7 +62,8 @@ STAGE_BUDGET_PRIORS='{
   "approver":         {"backstop": 30,  "inactivity": 10},
   "enabler":          {"backstop": 30,  "inactivity": 10},
   "refiner":          {"backstop": 30,  "inactivity": 10},
-  "project-reviewer": {"backstop": 150, "inactivity": 10}
+  "project-reviewer": {"backstop": 150, "inactivity": 10},
+  "monitor":          {"backstop": 45,  "inactivity": 10}
 }'
 
 # The tuning constants, all overridable from `config.json`'s `stage_budget`.
@@ -108,7 +109,13 @@ stage_budget_settings() {
 #     passes are keyed `*`. None has a repository naturally — the Co-Ordinator
 #     runs *before* selection, and the Enabler (and the adjudication or decide
 #     pass it runs, requirements 36b/36d) spans repositories — so pretending
-#     otherwise would fragment their samples for no gain.
+#     otherwise would fragment their samples for no gain. The Monitor
+#     (`monitor-cycle.sh`, agent-ops#1284) is keyed `*` by its caller for the
+#     same reason: it reads the fleet, not a repository. Its own `stage-end`
+#     events live in `monitor-log.jsonl`, so the Monitor concatenates that
+#     stream onto the shared one before taking these observations — nothing
+#     here needs to know about the third stream, only that the caller supplies
+#     it.
 #   a killed run contributes no duration. Its recorded length is its cap, not
 #     its length: that is the censoring that makes fitting a cap to durations
 #     self-defeating, and the fix begins with not pretending the observation

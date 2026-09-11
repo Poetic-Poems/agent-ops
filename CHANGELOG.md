@@ -45,6 +45,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The dashboard's Decisions panel gains a `pending act` badge for a decision
   still inside its window. The product default stays `always-escalate`; the
   Poetic fleet's own `config.json` opts in.
+- **The Pipeline Monitor** (issue #1284, `docs/MONITOR-PIPELINE-SPEC.md`): a
+  third pipeline, sibling to `agent-cycle.sh` and `review-cycle.sh`, whose
+  subject is the pipelines themselves. `monitor-cycle.sh` carries its own lock
+  (`monitor-lock.json`), its own stream (`monitor-log.jsonl`), the shared
+  switch, the `active` role guard and the shared `limit-hit` signal, and
+  defers to a live implementation *or* review cycle. Its cadence is one
+  hourly crontab line plus a due gate: the run is owed once a day at
+  `schedule.monitor_hour`, and again within the hour after any `pager-fired`
+  event — a trigger no crontab line can express, because it is a fact about
+  the fleet's own log. Exactly one node takes a given slot, through a
+  `lib/claim.sh` file claim under `claims/monitor/`.
+
+  The model never reads a primary record: `lib/monitor-digest.sh` assembles a
+  deterministic digest — 24 h of the union log grouped by event class with
+  counts and up to three samples each, every `pager-fired`/`pager-cleared`
+  and every open `pw::pager` issue, every node's heartbeat verdicts and its
+  host-facts record, selections per work band, the Co-Ordinator fit's rung
+  histogram and the day's verbatim `none-selected` reasons, the escalation
+  repository's own last 24 h, and the specs' `## Gotchas` sections — bounded
+  to `monitor_max_input_bytes` by a stated drop ladder that sheds samples and
+  gotcha prose before it ever truncates.
+
+  A run produces a dated report in the state store
+  (`monitor/<date>/report.md`) and at most `monitor_max_filings_per_run`
+  (default 3) filings, each carrying a stable `finding_key` and the
+  provenance line `Monitor: monitor/<date> M-<nn>`, deduplicated
+  search-first against every open issue already carrying that key. Filing is
+  the Script's, never the stage's: **mechanical** findings become
+  `pw::type:tech-debt` issues the implementation pipeline then works;
+  **tactical** ones are proposed in the report and moved only for keys in
+  `monitor_tactical_keys` (empty by default) as a `pw::decision` with the
+  #937 veto; **strategic** ones become one `enabler-escalation` assigned to
+  `enabler_assignee`, options written out — the only path to the owner.
+
+  The Monitor is also the consumer of pager pages: every open `pw::pager`
+  issue gets a triage verdict in the report, a mechanical one gets the
+  tech-debt issue filed and one comment on the page linking it, and **no page
+  is ever closed by the Monitor** — the pager's transition-only lifecycle
+  (`pager-cleared`, `page-outlived-item`) owns that, and a close from
+  anywhere else would leave the union log saying `fired` for ever.
+
+  Its stage-health verdict ships from day one rather than as a later issue
+  (the gap #996 records for the review pipeline): `stage_health_write_status`
+  gains a stage-name parameter and now **merges** rather than overwrites, so
+  `agent-cycle.sh` and `monitor-cycle.sh` each refresh only their own stages
+  in `.stage-health.json`, and the `monitor` row reaches the heartbeat and the
+  dashboard's Stage health panel, fleet badge and banner with no render
+  change. New keys: `monitor_model` (default `claude-sonnet-5`; empty
+  disables the pipeline), `monitor_max_input_bytes`,
+  `monitor_max_filings_per_run`, `monitor_tactical_keys`,
+  `schedule.monitor_hour`, `schedule.monitor_offset_minutes` and
+  `prompt_overrides.monitor`. Deferred and recorded:
+  `tech-debt/TD-PPagop-26091101.md` (the report is not surfaced on the
+  dashboard) and `tech-debt/TD-PPagop-26091102.md` (the Monitor writes no
+  `node-state` transition).
 
 - **The host-facts collector** (issue #1283, requirement 36a):
   `scripts/collect-host-facts.sh` writes one record per node,
