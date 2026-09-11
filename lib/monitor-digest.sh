@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
+# SC2016: the backticks in the truncation marker and in the jq programs below
+# are literal Markdown code spans in the text this file renders, never shell
+# expansions — the same blanket lib/pager.sh carries for the same reason.
 #
 # lib/monitor-digest.sh — what the Pipeline Monitor reads instead of the
 # records themselves (issue #1284, docs/MONITOR-PIPELINE-SPEC.md M6/M7).
@@ -483,7 +487,7 @@ _monitor_digest_render_at() {
             | if length == 0 then "_none_" else join("\n") end ) + "\n" )),
 
     ( if $rung >= 3 then empty
-      else block("Known signatures (the specs’ gotcha sections)";
+      else block("Known signatures (gotcha sections from the specs)";
         ( [ .gotchas[]
             | "### \(.source)\n\n"
               + ( if $rung >= 2

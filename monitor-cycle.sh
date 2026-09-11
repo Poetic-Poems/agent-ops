@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
+# SC2016: every backtick inside a single-quoted `printf` format string below is
+# literal — deliberate Markdown code-span syntax for the issue bodies and the
+# report this script writes, never a shell expansion shellcheck's heuristic
+# mistakes it for. The same blanket lib/pager.sh carries, for the same reason:
+# the alternative is a per-line directive on every printf that formats
+# Markdown.
 #
 # monitor-cycle.sh — the Pipeline Monitor: one scheduled reading of the
 # pipeline's own state, producing a dated report and at most
@@ -1054,7 +1061,11 @@ log_event "monitor-report-written" "$(jq -nc --arg d "$monitor_date" --arg p "$r
   '{date: $d, path: $p, trigger: $trigger, findings_stated: $stated, findings_filed: $filed,
     ledger: $ledger, page_triage: $triage}')"
 
+# No `exit 0` here, deliberately: the script ending is the same exit 0, and a
+# trailing top-level `exit` makes shellcheck treat everything the EXIT and
+# signal traps invoke as unreachable (28 × SC2317 on `cleanup` and
+# `on_signal`), which is exactly backwards — those are the two functions most
+# certain to run.
 if (( ONCE )); then
   echo "monitor-cycle: wrote $report_file ($filed_count filed of $(jq 'length' <<<"$findings_json") stated)"
 fi
-exit 0

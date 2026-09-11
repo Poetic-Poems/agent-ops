@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
+# SC2016: the backticks in the expected strings below are literal Markdown
+# code spans in the digest's own rendered text, never shell expansions.
 #
 # test/monitor-digest.test.sh — lib/monitor-digest.sh, the deterministic
 # digest the Pipeline Monitor reads instead of the fleet's own records
