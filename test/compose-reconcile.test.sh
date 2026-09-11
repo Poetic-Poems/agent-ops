@@ -103,11 +103,17 @@ log_file="$state/log.jsonl"
 
 # The image's copy. Deliberately carries all four shapes the variable scan has
 # to tell apart: a defaulted reference, a required one, compose's `$$` escape,
-# and a shell fragment inside a comment.
+# and — the one that is not hypothetical — a bare `${VAR}` inside a *comment*,
+# which the real deploy/docker/compose.yaml carries today in the paragraph
+# describing this very check. Compose parses YAML before it interpolates, so a
+# comment is gone before interpolation begins; a scan that did not strip
+# comments first would read that prose as a variable every node must define,
+# and refuse every node for ever.
 write_image_compose() {  # [extra line]
   cat > "$image_file" <<'EOF'
 # The reference copy, as the image ships it.
-# A comment full of things that look like shell and are not:
+# A comment full of things that look like configuration and are not:
+#   every ${VAR} the new file requires is checked, and
 #   pid=$(docker inspect -f '{{.State.Pid}}' "$c") && echo "/sys/fs/cgroup$pid"
 name: agent-ops
 services:
@@ -162,8 +168,17 @@ last_event()  { tail -n 1 "$log_file" 2>/dev/null; }
 # required variable from the three things that merely look like one.
 
 write_image_compose
-assert_eq "only the undefaulted \${VAR} is required — a default, a \$\$ escape and a comment's shell are not" \
+assert_eq "only the undefaulted \${VAR} is required — a default, a \$\$ escape and a comment's own \${VAR} are not" \
   "NODE_NAME" "$(compose_reconcile_required_vars "$image_file" | paste -sd, -)"
+
+# And the same scan over the file every node actually runs. This one is a
+# standing guard rather than a fixture: it requires nothing today, every
+# reference in it carrying a default, and a change that adds one without a
+# default makes every node refuse the merged file until its .env defines that
+# name by hand. If that is deliberate, say so here and in the rollout; if it
+# is not, give the variable a default.
+assert_eq "this repository's own compose.yaml requires no variable a node's .env must be taught" \
+  "" "$(compose_reconcile_required_vars "$SCRIPT_DIR/deploy/docker/compose.yaml" | paste -sd, -)"
 
 # shellcheck disable=SC2016  # the ${...} is compose's own interpolation, fed in literally
 write_image_compose '    mem_limit: ${AGENT_OPS_MEM:?a node must size this}'
