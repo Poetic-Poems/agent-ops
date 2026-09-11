@@ -1975,9 +1975,17 @@ implements.
    slugs across the whole document the way GitHub's own renderer does (the
    first occurrence keeps the bare slug, each later one is suffixed `-1`,
    `-2`, …), so every generated link resolves to a real in-document anchor.
-   `.github/workflows/toc.yml` runs `scripts/render-toc.sh --check` on every
-   pull request, failing it the moment a heading is added, removed or
-   reworded without a matching regeneration.
+   Before rendering, each target file is checked for exactly one
+   `<!-- toc:start -->` / `<!-- toc:end -->` marker pair with the start
+   marker on an earlier line than the end marker; a file with neither
+   marker, only one of the pair, more than one of either, or the pair in
+   reversed order, is refused — in both the plain and `--check`
+   invocations — naming the file, rather than copied through unchanged
+   (or, for the reversed case, silently corrupted), which would otherwise
+   leave a missing or unpaired region undetected. `.github/workflows/toc.yml` runs
+   `scripts/render-toc.sh --check` on every pull request, failing it the
+   moment a heading is added, removed or reworded without a matching
+   regeneration, or a target file's marker pair is missing or malformed.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
 
    Before check 0 below, and before every other check in this list: which
@@ -20632,7 +20640,18 @@ What exists, and the requirements each part answers to:
     reported as a warning; malformed arguments exiting 2); must pass
     `shellcheck`.
 24. `scripts/render-toc.sh` and `.github/workflows/toc.yml` implementing
-   requirement 52's generated-table-of-contents property: with no
+   requirement 52's generated-table-of-contents property: before rendering
+   either file, verifies it contains exactly one `<!-- toc:start -->` /
+   `<!-- toc:end -->` marker pair with the start marker on an earlier line
+   than the end marker — a file with neither marker, only one of the pair,
+   more than one of either, or the pair in reversed order, fails the script
+   (non-zero exit, naming the file) in both the plain and `--check`
+   invocations, rather than being copied through unchanged (or, for the
+   reversed case, silently corrupted) the way a bare awk pass over an
+   unmatched or misordered marker would otherwise do — matching
+   `render-config-table.sh`'s own region-validation precedent (component 16)
+   of hard-failing on a malformed region rather than silently mis-rendering
+   it. Once validated, with no
    arguments, extracts every `##`/`###` heading from `README.md` and
    `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — skipping anything inside a
    fenced (```` ``` ```` or `~~~`) code block — and rewrites each file's own
@@ -26018,7 +26037,14 @@ oblige anyone to edit a test.
     not collapse consecutive hyphens either. `.github/workflows/toc.yml`
     runs `--check` on every pull request, so a heading edited without a
     matching regeneration fails CI rather than leaving a stale or broken
-    link.
+    link. Deleting a target file's marker pair entirely, leaving only one
+    of `<!-- toc:start -->` / `<!-- toc:end -->`, or leaving both markers
+    but with `toc:end` on an earlier line than `toc:start`, makes both the
+    plain and `--check` invocations exit non-zero naming that file, rather
+    than leaving the file byte-identical and `--check` exiting 0 against a
+    region that no longer exists (or, in the reversed case, silently
+    corrupted); `test/render-toc.test.sh` exercises all of these
+    marker-validation cases against the real script.
 
 ## Host provisioning (human steps)
 
