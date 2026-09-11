@@ -286,7 +286,11 @@ export VOID_GUARD_GH="$gh_stub"
 # extract_json_result parses a real transcript's final message out of. Also
 # sets the two globals the real run_claude_stage sets as a side effect
 # (stage_gaps_json, stage_kill_reason), since the caller reads them
-# immediately afterward.
+# immediately afterward. The last section of this file defines a second
+# `run_claude_stage` for the lifted `run_enabler_decide`, and a later
+# definition of the same name is what makes the linter read this one as
+# dead. It is not: every scenario above that section runs through here.
+# shellcheck disable=SC2317  # shadowed only by the decide-gate section's own stub, far below
 run_claude_stage() {
   local out_file="$5"
   jq -nc --argjson env "$STUB_EXAMINED_JSON" '{result: ($env | tostring), session_id: "stub-session"}' \
