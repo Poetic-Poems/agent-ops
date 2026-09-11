@@ -315,6 +315,29 @@ M7. **Bounded by `monitor_max_input_bytes`, on a stated ladder.** The digest
    reader can tell a thin report from a thin day. `monitor_max_input_bytes: 0`
    disables the bound and pins the rung at 0.
 
+### Signals and cleanup
+
+M8. **Every exit leaves a record.** `cleanup()` runs on `EXIT` however the run
+   ends: it removes the run's scratch directory under `workspace_root`, writes
+   the stage-health verdict (M17) when a stage actually ran, logs
+   `monitor-end` with the exit code, releases the lock, and pushes this node's
+   state through `scripts/state-sync.sh`. A signal landing mid-cleanup must not
+   re-enter the handler over a run already writing its record, so the first
+   thing both handlers do is `trap '' TERM INT HUP`.
+
+M8a. **A signal stops the stage first.** `TERM`, `INT` and `HUP` are trapped —
+   the implementation spec's requirement 9c sets out the reasoning at length,
+   and the review pipeline's R7a applies it to a sibling. In order: kill the
+   stage's own process group (`KILL`, since the signaller's patience is
+   unknown, and the group is beyond any signal sent to ours because
+   `run_claude_stage` detached it with `set -m`), log `attempt-failed`
+   naming the stage and the signal, and exit through `exit` so `monitor-end`
+   reports `128 + n`. Untrapped, a stale-lock takeover or a stopped container
+   would end bash with no record at all and leave the model running for a run
+   that is already dead. There is no claim to release here, unlike R7a's: the
+   Monitor's only claim is its own slot (M5), which is a record of the run
+   rather than a hold on work another node could take up.
+
 ### The Monitor stage (`prompts/monitor.md`)
 
 M9. **One stage, one model.** `monitor_model` (default `claude-sonnet-5`), its
@@ -562,7 +585,8 @@ M19. **No `node-state` transition.** The Monitor writes none of requirement
 
 1. `monitor-cycle.sh` implementing M1–M5 (the boundary, the lock, both
    switches, the role guard, the CronJob shape, both stand-downs, the due gate
-   and the slot claim), M9/M9a/M10b (the stage and its caps, assembled through
+   and the slot claim), M8/M8a (cleanup and the signal handler),
+   M9/M9a/M10b (the stage and its caps, assembled through
    `lib/prompt-overrides.sh`), M11–M16 (every filing, the triage comments and
    the report), M17 (the stage-health verdict, through
    `lib/stage-health.sh`), M18 (its own stream) and M19 (no `node-state`
