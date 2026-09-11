@@ -773,8 +773,10 @@ $(jq . <<<"$input")
 # since a human has just acted on an escalation about this item (requirement
 # 35a) and the pass it authorises is the first since they did — or when this
 # reflag's own reason key has never been decided or adjudicated before *and*
-# fewer than MAX_PASSES decide-tactical passes have run for this item at all,
-# whatever their reason. A reason already seen refuses regardless of how many
+# fewer than MAX_PASSES decide-tactical passes have run for this item since
+# its last human touch (or ever, if it has had none), whatever their reason
+# (`escalation_autonomy_decide_pass_count`, agent-ops#1051). A reason already
+# seen refuses regardless of how many
 # passes remain under the cap: two engagements disagreeing about the same
 # question, repeatedly, is exactly what `always-escalate` would have routed to
 # a human on the first round, and a bound that let it retry indefinitely would
@@ -795,7 +797,7 @@ escalation_autonomy_decide_pass_available() {
   [[ "$max_passes" =~ ^[0-9]+$ ]] || max_passes=3
   if (( count >= max_passes )); then
     log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" --argjson n "$max_passes" \
-      --arg d "enabler: $repo $item has already spent its $max_passes decide-tactical passes — escalating without a fresh pass (the cap counts the item's whole history; a human touch grants one further pass regardless of it)" \
+      --arg d "enabler: $repo $item has already spent its $max_passes decide-tactical passes since its last human touch (or ever, if it has had none) — escalating without a fresh pass" \
       '{detail: $d, repo: $r, item: $i}')"
     return 1
   fi
@@ -1016,6 +1018,7 @@ maybe_run_enabler() {
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
   local e_ea_level e_kind e_refined_before_present
   local e_decided e_decision e_dec_verdict e_dec_evidence e_dec_reason_key e_refined_dec
+  local e_dec_elig_reason
   local e_dec_decision_text e_dec_rationale e_dec_options e_dec_comment_url
   local e_dec_log_number e_dec_log_url e_dec_log_title e_dec_log_body_file e_dec_log_created
   local e_dec_mandate e_dec_act e_dec_act_kind e_dec_act_after e_dec_pending e_dec_window
@@ -1602,10 +1605,18 @@ $(jq . <<<"$input")
           e_dec_verdict="$(jq -r '.verdict // "escalate"' <<<"$e_decision" 2>/dev/null || printf 'escalate')"
           e_dec_evidence="$(jq -r '.evidence // ""' <<<"$e_decision" 2>/dev/null || true)"
           e_dec_reason_key="$(escalation_autonomy_decide_reason_key "$claimed_entry")"
+          # `eligibility_reason` (agent-ops#1051) is the claimed entry's own
+          # `.reason` — the same value `escalation_autonomy_decide_pass_available`
+          # reads as `elig_reason` (`threshold`, `recheck` or `issue-closed`) —
+          # carried onto the pass event itself so it is the durable marker of
+          # a human touch `escalation_autonomy_decide_pass_count` counts
+          # forward from, rather than a live re-derivation at read time.
+          e_dec_elig_reason="$(jq -r '.reason // ""' <<<"$claimed_entry" 2>/dev/null || true)"
           log_event "enabler-adjudication" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
             --arg v "$e_dec_verdict" --arg ev "$e_dec_evidence" --arg rk "$e_dec_reason_key" \
+            --arg er "$e_dec_elig_reason" \
             '{repo: $r, item: $i, verdict: $v, evidence: $ev, adjudication: true,
-              pass: "decide-tactical", reason_key: $rk}')"
+              pass: "decide-tactical", reason_key: $rk, eligibility_reason: $er}')"
 
           if [[ "$e_dec_verdict" == "settle" || "$e_dec_verdict" == "decide" ]]; then
             e_decided=1
@@ -1691,11 +1702,12 @@ $(jq . <<<"$input")
                 --arg cu "$e_dec_comment_url" --arg m "${enabler_model_critical:-$enabler_model}" \
                 --arg rk "$e_dec_reason_key" --arg n "$e_dec_log_number" --arg u "$e_dec_log_url" \
                 --argjson act "${e_dec_act:-null}" --arg aa "$e_dec_act_after" \
+                --arg er "$e_dec_elig_reason" \
                 '{repo: $r, item: $i, decision: $d, rationale: $ra, options_considered: $op}
                  + (if $cu == "" then {} else {comment_url: $cu} end)
                  + (if $n == "" then {} else {issue_number: ($n | tonumber), issue_url: $u} end)
                  + (if $act == null then {} else {act: $act, act_after: $aa} end)
-                 + {model: $m, reason_key: $rk}')"
+                 + {model: $m, reason_key: $rk, eligibility_reason: $er}')"
               # Requirement 36f: a decision carrying an act does *not* unblock
               # the item. The act is what resolves it, and the act has not
               # happened yet — `run_pending_decision_acts` (lib/decision-veto.sh)

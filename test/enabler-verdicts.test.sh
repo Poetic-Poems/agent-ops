@@ -1209,6 +1209,36 @@ assert_eq "cap reached: it escalates to the human instead" "1" \
   "$(grep -cE '^event escalated ' <<<"$calls")"
 assert_contains "cap reached: says in the log it has spent its passes" \
   "already spent its 2 decide-tactical passes" "$calls"
+
+# --- the touch: since the cap was reached, a fresh pass runs again below it ---
+# agent-ops#1051: the marker that grants this is durable and lives on the
+# pass event itself (`eligibility_reason`), not a live re-derivation of
+# eligibility at read time. cap_evt_a/cap_evt_b above spent the cap of 2, but
+# a decide-tactical pass tagged `eligibility_reason: "issue-closed"` logged
+# since then resets the budget in full, so a genuinely fresh reason on the
+# same item gets a pass again rather than staying refused for the item's
+# whole remaining life.
+cap_evt_touch="$(jq -nc --arg r "acme/widgets" --arg i "TD26080001" \
+  '{ts: "2026-08-02T00:02:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+    verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical",
+    reason_key: "keyC", eligibility_reason: "issue-closed"}')"
+{ printf '%s\n' "$cap_evt_a"; printf '%s\n' "$cap_evt_b"; printf '%s\n' "$cap_evt_touch"; } > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"settle","evidence":"ok"}'
+}
+calls="$(run_case "decide-tactical: a human touch since the cap was reached grants a fresh pass" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_contains "touch since cap: the pass was actually called" \
+  "run_enabler_decide acme/widgets TD26080001" "$calls"
+assert_eq "touch since cap: exactly one fresh enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+dec_evt="$(events_named "$calls" enabler-adjudication | head -n1)"
+assert_eq "touch since cap: the fresh pass event carries eligibility_reason" "threshold" \
+  "$(jq -r '.eligibility_reason' <<<"$dec_evt")"
+
 # shellcheck disable=SC2034
 escalation_adjudication_max_passes=3
 : > "$log_file"
