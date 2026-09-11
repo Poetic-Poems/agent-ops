@@ -529,8 +529,11 @@ file and carries placeholders only; `.env` itself is never committed.
   containers rightly lack: `scripts/check-node-compose.sh` (component 12)
   answers those from the host. Merging a change to this file is not
   deploying it, and `.github/workflows/compose-deploy-reminder.yml` says so
-  on every pull request that touches it — one marker-keyed comment naming
-  the per-node ritual, posted once rather than per push.
+  on every pull request that touches it — one marker-keyed comment, posted
+  once rather than per push, naming both what a node running the
+  `reconciler` service needs (nothing, unless the change adds a `${VAR}`
+  with no default or alters that service's own definition) and the per-node
+  ritual a node without it still needs.
 - **A node's running image is watched for staleness against the registry.**
   Comparing nodes with each other (`version`, above) answers *divergence* —
   are the nodes on the same commit — but not *staleness*: a fleet that
@@ -3521,8 +3524,8 @@ implements.
    strictly ordered across generations, a replacement always starting after
    what it replaced. Each line also
    carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
-   `scheduler`, `dashboard`, `dashboard-local` or `collector`, `"unknown"` if
-   unset) the writing container ran as. This field has a live limitation
+   `scheduler`, `dashboard`, `dashboard-local`, `collector` or `reconciler`,
+   `"unknown"` if unset) the writing container ran as. This field has a live limitation
    (agent-ops#1072): watchtower clones the writing container's environment
    forward the same way it clones its hostname, so a compose-level addition
    of `AGENT_OPS_SERVICE` never reaches a container created by a roll — every
