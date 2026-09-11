@@ -30,9 +30,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   In order: a buffered `gh auth git-credential` request's `path=` attribute,
   `-R`/`--repo`, a `gh api` `repos`/`orgs`/`users` path (or a graphql
   `owner=` field, or a `repository(owner: "…")` literal), a positional
-  `OWNER/REPO` or github.com URL, and finally the work tree's own `origin`
-  remote. A flag's *value* is never read as an owner, so `gh pr create --head
-  feat/x` names none. `gh_shim_resolve_token` then mints for that owner's
+  github.com URL — plus, **only under `gh repo <subcommand>`**, a bare
+  `OWNER/REPO` — and finally the work tree's own `origin` remote. The
+  `gh repo` restriction is what keeps a *branch* from being read as a
+  repository: every branch this fleet creates carries a slash, and
+  `gh pr checkout agent/1051` inside a `Poetic-Poems` clone must resolve to
+  `Poetic-Poems`, never to `agent`. A flag's value is never read as an owner
+  either. `gh_shim_resolve_token` then mints for that owner's
   installation; an owner neither the map nor the scalar names degrades to
   `PW_GH_DEGRADE_TOKEN` (the PAT) rather than presenting a token GitHub would
   404; an invocation naming no owner takes the scalar default. "Explicit

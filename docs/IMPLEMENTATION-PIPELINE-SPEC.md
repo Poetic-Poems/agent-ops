@@ -20223,14 +20223,24 @@ What exists, and the requirements each part answers to:
     query string both tolerated) or, for the literal `graphql` endpoint, an
     `owner=OWNER` field (`-f`/`-F`/`--field`/`--raw-field`) and then a
     `repository(owner: "OWNER"` literal in the query text; for everything
-    else the first *positional* argument shaped like a repository
-    (`OWNER/REPO`, `HOST/OWNER/REPO`, a github.com URL) — a flag's value is
-    never read as one, so `gh pr create --head feat/x` names no owner; and
-    finally `git remote get-url origin`, github.com only, which is how the
-    large remainder (`gh pr list`, `gh pr checks`, `gh issue comment 12`)
-    resolves, exactly as `gh` itself resolves them. Naming no owner is an
-    ordinary outcome, not a failure: the scalar default answers it, and a
-    wrong guess would be worse than none. `gh auth git-credential` is also
+    else the first *positional* argument that is a **github.com URL**, and —
+    **only under `gh repo <subcommand>`** — a bare `OWNER/REPO` or
+    `HOST/OWNER/REPO` as well; and finally `git remote get-url origin`,
+    github.com only, which is how the large remainder (`gh pr list`, `gh pr
+    checks`, `gh issue comment 12`) resolves, exactly as `gh` itself resolves
+    them. Naming no owner is an ordinary outcome, not a failure: the scalar
+    default answers it, and a wrong guess would be worse than none.
+    The `gh repo` restriction is load-bearing, not tidiness: a bare `a/b` is
+    exactly as much a *branch name* as a repository, and every branch this
+    fleet creates carries a slash (`agent/1051`, `feat/x`, `docs/x`), with
+    the stages running `gh pr checkout`/`view`/`diff` against one, bare,
+    inside a cloned workspace. `gh repo` is the one command family whose
+    positional is never a branch, and a URL is never one under any command.
+    A flag's value is never read as a repository either (`gh repo clone
+    --branch feat/x acme/widgets` names `acme`), and the `HOST/OWNER/REPO`
+    form requires its first segment to contain a `.`, so a three-segment
+    path (`docs/foo/bar.md`) cannot have its middle segment read as an
+    owner. `gh auth git-credential` is also
     the one invocation whose **stdin** `gh_shim_main` reads: git's request
     (`protocol=`, `host=`, `path=`) is buffered to a temporary file which
     then replaces the process's own stdin, so the real binary receives the
@@ -21501,10 +21511,17 @@ oblige anyone to edit a test.
    slash or query string, a graphql `owner` field and a
    `repository(owner: "…")` literal including across a line break, the
    `origin` remote fallback for a bare call inside a work tree (HTTPS and
-   SSH), and the cases that must name *nobody*: another forge's URL or
+   SSH), and the cases that must name *nobody* — another forge's URL or
    remote, a path naming no owner, a request without `path=` or for another
-   host, and a flag's value that merely looks like a slug
-   (`gh pr create --head feat/x`).
+   host, a three-segment path whose first segment is no hostname, and a flag's
+   value that merely looks like a slug (`gh repo clone --branch feat/x
+   acme/widgets` names `acme`). One group is asserted against a work tree
+   whose `origin` is `Poetic-Poems/poetic`: `gh pr checkout agent/1051`,
+   `gh pr view feat/x` and `gh pr diff docs/x` each resolve to
+   `Poetic-Poems` and never to the branch's first segment — the failure this
+   change would otherwise introduce, since an owner named `agent` resolves to
+   no installation and would hand a `Poetic-Poems` clone the scalar
+   default's token.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`

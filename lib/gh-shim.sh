@@ -206,16 +206,19 @@ _gh_shim_owner_valid() {
   [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
-# gh_shim_owner_from_spec SPEC
-# The owner named by a repository specifier, or nothing at all. Pure.
-# Accepts every shape `gh` itself does for `-R`/`--repo` and for a positional
-# repository argument: `OWNER/REPO`, `HOST/OWNER/REPO`, a github.com web URL
-# (`https://github.com/OWNER/REPO`, with or without a `.git` suffix or a
-# trailing `/pull/5`), and the two SSH remote forms `git remote get-url
-# origin` can print. A URL on any other host prints nothing: this identity is
-# a github.com App, and minting for a GitLab remote's "owner" would be
-# meaningless.
-gh_shim_owner_from_spec() {
+# gh_shim_owner_from_url SPEC
+# The owner named by a **github.com URL**, or nothing at all. Pure. Accepts
+# the web form (`https://github.com/OWNER/REPO`, with or without a `.git`
+# suffix or a trailing `/pull/5`) and the two SSH remote forms
+# `git remote get-url origin` can print. A URL on any other host prints
+# nothing: this identity is a github.com App, and minting for a GitLab
+# remote's "owner" would be meaningless.
+#
+# Kept apart from gh_shim_owner_from_spec below because a URL is *always* a
+# repository — nothing else in a `gh` argv is shaped like one — whereas a
+# bare `owner/repo` is ambiguous with a branch name, and so is only read as a
+# repository where `gh` itself would read it as one.
+gh_shim_owner_from_url() {
   local spec="${1:-}" rest owner
   [[ -n "$spec" ]] || return 0
   spec="${spec%/}"
@@ -223,12 +226,40 @@ gh_shim_owner_from_spec() {
     https://github.com/*)     rest="${spec#https://github.com/}" ;;
     http://github.com/*)      rest="${spec#http://github.com/}" ;;
     https://www.github.com/*) rest="${spec#https://www.github.com/}" ;;
+    http://www.github.com/*)  rest="${spec#http://www.github.com/}" ;;
     git@github.com:*)         rest="${spec#git@github.com:}" ;;
     ssh://git@github.com/*)   rest="${spec#ssh://git@github.com/}" ;;
-    *://*|*@*:*)              return 0 ;;
-    */*/*)                    rest="${spec#*/}" ;;
-    */*)                      rest="$spec" ;;
     *)                        return 0 ;;
+  esac
+  owner="${rest%%/*}"
+  _gh_shim_owner_valid "$owner" || return 0
+  printf '%s' "$owner"
+}
+
+# gh_shim_owner_from_spec SPEC
+# The owner named by a repository specifier, or nothing at all. Pure.
+# Accepts every shape `gh` itself does for `-R`/`--repo` and for `gh repo`'s
+# own positional argument: a github.com URL (as above), `OWNER/REPO`, or
+# `HOST/OWNER/REPO`.
+#
+# The three-segment form requires its first segment to look like a hostname —
+# to contain a `.` — because without that check any three-segment path
+# (`docs/foo/bar.md`, `a/b/c`) would read its *second* segment as an owner.
+# No GitHub account name contains a dot in a position that matters here: the
+# host half is what dots belong to.
+gh_shim_owner_from_spec() {
+  local spec="${1:-}" rest owner
+  [[ -n "$spec" ]] || return 0
+  owner="$(gh_shim_owner_from_url "$spec")"
+  [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+  spec="${spec%/}"
+  case "$spec" in
+    *://*|*@*:*) return 0 ;;
+    */*/*)
+      case "${spec%%/*}" in *.*) ;; *) return 0 ;; esac
+      rest="${spec#*/}" ;;
+    */*) rest="$spec" ;;
+    *)   return 0 ;;
   esac
   owner="${rest%%/*}"
   _gh_shim_owner_valid "$owner" || return 0
@@ -313,12 +344,29 @@ gh_shim_credential_owner() {
 #      `users/OWNER…`), or, for the literal `graphql` endpoint, an
 #      `owner=OWNER` field (`-f`/`-F`/`--field`/`--raw-field`) and then a
 #      `repository(owner: "OWNER"` literal in the query text.
-#   4. For everything else: the first positional argument shaped like a
-#      repository — `OWNER/REPO`, `HOST/OWNER/REPO`, or a github.com URL
-#      (`gh repo clone`, `gh repo view`, `gh pr view <url>`, `gh issue view
-#      <url>`). A flag's *value* is never read as one: `gh pr create --head
-#      feat/x` names no owner, and reading `feat` as one would degrade that
-#      call to the PAT on a map-only fleet.
+#   4. For everything else: the first positional argument that is a
+#      **github.com URL** (`gh pr view <url>`, `gh issue view <url>`,
+#      `gh repo clone <url>`) — and, **only under `gh repo <subcommand>`**
+#      (`clone`, `view`, `fork`, `edit`, `sync`, `rename`, …), a bare
+#      `OWNER/REPO` or `HOST/OWNER/REPO` as well.
+#
+#      The `gh repo` restriction is the whole of rule 4's correctness, not a
+#      tidiness: a bare `a/b` is exactly as much a *branch name* as a
+#      repository, and on this fleet every branch carries a slash
+#      (`agent/1051`, `feat/x`, `fix/x`, `docs/x`). The model-driven stages
+#      run `gh pr checkout agent/1051`, `gh pr view feat/x` and `gh pr diff
+#      docs/x` bare inside a cloned workspace constantly; reading `agent` or
+#      `feat` as an owner would resolve to no installation, fall through to
+#      the scalar default, and present the wrong organisation's token — a 404
+#      at write time, which is the exact failure this whole change exists to
+#      prevent. `gh repo` is the one command family whose positional is a
+#      repository and never a branch, and a URL can never be a branch under
+#      any command, so those two are what rule 4 reads. Everything else falls
+#      to rule 5, the `origin` remote — which is what `gh` itself resolves
+#      those commands against anyway.
+#
+#      A flag's *value* is never read as one either: `gh repo clone --branch
+#      feat/x acme/widgets` names `acme`, not `feat`.
 #   5. The `origin` remote of the work tree the call was made from, github.com
 #      only. This is what covers the large remainder — `gh pr list`, `gh pr
 #      checks`, `gh issue comment 12`, every stage's bare `gh` call inside a
@@ -402,14 +450,22 @@ gh_shim_target_owner() {
       [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
     fi
   elif (( ${#positionals[@]} > 0 )); then
+    # A github.com URL is a repository under any command …
     for a in "${positionals[@]}"; do
-      owner="$(gh_shim_owner_from_spec "$a")"
+      owner="$(gh_shim_owner_from_url "$a")"
       [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
     done
+    # … a *bare* slug only under `gh repo <subcommand>` (see rule 4 above).
+    if [[ "${positionals[0]}" == "repo" ]] && (( ${#positionals[@]} > 1 )); then
+      for a in "${positionals[@]:1}"; do
+        owner="$(gh_shim_owner_from_spec "$a")"
+        [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+      done
+    fi
   fi
 
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    owner="$(gh_shim_owner_from_spec "$(git remote get-url origin 2>/dev/null)")"
+    owner="$(gh_shim_owner_from_url "$(git remote get-url origin 2>/dev/null)")"
     [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
   fi
 

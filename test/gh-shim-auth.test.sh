@@ -248,10 +248,17 @@ assert_eq "-R with a full github.com URL names the owner" \
 assert_eq "-R outranks a positional that names another owner" \
   "acme-org" "$(owner_of repo view other-org/widgets -R acme-org/widgets)"
 
-assert_eq "a positional OWNER/REPO (gh repo clone) names the owner" \
+# A *bare* slug is a repository only under `gh repo <subcommand>`: see the
+# branch-name cases below for why that restriction is the whole of this
+# rule's correctness.
+assert_eq "a bare OWNER/REPO under gh repo clone names the owner" \
   "acme-org" "$(owner_of repo clone acme-org/widgets)"
-assert_eq "a positional OWNER/REPO (gh repo view) names the owner" \
+assert_eq "a bare OWNER/REPO under gh repo view names the owner" \
   "acme-org" "$(owner_of repo view acme-org/widgets)"
+assert_eq "  ... and a HOST/OWNER/REPO under gh repo names the owner, not the host" \
+  "acme-org" "$(owner_of repo view github.com/acme-org/widgets)"
+assert_eq "  ... while a three-segment path whose first segment is no hostname names nobody" \
+  "" "$(owner_of repo view docs/foo/bar.md)"
 assert_eq "a pull-request URL names the owner" \
   "acme-org" "$(owner_of pr view https://github.com/acme-org/widgets/pull/5)"
 assert_eq "an issue URL names the owner" \
@@ -293,16 +300,12 @@ assert_eq "  ... across a line break, as a multi-line query writes it" \
 assert_eq "  ... and a graphql call naming neither names nobody" \
   "" "$(owner_of api graphql -f 'query=query { viewer { login } }')"
 
-# The case that makes the flag-value skip load-bearing rather than tidy: on a
-# map-only fleet, reading `feat` as an owner would resolve to no installation
-# and degrade `gh pr create` — the pipeline's single most important write —
-# to the PAT.
-assert_eq "a branch name in --head is never read as an owner" \
-  "" "$(owner_of pr create --head feat/author-installation-map --base main --title x --body y)"
-assert_eq "  ... nor one in --base" \
-  "" "$(owner_of pr create --base release/2.0 --title x)"
-assert_eq "  ... nor a label that happens to be shaped like one" \
-  "" "$(owner_of issue list --label area/build)"
+# The case that makes the flag-value skip load-bearing rather than tidy:
+# under `gh repo`, where a bare slug *is* read, a flag's value must not be.
+assert_eq "a branch name in gh repo clone --branch is never read as an owner" \
+  "acme-org" "$(owner_of repo clone --branch feat/author-installation-map acme-org/widgets)"
+assert_eq "  ... nor a directory argument that looks like one" \
+  "acme-org" "$(owner_of repo clone --directory work/trees acme-org/widgets)"
 assert_eq "an invocation with no arguments at all names nobody" "" "$(owner_of --version)"
 
 # --- The git-credential request's own `path=` line --------------------------
@@ -328,6 +331,34 @@ assert_eq "  ... and a missing buffer file names nobody rather than erroring" \
 # issue comment 12` — every bare call a stage makes inside its cloned
 # workspace, which names no repository because `gh` itself resolves them
 # exactly this way.
+# --- The case rule 4's `gh repo` restriction exists for ---------------------
+# On this fleet every branch name carries a slash — `agent/1051`, `feat/x`,
+# `fix/x`, `docs/x` — and the Implementer, Reviewer and Enabler stages run
+# `gh pr checkout`, `gh pr view` and `gh pr diff` against one, bare, inside a
+# cloned workspace, constantly. Reading the branch's first segment as an
+# owner would resolve to no installation, fall through to the scalar default,
+# and hand a `Poetic-Poems` clone a `Pullwright` token: a 404 at write time,
+# which is the exact failure this change exists to prevent. What must hold is
+# that such a call resolves to the workspace's *own* owner, by rule 5.
+poetic_repo="$tmp_dir/poetic-workspace"
+mkdir -p "$poetic_repo"
+git -C "$poetic_repo" init -q 2>/dev/null
+git -C "$poetic_repo" remote add origin https://github.com/Poetic-Poems/poetic.git
+assert_eq "gh pr checkout <branch> resolves to the workspace's own owner, never the branch" \
+  "Poetic-Poems" "$( cd "$poetic_repo" && gh_shim_target_owner pr checkout agent/1051 )"
+assert_eq "  ... and so does gh pr view <branch>" \
+  "Poetic-Poems" "$( cd "$poetic_repo" && gh_shim_target_owner pr view feat/x )"
+assert_eq "  ... and gh pr diff <branch>" \
+  "Poetic-Poems" "$( cd "$poetic_repo" && gh_shim_target_owner pr diff docs/x )"
+assert_eq "  ... while an explicit -R in the same workspace still wins" \
+  "Pullwright" "$( cd "$poetic_repo" && gh_shim_target_owner -R Pullwright/agent-ops pr view feat/x )"
+assert_eq "  ... and a pull-request URL in the same workspace still wins" \
+  "Pullwright" "$( cd "$poetic_repo" && gh_shim_target_owner pr view https://github.com/Pullwright/agent-ops/pull/5 )"
+assert_eq "  ... while gh repo clone's own bare slug is still read as a repository" \
+  "Poetic-Poems" "$( cd "$poetic_repo" && gh_shim_target_owner repo clone Poetic-Poems/poetic )"
+assert_eq "  ... and a three-segment path under gh repo falls through to the remote, never naming its middle segment" \
+  "Poetic-Poems" "$( cd "$poetic_repo" && gh_shim_target_owner repo view docs/foo/bar.md )"
+
 origin_repo="$tmp_dir/origin-repo"
 mkdir -p "$origin_repo"
 git -C "$origin_repo" init -q 2>/dev/null
