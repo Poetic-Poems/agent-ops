@@ -47,9 +47,35 @@ assert_contains() {
 
 # --- No filter: lists every test/*.test.sh basename, matching a plain glob,
 # with no Docker on PATH at all. ---------------------------------------------
+#
+# Dropping every PATH entry that holds a `docker` was once the whole of this,
+# and stopped being enough the moment the image gained the Docker CLI for the
+# `reconciler` service (deploy/docker/Dockerfile, requirement 2.5a): `docker`
+# now lives in `/usr/bin`, so dropping that directory takes `bash`, `dirname`
+# and `basename` with it — and `#!/usr/bin/env bash` then resolves nothing,
+# so the script under test never runs at all and every assertion below fails
+# for a reason that has nothing to do with what it is asserting.
+#
+# So the filtered PATH is backed by a directory of symlinks to exactly the
+# three externals `--list` reaches for, and deliberately not to `docker`.
+# That is a stricter environment than the original, not a weaker one: the
+# script now runs with *only* what it needs, and a `--list` that grew a
+# dependency on anything else — `docker` first among them — fails here.
+tmp_bin="$(mktemp -d)"
+trap 'rm -rf "$tmp_bin"' EXIT
+for c in bash dirname basename; do
+  ln -s "$(command -v "$c")" "$tmp_bin/$c"
+done
+
 no_docker_path="$(printf '%s\n' "$PATH" | tr ':' '\n' | while read -r d; do
   [[ -x "$d/docker" ]] || printf '%s\n' "$d"
 done | paste -sd: -)"
+no_docker_path="${no_docker_path:+$no_docker_path:}$tmp_bin"
+
+# The premise the rest of the file rests on, asserted rather than assumed:
+# nothing named `docker` is reachable through that PATH.
+assert_eq "the test's own PATH has no docker on it" "1" \
+  "$(PATH="$no_docker_path" command -v docker >/dev/null 2>&1 && echo 0 || echo 1)"
 
 all_tests=( "$SCRIPT_DIR"/test/*.test.sh )
 expected_count="${#all_tests[@]}"
