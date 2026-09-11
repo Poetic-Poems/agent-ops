@@ -40,6 +40,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/crash-loop.sh"
 # shellcheck source=lib/rework.sh
 . "$SCRIPT_DIR/lib/rework.sh"
+# shellcheck source=lib/notify.sh
+# agent-cycle.sh always sources this ahead of lib/enabler.sh (issue #1279);
+# without it here, crash_loop_retire_resolved's own notify_post_cycle call
+# below is an undefined command, not the no-op an unset notify_webhook_url
+# is meant to be.
+. "$SCRIPT_DIR/lib/notify.sh"
 # shellcheck source=lib/enabler.sh
 . "$SCRIPT_DIR/lib/enabler.sh"
 

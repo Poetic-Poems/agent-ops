@@ -80,6 +80,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   by running real stages), and `--status` gains an `overrun: N firing(s)
   overrun in the last 24h` line, which `check-nodes.sh` inherits for free.
 
+- **`escalation_webhook_url` promoted to the installation's one
+  push-notification channel** (issue #1279, requirement 2m): `lib/notify.sh`'s
+  `notify_post` POSTs one compact JSON body — `{event, key, title, url, repo,
+  node, ts, detail}` — to `notify_webhook_url` for every escalation issue
+  filed or auto-closed, every `pager-fired`/`pager-cleared` (#1278), and
+  every fleet-wide stand-down beginning or ending (a usage-limit cooldown,
+  the fleet switch, the merge-autonomy kill switch), gated per class by
+  `notify_events` (default all three: `escalation`, `pager`,
+  `fleet-standdown`) and coalesced per `(event, key)` pair by
+  `notify_min_interval_seconds` (default 600s) so a burst of the same fact
+  repeating arrives as one message and a count, while the `end` of a
+  transition never disappears behind the `begin` that shares its key. `escalation_webhook_url` — previously only a
+  filing-failure fallback — is accepted as an alias for `notify_webhook_url`
+  for one release; `scripts/doctor.sh` warns on the old name and gains a
+  live reachability check of the resolved webhook host through the egress
+  fence. New config: `notify_webhook_url`, `notify_events`,
+  `notify_min_interval_seconds`.
+
+  **The alias preserves the URL, not the body.** An installation already
+  pointing `escalation_webhook_url` at a receiver keeps delivering to the same
+  endpoint, but the JSON it delivers has changed: the old filing-failure body
+  was `{reason, detail, repo, item, node, cycle}` and there is no `reason`,
+  `item` or `cycle` in the new one. A receiver that reads those fields needs
+  updating — `reason` is now `title`, `item` is folded into `key` (as
+  `<repo>#<item>`), and the filing failure that used to be the only thing this
+  channel sent is now the `escalation-unfiled` event rather than every message
+  on it.
+
 - **The pager: fleet-level invariant evaluation, filing and auto-close**
   (issue #1278, requirement 51): `lib/pager.sh`, a registry of named
   invariants evaluated once per Publisher GitHub tick, each a function over

@@ -850,7 +850,10 @@ and the schema must carry every one of them.
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy. |
-| `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
+| `escalation_webhook_url` | *(unset)* | An alias for `notify_webhook_url` (requirement 2m), accepted for one release when `notify_webhook_url` is itself empty. `scripts/doctor.sh` warns whenever this key is set. Empty contributes nothing. |
+| `notify_webhook_url` | *(unset)* | The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own...[continued below](#extended-notes-notify_webhook_url) |
+| `notify_events` | `["escalation", "pager", "fleet-standdown"]` | Which of the three notify classes (requirement 2m) `notify_post` sends: `escalation`, `pager`, `fleet-standdown`. Default is all three. An event whose class is absent here is dropped before `notify_webhook_url` is read — never sent, never logged as suppressed. |
+| `notify_min_interval_seconds` | `600` | Minimum gap between two `notify_post` POSTs of the same event on the same key (requirement 2m) — a burst of one repeating fact coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between, while the other half of a transition pair sharing that key (`fleet-standdown-end`, `pager-cleared`) still posts. `0` disables coalescing: every eligible event posts. |
 | `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
 | `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
 | `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
@@ -1089,9 +1092,9 @@ D18 Stage 3 (requirement 8d, `lib/landing.sh`'s `landing_eligible`, agent-ops#72
 
 D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — the compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
 
-### Extended notes: `escalation_webhook_url`
+### Extended notes: `notify_webhook_url`
 
-A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see the requirement-2m entry.
+The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own reachability check reports this as a `warn`, not a silent gap.
 
 ### Extended notes: `min_free_memory_bytes`
 
@@ -20810,62 +20813,154 @@ oblige anyone to edit a test.
    whichever of the two it is (never claiming an HTTP 401 that never
    happened); `ok` and `unreachable` verdicts fall through
    untouched, filing nothing.
-2m. **Every escalation route `create_escalation_issue` cannot reach GitHub
-   through still reaches an operator, given a webhook (requirement 2.0b's
-   third acceptance criterion in effect, not only in code; TD-PPagop-26082304).**
-   `escalation_webhook_notify` (`lib/enabler.sh`) — called from inside
-   `create_escalation_issue` itself, on every one of its failure returns, so
-   2.0b's auth-failure escalation, 1c's usage-limit freeze escalation and
-   requirement 2.7's crash loop all share one fallback path rather than
-   three — is a no-op when `escalation_webhook_url` is unset (the default;
-   an installation that configures none of this runs exactly as it did
-   before this existed), and otherwise POSTs a JSON body carrying `reason`
-   (the failed issue's own title) and `detail` (its own body) — the same two
-   fields a `stand-down` event already carries — plus `item`, `repo`, `node`
-   and `cycle`, to a URL `GH_TOKEN` plays no part in reaching. A POST
-   failure is recorded as a local `warning` event and never propagates: a
-   down or misconfigured webhook costs a cycle nothing beyond the escalation
-   it was already failing to file.
+2m. **The installation has one push-notification channel, and everything the
+   fleet already knows to log about an escalation, a page, or a stand-down
+   also reaches it (issue #1279).** `notify_post` (`lib/notify.sh`) is the
+   whole of it: given `notify_webhook_url` (fleet-wide, `escalation_webhook_url`
+   accepted as an alias for one release when `notify_webhook_url` is itself
+   empty), it POSTs one compact JSON body — `{event, key, title, url, repo,
+   node, ts, detail}`, plus `count` when a suppressed burst preceded this
+   send — for every event in one of three classes, each gated independently
+   by `notify_events` (default all three):
 
-   **Enabling it is two edits per node, not one.** The POST leaves the
-   scheduler through the egress fence like every other outbound call — the
-   scheduler's own `HTTPS_PROXY` (compose.yaml) points at squid, which is
-   default-deny (D24, "The node stack") — so a webhook host that is not in
-   that node's `EGRESS_EXTRA_ALLOW` (`.env`) draws a proxy `403`, `curl -f`
-   returns non-zero, and the node logs the same local `warning` it logged
-   before this requirement existed. `escalation_webhook_url` is set
-   fleet-wide (`config.json` ships in the image, so its value is every
-   node's value); the allowlist entry is per node and ships with none,
-   because no host can be guessed for an installation. A configured webhook
-   whose host is not allowed is therefore inert, not broken, and looks in
-   the log exactly like a webhook that is simply down — which is why the
-   operator-facing documentation of the key states both edits together
-   rather than the config one alone. The baked
-   `deploy/docker/egress-allowlist.txt` gains no entry for this: it carries
-   only hosts this repository's own code names, and a webhook endpoint is an
-   installation's choice.
+   - `escalation` — `escalation-filed` on every fresh issue
+     `create_escalation_issue` creates (never its own duplicate-guard reuse);
+     `escalation-unfiled` on every filing failure (`escalation_webhook_notify`,
+     `lib/enabler.sh` — the whole of requirement 2m before this rewrite, now
+     one event class among three rather than the channel's only job);
+     `escalation-closed` on the one retire path living alongside
+     `create_escalation_issue` in the same file, `crash_loop_retire_resolved`
+     (requirement 2.7).
+   - `pager` — `pager-fired` and `pager-cleared`, posted from `pager_file`/
+     `pager_close` (`lib/pager.sh`, requirement 51) themselves, guarded by
+     `declare -F notify_post` so that file stays sourceable without
+     `lib/notify.sh` alongside it (`test/pager.test.sh` sources it standalone).
+     `pager_evaluate` gains two more trailing, optional parameters for this —
+     `NOTIFY_EVENTS_JSON` and `NOTIFY_MIN_INTERVAL`, after #1281's own three
+     — threaded through to `pager_file`/`pager_close`, and `pager_file`/
+     `pager_close` each gain the same pair plus the webhook URL and the union
+     log to read. Omitted, as every call site before this and every existing
+     test leaves them, they read as empty, which `notify_post` treats as "no
+     notify channel configured" exactly as it treats an unset
+     `notify_webhook_url`.
+   - `fleet-standdown` — `fleet-standdown-begin`/`fleet-standdown-end` for
+     each of the three fleet-wide stand-downs a switch someone set can leave
+     silently in force: the usage-limit cooldown (`lib/standdown.sh`'s own
+     `stand-down`/`limit-cleared` events, requirement 2.1), the fleet switch
+     at either scope — node or fleet (`agent-cycle.sh`'s own `stand-down`/
+     `enabled` events and `lib/manage.sh`'s `--enable`, requirement 2.3/2.3a)
+     — and the merge-autonomy kill switch (`lib/manage.sh`'s
+     `--kill-merge-autonomy`/`--restore-merge-autonomy`, requirement 2.3b).
+     `key` distinguishes the four instances (`standdown:usage-limit`,
+     `standdown:node-switch:<node>`, `standdown:fleet-switch`,
+     `standdown:merge-autonomy-kill`) so the coalescing below is per
+     stand-down, not one bucket for all of them — and each instance's
+     `begin` and `end` share that one key, which is why the coalescing
+     below keys on the event too.
 
-   **The POST repeats every cycle for as long as the fault lasts.**
-   `create_escalation_issue`'s open-issue guard deduplicates the GitHub
-   route to one issue per fault, but it cannot deduplicate this one: on
-   2.0b's path the dead `GH_TOKEN` fails the `gh issue list` that would find
-   the duplicate exactly as it fails the `gh issue create`, so every cycle
-   searches, finds nothing, fails to file, and POSTs again. One POST per
-   cycle per affected node, at `schedule.cycle_interval_minutes`, until the
-   credential is replaced — deliberate for an alarm channel, whose value is
-   in continuing to ring, and stated here because it is what an operator
-   pointing the key at a pager needs to know before setting it.
+   An event whose class is not a member of `notify_events` is dropped before
+   `notify_webhook_url` is even read — never sent, never logged. Every
+   guarantee requirement 2m always made carries over unchanged: no `gh`/
+   `GH_TOKEN` anywhere in this path, best-effort (a POST failure logs one
+   local `notify-failed` and never propagates), `https://`-only by the
+   schema's own pattern on both `notify_webhook_url` and
+   `escalation_webhook_url`, and never blocks the cycle (a 10s `curl
+   --max-time`).
 
-   `test/escalation-webhook.test.sh` passes
+   **`notify_min_interval_seconds` (default 600) coalesces a burst per
+   `(event, key)` pair**, event-sourced over the log rather than a cache: a
+   POST inside the interval since that pair's last `notify-sent` logs
+   `notify-suppressed` instead of sending, and the next allowed send folds
+   every suppressed one since into its own `count` field — the thirty
+   escalations in 48h of 2026-08-28 (issues #933–#938), one dead credential
+   re-filing `escalation-unfiled` every cycle for two days, arrives as one
+   message and a count rather than thirty. The event is half of the key
+   because the two halves of a transition pair share one `key` by
+   construction — `fleet-standdown-begin`/`-end` on `standdown:usage-limit`
+   and its three siblings, `pager-fired`/`pager-cleared` on the pager's own
+   key — and a stand-down in force re-posts its `begin` every cycle, so
+   keying on `key` alone would hold that key's last `notify-sent`
+   permanently younger than the interval and suppress the `end` an operator
+   is actually waiting on. A read log this node has not written yet is
+   ordinary rather than an error (a freshly provisioned node, before its
+   first cycle): the read falls back to `/dev/null`, so nothing is found and
+   nothing is suppressed, rather than failing a redirect and aborting a
+   caller running under `set -e`. The read side prefers the fleet-wide union log
+   (`${union_log:-$log_file}`) so two nodes racing the same key still
+   coalesce; every call site reached before that union is built falls back to
+   this node's own log, the same degradation `escalation_autonomy_*`'s own
+   `${union_log:-$log_file}` already accepts elsewhere. Three bands are on
+   that side of the line: `lib/manage.sh`'s management commands, and — because
+   `union_log` is not assigned until the lock band — both switch checks in
+   `agent-cycle.sh`, the node switch and the fleet switch. The node switch
+   carries the node in its own key (`standdown:node-switch:<node>`), so per-node
+   coalescing is all it ever wanted. `standdown:fleet-switch` does not: one
+   fleet-wide fact, re-posted by every node on every cycle the switch holds,
+   coalesces per node rather than across the fleet, so an operator sees one
+   message per node per `notify_min_interval_seconds` for as long as it is set.
+   Narrowing that to one message for the fleet means building the union
+   earlier in the cycle than the lock band needs it, which is tracked
+   separately (#1369) rather than folded in here.
+
+   **Enabling it is two edits per node, not one — unchanged from before this
+   rewrite.** The POST leaves the scheduler through the egress fence like
+   every other outbound call — the scheduler's own `HTTPS_PROXY`
+   (compose.yaml) points at squid, which is default-deny (D24, "The node
+   stack") — so a webhook host that is not in that node's `EGRESS_EXTRA_ALLOW`
+   (`.env`) draws a proxy `403`, `curl -f` returns non-zero, and the node
+   logs `notify-failed`. `notify_webhook_url` is set fleet-wide (`config.json`
+   ships in the image, so its value is every node's value); the allowlist
+   entry is per node and ships with none, because no host can be guessed for
+   an installation. `scripts/doctor.sh` gains two checks for this: a `warn`
+   whenever `escalation_webhook_url` is set (the alias is good for one
+   release only — rename it), and, in its Egress section, a live reachability
+   probe of the resolved webhook host through whatever fence is in place
+   (`curl`, no `-f`, same idiom as the section's other three canary checks) —
+   a `warn` naming the host when it does not answer, so a silently
+   misconfigured channel is a doctor finding, not a discovery the day an
+   escalation needed it. **The host, never the URL**: a webhook secret
+   ordinarily rides in the URL's own path
+   (`https://hooks.slack.com/services/T…/B…/…`), which `lib/redact.sh`'s
+   token-shaped patterns do not match, and every `warn` message is copied
+   verbatim into `state_dir/.doctor-status.json`, which `scripts/state-sync.sh`
+   pushes to the state-mirror repository and `scripts/publish-dashboard.sh`
+   renders. The host is also all the message's own advice needs, since
+   `EGRESS_EXTRA_ALLOW` is keyed on exactly that.
+
+   `test/notify.test.sh` passes against `notify_post` and its helpers lifted
+   verbatim from `lib/notify.sh`: each of the three classes posts only when
+   `notify_events` lists it and is silently dropped otherwise; the alias
+   (`escalation_webhook_url` feeding `notify_webhook_url` only when the
+   latter is empty, `notify_webhook_url` always winning when both are set);
+   the rate limit (a second POST of the same event on the same key inside
+   `notify_min_interval_seconds` logs `notify-suppressed` and sends nothing,
+   and the next allowed send's payload carries the accumulated `count`, while
+   an unrelated key and — on the same key — the *other* half of a transition
+   pair both still send: a `fleet-standdown-begin` 30s old suppresses neither
+   `fleet-standdown-end` on `standdown:fleet-switch` nor `pager-cleared` on a
+   key whose `pager-fired` has just gone out); a read log that does not exist
+   (`notify_post` returns 0 and still POSTs, under a caller running `set -e`);
+   and a stubbed POST failure (a `403` from the fence) logs `notify-failed`
+   and `notify_post` still returns 0 — a down or misconfigured webhook must
+   never propagate into the caller it is notifying on behalf of.
+
+   `test/enabler-notify-wiring.test.sh` covers the other half — that
+   `create_escalation_issue` calls it, on the right paths, without changing
+   what it returns to the three routes that file through it. It passes
    against `create_escalation_issue` and `escalation_webhook_notify` lifted
-   verbatim from `lib/enabler.sh`: an unset `escalation_webhook_url` files
-   no HTTP request on a filing failure; a set one POSTs exactly once, to
-   that URL, with `reason`/`detail`/`item` matching the failed call's own
-   title/body/item; a filing that succeeds (first or second attempt) POSTs
-   nothing; and a stubbed POST failure logs one `warning` naming the item,
-   while `create_escalation_issue` still returns 1 either way — the fallback
-   can never turn a real failure into an apparent success, nor a webhook
-   failure into a cycle-ending one.
+   verbatim from `lib/enabler.sh` with `lib/notify.sh` sourced whole: a
+   filing failure posts `escalation-unfiled`
+   exactly once, keyed `<repo>#<item>`, carrying the failed issue's own title
+   and body — and still returns 1, still printing nothing, so a notification
+   can never read as a filing; a fresh create posts `escalation-filed`
+   carrying the new issue's URL, and still prints `<number>\t<url>` unchanged,
+   which is what every caller parses back; the duplicate-guard path posts
+   nothing at all, because a fault already escalated is not a fresh page; an
+   installation with `escalation` absent from `notify_events` posts nothing
+   and logs nothing, not even a suppression; and a POST that fails logs
+   `notify-failed` naming the key while leaving the verdict on both paths
+   exactly as it was — 1 for the failed filing, 0 and the issue URL for the
+   successful one.
 2n. **A cycle does not start work the host has no room to finish (requirement
    2.0c, agent-ops#756).** `test/disk-space.test.sh` passes:
    `disk_space_free_kb` reads a directory's free KiB and is empty (never `0`)
@@ -26086,6 +26181,70 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   at the handoff, since nothing downstream ever re-checks; advisory at the
   Reviewer's own stage-start, since the handoff read still guards whatever
   the stage produces even when this earlier one could not be answered.
+- **The escalation webhook was promoted to the installation's one notify
+  channel rather than left as a filing-failure fallback (issue #1279,
+  requirement 2m).** Everything the pipeline already knew to log — an
+  escalation, a pager transition (requirement 51), a fleet-wide stand-down —
+  ended on the dashboard and nowhere else; two incidents (the 2026-08-14
+  watchtower stall and the 2026-08-08 mirror corruption) each ran for days
+  because the dashboard was up and correct and nobody was looking at it. Two
+  duplicated webhook-POST implementations already existed for narrower jobs
+  — `escalation_webhook_notify` (`lib/enabler.sh`) and its parameterised twin
+  `_pager_webhook_notify` (`lib/pager.sh`, which cannot share the first's
+  cycle-scoped globals — see that file's own header) — which `lib/notify.sh`
+  replaces for every notification in the three classes above, used from a
+  cycle-context wrapper (`notify_post_cycle`) and directly (lib/pager.sh,
+  threading every context parameter explicitly, the shape that file's whole
+  design already commits to). `_pager_webhook_notify` itself survives for
+  requirement 51's own filing-failure fallback alone — the two paths in
+  `pager_file` where the pager's tracking or `pw::decision` issue could not
+  be filed — which is not one of the three classes and still POSTs its own
+  pre-#1279 body shape, ungated by `notify_events`; unpicking it also
+  reaches into requirement 51's text, so it is tracked separately as #1329
+  rather than folded in here. `escalation_webhook_url` stays accepted as an alias for one release
+  rather than a breaking rename, so an installation that has already wired
+  the old key into an alerting receiver keeps delivering to the same endpoint
+  through the transition; `scripts/doctor.sh` warns on it so the rename is
+  visible rather than silently indefinite. The alias carries the URL only, not
+  the body: the pre-#1279 filing-failure payload was `{reason, detail, repo,
+  item, node, cycle}`, and the one body every class now shares has no
+  `reason`, `item` or `cycle` in it (`reason` became `title`, `item` folded
+  into `key` as `<repo>#<item>`). One body for three classes is the point of
+  the promotion, so the receiver-side edit is the deliberate cost of it rather
+  than something the alias could have absorbed — which is why the CHANGELOG
+  entry states the field-level change alongside the rename rather than leaving
+  an operator to infer it from the key still working.
+
+  The webhook's own test coverage split along the same seam as the code.
+  `test/escalation-webhook.test.sh` tested one thing through one path — the
+  filing-failure POST, reached only through `create_escalation_issue` — so a
+  single file could cover both the channel and its wiring. With three classes
+  reached from four files, the channel's own behaviour (the classes, the
+  alias, the per-`(event, key)` rate limit) is `test/notify.test.sh`'s, and
+  what `lib/enabler.sh` does with it is `test/enabler-notify-wiring.test.sh`'s.
+  The second is deliberately not a subset of the first: the assertions worth
+  keeping from before this rewrite are the ones about `create_escalation_issue`'s
+  own return value and stdout, which no test of `notify_post` in isolation can
+  make, and which matter more now than they did — the success path gained a
+  notification, and it sits immediately before the `printf` every caller
+  parses back.
+- **`notify_min_interval_seconds` coalesces per `(event, key)` pair, not per
+  notify class and not per key alone.** A coarser bucket (one shared key per
+  class) would suppress a genuine second escalation about a *different* item
+  behind an unrelated first one — a distinct fact is a distinct page. Keying
+  per instance (`repo#item` for an escalation, the pager's own `key`, one
+  static key per stand-down kind) means the coalescing this key exists for —
+  the same fact repeating, the 2026-08-28 burst (#933–#938) — still
+  collapses, because a repeating fact is by construction the same key every
+  time, while two unrelated facts arriving close together both still post.
+  The event has to be the other half of that pair for the same reason: a
+  transition's two halves share one key by construction
+  (`fleet-standdown-begin`/`-end`, `pager-fired`/`pager-cleared`), and the
+  `begin` half re-posts every cycle for as long as the stand-down holds — so
+  keying on the key alone kept that key's last send permanently inside the
+  interval and suppressed the `end`, which is the half an operator is
+  waiting on. "Began" and "ended" are two distinct facts, so by this entry's
+  own rule they are two pages.
 
 ## Gotchas
 

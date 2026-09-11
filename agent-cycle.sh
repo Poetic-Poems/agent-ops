@@ -110,6 +110,12 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # and compute_skip_lists leave behind, and a reader following the phase order
 # should meet them in that order too.
 . "$SCRIPT_DIR/lib/eligibility.sh"
+# shellcheck source=lib/notify.sh
+# The installation's one notify channel (issue #1279) — notify_post_cycle is
+# called from lib/standdown.sh (below), lib/manage.sh and lib/enabler.sh,
+# each sourced later in this same process; a function call resolves at run
+# time regardless of source order, same as the note on lib/standdown.sh below.
+. "$SCRIPT_DIR/lib/notify.sh"
 # shellcheck source=lib/standdown.sh
 # Sourced last among these: run_standdown_checks calls into most of the libs
 # above (crash-loop, github-limit, toggle, merge-autonomy, approver-token, …),
@@ -583,15 +589,27 @@ crash_loop_repo="$(cfg '.crash_loop_repo')"
 # drained by `crash_loop_refile_pending` from `cleanup()`, once this cycle's
 # own Co-Ordinator attempt (if any) has had its chance to prove the run over.
 crash_loop_pending_refile=()
-# The out-of-band fallback create_escalation_issue POSTs to when it cannot
-# file (requirement 2m, TD-PPagop-26082304) — fleet-wide like every other key
-# in config.json, which ships in the image, and credential-independent of
-# GH_TOKEN by construction. Empty (the default) means this installation has
-# none configured, and escalation_webhook_notify is a no-op throughout the
-# cycle. A set value is still inert on a node whose EGRESS_EXTRA_ALLOW does
-# not name the webhook's host: the POST leaves through the same default-deny
-# egress fence every other outbound call does (D24).
+# escalation_webhook_url is read for its own sake below (an alias
+# notify_resolve_webhook_url folds into notify_webhook_url — issue #1279,
+# requirement 2m) and separately because scripts/doctor.sh's own alias
+# warning reads the raw key, not the resolved one.
 escalation_webhook_url="$(cfg '.escalation_webhook_url')"
+# notify_webhook_url — the installation's one notify channel (requirement
+# 2m, lib/notify.sh, issue #1279): every escalation issue filed or
+# auto-closed, every pager-fired/pager-cleared (#1278), and every fleet-wide
+# stand-down beginning or ending, POSTed as one compact JSON body. Fleet-wide
+# like every other key in config.json, which ships in the image, and
+# credential-independent of GH_TOKEN by construction. Empty (the default,
+# once escalation_webhook_url — its alias for one release — is also empty)
+# means this installation has none configured, and notify_post is a no-op
+# throughout the cycle. A set value is still inert on a node whose
+# EGRESS_EXTRA_ALLOW does not name the webhook's host: the POST leaves
+# through the same default-deny egress fence every other outbound call does
+# (D24) — doctor.sh checks for this (requirement 2m).
+notify_webhook_url="$(notify_resolve_webhook_url "$(cfg '.notify_webhook_url')" "$escalation_webhook_url")"
+notify_events_json="$(cfg_json '.notify_events')"
+notify_min_interval_seconds="$(cfg '.notify_min_interval_seconds')"
+[[ "$notify_min_interval_seconds" =~ ^[0-9]+$ ]] || notify_min_interval_seconds=600
 # TD-PPagop-26081404: how many consecutive times, on this one node, the
 # required-checks read at the ready-gate (requirement 31c) must come back
 # `unknown` before its per-item node-level `warning` is replaced by one
@@ -1434,6 +1452,8 @@ case "$(jq -r '.state' <<<"$switch_state")" in
     toggle_clear "$state_dir" >/dev/null
     log_event "enabled" "$(jq -nc --argjson r "$expired_record" \
       '{detail: "disable expired", was: $r, scope: "node"}')"
+    notify_post_cycle "fleet-standdown-end" "standdown:node-switch:$node_name" \
+      "Node disable expired" "" "" "disable expired"
     ;;
   disabled)
     switch_record="$(jq -c '.record' <<<"$switch_state")"
@@ -1444,6 +1464,8 @@ case "$(jq -r '.state' <<<"$switch_state")" in
       log_event "stand-down" "$(jq -nc \
         --arg r "disabled: $(toggle_describe "$switch_record")" \
         '{reason: $r, cause: "disabled-node"}')"
+      notify_post_cycle "fleet-standdown-begin" "standdown:node-switch:$node_name" \
+        "Node disabled" "" "" "disabled: $(toggle_describe "$switch_record")"
       set_node_state_terminal down disabled-node
       (( ONCE )) && echo "agent-cycle: the pipeline is disabled — run --status for detail, --enable to resume" >&2
       exit 0
@@ -1475,6 +1497,8 @@ case "$(jq -r '.state' <<<"$fleet_switch_state")" in
       --argjson r "$(jq -c '.record' <<<"$fleet_switch_state")" \
       --arg ff "$fleet_expiry_flag_outcome" \
       '{detail: "fleet disable expired", was: $r, scope: "fleet", fleet_flag: $ff}')"
+    notify_post_cycle "fleet-standdown-end" "standdown:fleet-switch" \
+      "Fleet switch expired" "" "" "fleet disable expired"
     ;;
   disabled)
     fleet_switch_record="$(jq -c '.record' <<<"$fleet_switch_state")"
@@ -1490,6 +1514,8 @@ case "$(jq -r '.state' <<<"$fleet_switch_state")" in
       log_event "stand-down" "$(jq -nc \
         --arg r "fleet switch: $(toggle_describe "$fleet_switch_record")" \
         '{reason: $r, cause: "disabled-fleet"}')"
+      notify_post_cycle "fleet-standdown-begin" "standdown:fleet-switch" \
+        "Fleet switch set" "" "" "fleet switch: $(toggle_describe "$fleet_switch_record")"
       set_node_state_terminal down disabled-fleet
       (( ONCE )) && echo "agent-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
       exit 0

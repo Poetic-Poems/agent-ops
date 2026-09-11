@@ -40,6 +40,16 @@
 # retry-without-label, the same webhook fallback) rather than reaching into
 # a stage it does not run as.
 #
+# `pager_file`/`pager_close` post to the installation's notify channel
+# (lib/notify.sh, issue #1279) through `notify_post` — never called directly,
+# always behind an `if declare -F notify_post`, so this file stays sourceable
+# standalone (test/pager.test.sh does exactly that) whether or not
+# lib/notify.sh is alongside it. scripts/publish-dashboard.sh sources both.
+# An `if` and not a `&&` list, because the guard has to leave the calling
+# function's own exit status alone: a `&&` whose left-hand side fails carries
+# that 1 out as the function's result, and a caller running under `set -e`
+# then dies on the one path this guard exists to make harmless.
+#
 # An invariant's lifecycle is event-sourced over the union log, exactly the
 # transition-only convention lib/crash-loop.sh's `crash_loop_escalate`/
 # `crash_loop_retire_resolved` and lib/decision-veto.sh already settled: a
@@ -354,12 +364,15 @@ _pager_close_issue() {
 # --- Fire / close ----------------------------------------------------------------
 
 # pager_file KEY REMEDY_CLASS REMEDY_ARG EVIDENCE FIRST_SEEN PAGER_REPO \
-#            LABEL ASSIGNEE WEBHOOK_URL LOG_FILE NODE CYCLE [NODES_JSON]
+#            LABEL ASSIGNEE WEBHOOK_URL LOG_FILE NODE CYCLE [NODES_JSON] \
+#            [NOTIFY_EVENTS_JSON] [NOTIFY_MIN_INTERVAL] [UNION_LOG_FILE]
 # Performs the remedy (pipeline-act) and/or files the pw::pager tracking
 # issue (config-lever, owner-only; pipeline-act files one too, unassigned,
-# recording what it did), then logs pager-fired. A failed filing logs
-# nothing — the invariant stays "candidate" and the next window's evaluation
-# tries again, exactly as crash_loop_escalate's own dedup-then-retry does.
+# recording what it did), then logs pager-fired — and, on the installation's
+# notify channel (lib/notify.sh, issue #1279), posts `pager-fired`. A failed
+# filing logs nothing — the invariant stays "candidate" and the next window's
+# evaluation tries again, exactly as crash_loop_escalate's own
+# dedup-then-retry does.
 #
 # PAGER_REPO empty is not a failure and must not be treated as one: it is an
 # installation that has configured no repository to file into, which
@@ -373,7 +386,9 @@ _pager_close_issue() {
 pager_file() {
   local key="$1" remedy_class="$2" remedy_arg="$3" evidence="$4" first_seen="$5" \
         pager_repo="$6" label="$7" assignee="$8" webhook_url="$9" log_file="${10}" \
-        node="${11}" cycle="${12}" nodes_json="${13:-[]}"
+        node="${11}" cycle="${12}" nodes_json="${13:-[]}" \
+        notify_events_json="${14:-null}" notify_min_interval="${15:-600}" \
+        union_log_file="${16:-}"
   local item="pager:$key" body_file remedy_note="" created number="" url="" fields logged=0
   body_file="$(mktemp)"
   if [[ "$remedy_class" == "pipeline-act" && -n "$remedy_arg" ]]; then
@@ -422,6 +437,19 @@ pager_file() {
         issue_url: (if $u == "" then null else $u end),
         remedy_class: $rc, nodes: $nodes}')"
     pager_log_event "$log_file" "$node" "$cycle" "pager-fired" "$fields"
+    # Guarded by `declare -F`, the same seam `_pager_ensure_label_role` uses
+    # for lib/labels.sh: this file must stay sourceable standalone (test/
+    # pager.test.sh does exactly that), without lib/notify.sh alongside it.
+    # An `if`, not a `&&` list: a failed `declare -F` is the ordinary
+    # standalone case, and as the left-hand side of a `&&` it would make this
+    # function's own exit status 1 — which `set -e` at a caller reads as a
+    # failure, killing the very process the guard exists to keep working.
+    if declare -F notify_post >/dev/null 2>&1; then
+      notify_post "pager-fired" "$key" \
+        "Pager: $key" "$url" "$pager_repo" "$evidence" "$webhook_url" \
+        "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
+        "$log_file" "$node" "$cycle"
+    fi
   fi
   if [[ "$remedy_class" == "config-lever" && -n "$pager_repo" ]]; then
     local dec_body dec_created
@@ -440,15 +468,19 @@ pager_file() {
   rm -f "$body_file"
 }
 
-# pager_close KEY EVIDENCE PAGER_REPO LABEL LOG_FILE NODE CYCLE
+# pager_close KEY EVIDENCE PAGER_REPO LABEL LOG_FILE NODE CYCLE [WEBHOOK_URL] \
+#             [NOTIFY_EVENTS_JSON] [NOTIFY_MIN_INTERVAL] [UNION_LOG_FILE]
 # The fact behind KEY has cleared: close its pw::pager tracking issue with a
-# one-line comment, and log pager-cleared regardless of whether an issue was
+# one-line comment, log pager-cleared regardless of whether an issue was
 # actually found to close (a webhook-only filing, or one a human already
 # closed by hand, must still let the key return to "clear" — the log is the
 # durable half of this framework's own state machine; the issue is a mirror
-# of it, not the other way round).
+# of it, not the other way round), and post `pager-cleared` on the
+# installation's notify channel (lib/notify.sh, issue #1279).
 pager_close() {
-  local key="$1" evidence="$2" pager_repo="$3" label="$4" log_file="$5" node="$6" cycle="$7"
+  local key="$1" evidence="$2" pager_repo="$3" label="$4" log_file="$5" node="$6" cycle="$7" \
+        webhook_url="${8:-}" notify_events_json="${9:-null}" notify_min_interval="${10:-600}" \
+        union_log_file="${11:-}"
   local item="pager:$key" comment fields cleared_at
   cleared_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   comment="This invariant's fact has cleared. Retiring this page.
@@ -461,6 +493,15 @@ Retired automatically by lib/pager.sh (issue #1278)."
   fields="$(jq -nc --arg k "$key" --arg ca "$cleared_at" --arg e "$evidence" \
     '{key: $k, cleared_at: $ca, evidence: $e}')"
   pager_log_event "$log_file" "$node" "$cycle" "pager-cleared" "$fields"
+  # An `if`, not a `&&` list — see `pager_file`'s own guard above. This one
+  # is the function's last command, so a `&&` whose left-hand side failed
+  # would make `pager_close` itself return 1 on every standalone source.
+  if declare -F notify_post >/dev/null 2>&1; then
+    notify_post "pager-cleared" "$key" \
+      "Pager: $key" "" "$pager_repo" "$evidence" "$webhook_url" \
+      "$notify_events_json" "$notify_min_interval" "${union_log_file:-$log_file}" \
+      "$log_file" "$node" "$cycle"
+  fi
 }
 
 # --- Evaluation --------------------------------------------------------------
@@ -473,19 +514,23 @@ Retired automatically by lib/pager.sh (issue #1278)."
 #                     [REVIEW_UNION_LOG_FILE] [IDLE_CYCLES] \
 #                     [REPAIR_RATE_PERCENT] [ESCALATION_BURST] [REPOS_JSON] \
 #                     [PR_LABEL] [APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS] \
-#                     [LANDING_ARMED_WITHIN_DAYS]
+#                     [LANDING_ARMED_WITHIN_DAYS] [NOTIFY_EVENTS_JSON] \
+#                     [NOTIFY_MIN_INTERVAL]
 # The five trailing parameters through REVIEW_UNION_LOG_FILE exist for
 # agent-ops#1282's peer-vantage invariants; the three after them
 # (IDLE_CYCLES/REPAIR_RATE_PERCENT/ESCALATION_BURST) are agent-ops#1281's own
 # selection/ledger thresholds; the four after those
 # (REPOS_JSON/PR_LABEL/APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS/LANDING_ARMED_
-# WITHIN_DAYS) are agent-ops#1280's own landing/approval class — see
-# PAGER_EVAL_CYCLE_INTERVAL_MINUTES and its siblings, set just below, and
-# this file's own header for why they travel as plain variables rather than
-# through EVAL_FN's two-argument contract. Every call site before #1282, and
-# every existing test, omits them; an omitted trailing bash positional
-# parameter reads as empty, which every EVAL_FN that reads one treats as
-# "nothing configured — never fire".
+# WITHIN_DAYS) are agent-ops#1280's own landing/approval class; the two after
+# those are agent-ops#1279's notify channel (lib/notify.sh), threaded through
+# to `pager_file`/`pager_close` below — see PAGER_EVAL_CYCLE_INTERVAL_MINUTES
+# and its siblings, set just below, and this file's own header for why they
+# travel as plain variables rather than through EVAL_FN's two-argument
+# contract. Every call site before #1282, and every existing test, omits
+# them; an omitted trailing bash positional parameter reads as empty, which
+# every EVAL_FN that reads one treats as "nothing configured — never fire",
+# and which `notify_post` treats as "no notify channel configured" the same
+# way.
 _pager_evaluate_one() {
   local key="$1" claim_script="$2" pager_repo="$3" label="$4" \
         escalation_label="$5" assignee="$6" webhook_url="$7" min_firing_minutes="$8" \
@@ -495,7 +540,8 @@ _pager_evaluate_one() {
         review_union_log_file="${18:-}" idle_cycles="${19:-}" \
         repair_rate_percent="${20:-}" escalation_burst="${21:-}" \
         repos_json="${22:-}" pr_label="${23:-}" \
-        approver_unreviewed_engage_after_hours="${24:-}" landing_armed_within_days="${25:-}"
+        approver_unreviewed_engage_after_hours="${24:-}" landing_armed_within_days="${25:-}" \
+        notify_events_json="${26:-null}" notify_min_interval="${27:-600}"
   local eval_fn remedy_class remedy_arg window claim_key claim_rc
   eval_fn="${PAGER_EVAL_FN[$key]}"
   remedy_class="${PAGER_REMEDY_CLASS[$key]}"
@@ -589,7 +635,8 @@ _pager_evaluate_one() {
         nodes_json="$(jq -c '.nodes // []' <<<"$verdict" 2>/dev/null)"
         [[ -n "$nodes_json" ]] || nodes_json='[]'
         pager_file "$key" "$remedy_class" "$remedy_arg" "$evidence" "$first_seen" \
-          "$pager_repo" "$label" "$assignee" "$webhook_url" "$log_file" "$node" "$cycle" "$nodes_json"
+          "$pager_repo" "$label" "$assignee" "$webhook_url" "$log_file" "$node" "$cycle" "$nodes_json" \
+          "$notify_events_json" "$notify_min_interval" "$union_log_file"
       fi
       ;;
     candidate:false)
@@ -597,7 +644,8 @@ _pager_evaluate_one() {
         "$(jq -nc --arg k "$key" '{key: $k}')"
       ;;
     fired:false)
-      pager_close "$key" "$evidence" "$pager_repo" "$label" "$log_file" "$node" "$cycle"
+      pager_close "$key" "$evidence" "$pager_repo" "$label" "$log_file" "$node" "$cycle" \
+        "$webhook_url" "$notify_events_json" "$notify_min_interval" "$union_log_file"
       ;;
     *) ;;  # fired:true, clear:false — transition-only, nothing new to write
   esac
@@ -611,11 +659,12 @@ _pager_evaluate_one() {
 #                [IDLE_CYCLES] [REPAIR_RATE_PERCENT] [ESCALATION_BURST] \
 #                [REPOS_JSON] [PR_LABEL] \
 #                [APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS] \
-#                [LANDING_ARMED_WITHIN_DAYS]
-# The twelve trailing, optional parameters are agent-ops#1282's,
-# agent-ops#1281's and agent-ops#1280's own — see _pager_evaluate_one's own
-# header for why they exist and why omitting them (every call site before
-# #1282) is safe.
+#                [LANDING_ARMED_WITHIN_DAYS] [NOTIFY_EVENTS_JSON] \
+#                [NOTIFY_MIN_INTERVAL]
+# The fourteen trailing, optional parameters are agent-ops#1282's,
+# agent-ops#1281's, agent-ops#1280's and agent-ops#1279's own — see
+# _pager_evaluate_one's own header for why they exist and why omitting them
+# (every call site before #1282) is safe.
 # Evaluates every registered invariant once, in registration order. One bad
 # EVAL_FN or one lost claim never stops the rest — each invariant's own
 # failure is contained to itself, the same isolation crash_loop_verdict's own

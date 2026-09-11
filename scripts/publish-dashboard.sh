@@ -132,6 +132,13 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # way requirement 36d's own per-reason decide-tactical bound already does,
 # rather than duplicating the hash.
 . "$SCRIPT_DIR/lib/escalation-autonomy.sh"
+# shellcheck source=lib/notify.sh
+# `notify_post` alone: lib/pager.sh's `pager_file`/`pager_close` call it —
+# guarded by `declare -F`, the same precedent as labels.sh just above — to
+# post `pager-fired`/`pager-cleared` on the installation's notify channel
+# (issue #1279). Sourced before lib/pager.sh for the same reason labels.sh
+# is: the probe is what turns it on.
+. "$SCRIPT_DIR/lib/notify.sh"
 # shellcheck source=lib/pager.sh
 . "$SCRIPT_DIR/lib/pager.sh"
 # shellcheck source=lib/pager-invariants.sh
@@ -249,6 +256,12 @@ pager_repos_merge_autonomy_json="$(jq -c --arg top "$(cfg '.merge_autonomy')" \
 enabler_assignee="$(cfg '.enabler_assignee')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 escalation_webhook_url="$(cfg '.escalation_webhook_url')"
+# issue #1279: notify_webhook_url is the installation's one notify channel;
+# escalation_webhook_url is accepted as its alias for one release.
+notify_webhook_url="$(notify_resolve_webhook_url "$(cfg '.notify_webhook_url')" "$escalation_webhook_url")"
+notify_events_json="$(cfg_json '.notify_events')"
+notify_min_interval_seconds="$(cfg '.notify_min_interval_seconds')"
+[[ "$notify_min_interval_seconds" =~ ^[0-9]+$ ]] || notify_min_interval_seconds=600
 
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
@@ -2525,14 +2538,15 @@ if (( WITH_GITHUB )); then
     fleet_logs "$state_dir" "$peers_dir" review-log.jsonl > "$pager_review_union" 2>/dev/null \
       || : > "$pager_review_union"
     pager_evaluate "$SCRIPT_DIR/lib/claim.sh" "$pager_repo" "pw::pager" \
-      "$enabler_escalation_label" "$enabler_assignee" "$escalation_webhook_url" \
+      "$enabler_escalation_label" "$enabler_assignee" "$notify_webhook_url" \
       "$pager_min_firing_minutes" "$state_dir/log.jsonl" "$events_jsonl" "$fleet_nodes_json" \
       "$self_node" "publisher-$self_node-$now_epoch" \
       "$github_budget_cycle_interval_minutes" "$node_stale_after_minutes_raw" \
       "$updater_stuck_after_minutes_raw" "$pager_dashboard_fetch_seconds" \
       "$pager_review_union" "$pager_idle_cycles" "$pager_repair_rate_percent" \
       "$pager_escalation_burst" "$pager_repos_merge_autonomy_json" "$pr_label" \
-      "$approver_unreviewed_engage_after_hours" "$pager_landing_armed_within_days" || true
+      "$approver_unreviewed_engage_after_hours" "$pager_landing_armed_within_days" \
+      "$notify_events_json" "$notify_min_interval_seconds" || true
     # Re-read the union: pager_evaluate may just have appended to this node's
     # own log.jsonl, which $events_jsonl (built before this block) cannot
     # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs

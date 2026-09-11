@@ -443,7 +443,10 @@ Keys:
 | `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole App identity: which of that App's installations mints a given repository's token is resolved separately, per repository...[continued below](#extended-notes-approver_app_id) |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository, i.e. whichever repository you run this pipeline from. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. The value shown is this installation's own repository, not a generic default — every installation names its own. |
-| `escalation_webhook_url` | *(unset)* | A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the...[continued below](#extended-notes-escalation_webhook_url) |
+| `escalation_webhook_url` | *(unset)* | An alias for `notify_webhook_url`, accepted for one release. Set it and `doctor.sh` will warn — rename it to `notify_webhook_url` before the alias is removed. Empty (the default) contributes nothing. |
+| `notify_webhook_url` | *(unset)* | The URL every notification POSTs to — every escalation issue filed or auto-closed, every `pager-fired`/`pager-cleared`, and every fleet-wide stand-down beginning or ending — one compact JSON body per event, gated by `notify_events` and coalesced by `notify_min_interval_seconds`. `escalation_webhook_url` is accepted as an alias for one release; `doctor.sh` warns if that is the only one set. Empty (the default) disables the channel: nothing is attempted, and a node with none...[continued below](#extended-notes-notify_webhook_url) |
+| `notify_events` | `["escalation", "pager", "fleet-standdown"]` | Which notification classes actually POST: `escalation`, `pager` and `fleet-standdown`, all on by default. Drop one to quiet it without losing the others — a class not listed here is silently skipped before the webhook is even read. |
+| `notify_min_interval_seconds` | `600` | How long, per notify event *and* key, between two pushes — so a fact that keeps repeating (the same dead-credential escalation refiling every cycle) arrives as one message and a count, not one per cycle, while the `end` of a stand-down is never swallowed by the `begin` that shares its key. `0` disables coalescing outright: every eligible event posts. |
 | `pager_enabled` | `true` | Whether the pager framework evaluates its fleet-level invariants at all. `true` by default — the dashboard's own fired/cleared history and banner are worth having even on an installation with no `pager_repo` configured to file into. |
 | `pager_repo` | *(unset)* | Where the pager framework's own `pw::pager` issues are filed. Empty (this installation's own choice, left unset) falls back to `crash_loop_repo` at read time — which for this installation already resolves to `Pullwright/agent-ops` — rather than repeating that value here for two config keys to keep in step. |
 | `pager_min_firing_minutes` | `15` | Minutes. How long a fleet-level invariant must stay firing before the pager framework files anything — hysteresis against a blip that clears on its own. `0` files on the first firing evaluation. |
@@ -648,9 +651,9 @@ D18 WI-12 (Stage 4): the wait, in hours, between the Approver's own approval of 
 
 The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole App identity: which of that App's installations mints a given repository's token is resolved separately, per repository owner, from the `PULLWRIGHT_APPROVER_INSTALLATION_IDS`/`PULLWRIGHT_APPROVER_INSTALLATION_ID` environment (agent-ops#913) — never from this key.
 
-### Extended notes: `escalation_webhook_url`
+### Extended notes: `notify_webhook_url`
 
-A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the egress fence answers every POST with a `403` and the node is as silent as it was before the webhook existed.
+The URL every notification POSTs to — every escalation issue filed or auto-closed, every `pager-fired`/`pager-cleared`, and every fleet-wide stand-down beginning or ending — one compact JSON body per event, gated by `notify_events` and coalesced by `notify_min_interval_seconds`. `escalation_webhook_url` is accepted as an alias for one release; `doctor.sh` warns if that is the only one set. Empty (the default) disables the channel: nothing is attempted, and a node with none configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the egress fence answers every POST with a `403` and the node is as silent as it was before the webhook existed — `doctor.sh` checks for this.
 
 <!-- config-table:notes-end -->
 
@@ -2140,6 +2143,23 @@ for an interactive agent: one script instead of ad-hoc docker-exec commands
 that a permission classifier may deny. See
 [deploy/docker/README.md](deploy/docker/README.md#follow-a-nodes-events) for
 more.
+
+### Push notifications
+
+The dashboard and `watch-node.sh` above are both pull — you have to be
+looking. `notify_webhook_url` is the installation's one push channel: set it
+and every escalation issue the pipeline files or auto-closes, every pager
+transition, and every fleet-wide stand-down beginning or ending (a
+usage-limit cooldown, the fleet switch, the merge-autonomy kill switch) POSTs
+a compact JSON body — `{event, key, title, url, repo, node, ts, detail}` —
+to it, so a switch someone set stops being indistinguishable from a quiet
+week. `notify_events` narrows which of the three classes (`escalation`,
+`pager`, `fleet-standdown`) actually POST; `notify_min_interval_seconds`
+coalesces a repeating fact into one message and a count rather than one per
+cycle. See the [Configuration](#configuration) table and its [extended
+notes](#extended-notes-notify_webhook_url) for the two-edit setup (the
+webhook's host also needs to be in each node's `EGRESS_EXTRA_ALLOW`) —
+`scripts/doctor.sh` checks both the alias and the fence for you.
 
 ## Troubleshooting
 

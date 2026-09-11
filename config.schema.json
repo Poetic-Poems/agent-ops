@@ -1019,17 +1019,57 @@
       }
     },
     "escalation_webhook_url": {
-      "description": "A URL POSTed to as a best-effort, credential-independent fallback whenever `create_escalation_issue` cannot file — most often because the same `GH_TOKEN` an escalation's own trigger has just shown GitHub rejects (requirement 2.0b) also 401s the filing call itself. The JSON body carries the same `reason` and `detail` the failed escalation's own issue would have. Empty disables it outright: the call is skipped, never attempted, so an installation that wants no out-of-band channel is unaffected. Fleet-wide, like every other key here: `config.json` ships in the image, so a value set here is set on every node. Setting it is two edits, not one — **the webhook's host must also be in each node's `EGRESS_EXTRA_ALLOW`** (`.env`), because the scheduler reaches the internet only through the egress fence's default-deny allowlist (D24) and a host missing from it turns every POST into a proxy `403`, which is the same silence this key exists to break.",
+      "description": "An alias for `notify_webhook_url` (requirement 2m, issue #1279), accepted for one release when `notify_webhook_url` is itself empty — resolved by `notify_resolve_webhook_url` (`notify_webhook_url` always wins when both are set). `scripts/doctor.sh` warns whenever this key is set, since the alias is only good for one release. Empty (the default) contributes nothing; set `notify_webhook_url` instead.",
       "type": "string",
       "pattern": "^$|^https://",
       "default": "",
       "x-docs": {
-        "readme": "A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the egress fence answers every POST with a `403` and the node is as silent as it was before the webhook existed.",
-        "spec": "A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see the requirement-2m entry.",
+        "readme": "An alias for `notify_webhook_url`, accepted for one release. Set it and `doctor.sh` will warn — rename it to `notify_webhook_url` before the alias is removed. Empty (the default) contributes nothing.",
+        "spec": "An alias for `notify_webhook_url` (requirement 2m), accepted for one release when `notify_webhook_url` is itself empty. `scripts/doctor.sh` warns whenever this key is set. Empty contributes nothing.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
         }
+      }
+    },
+    "notify_webhook_url": {
+      "description": "The installation's one push-notification channel (requirement 2m, issue #1279): every JSON body `notify_post` (`lib/notify.sh`) builds — an escalation issue filed or auto-closed, a `pager-fired`/`pager-cleared` (#1278), or a fleet-wide stand-down beginning or ending — is POSTed here, gated by `notify_events` and coalesced by `notify_min_interval_seconds`. `escalation_webhook_url` is accepted as an alias for one release when this key is empty; `scripts/doctor.sh` warns when the old name is the only one set. Empty (both keys) disables the channel outright: nothing is attempted, exactly as before this key existed. Fleet-wide, like every other key here: `config.json` ships in the image, so a value set here is set on every node. Setting it is two edits, not one — **the webhook's host must also be in each node's `EGRESS_EXTRA_ALLOW`** (`.env`), because the scheduler reaches the internet only through the egress fence's default-deny allowlist (D24) and a host missing from it turns every POST into a proxy `403`; `scripts/doctor.sh` checks for this.",
+      "type": "string",
+      "pattern": "^$|^https://",
+      "default": "",
+      "x-docs": {
+        "readme": "The URL every notification POSTs to — every escalation issue filed or auto-closed, every `pager-fired`/`pager-cleared`, and every fleet-wide stand-down beginning or ending — one compact JSON body per event, gated by `notify_events` and coalesced by `notify_min_interval_seconds`. `escalation_webhook_url` is accepted as an alias for one release; `doctor.sh` warns if that is the only one set. Empty (the default) disables the channel: nothing is attempted, and a node with none configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the egress fence answers every POST with a `403` and the node is as silent as it was before the webhook existed — `doctor.sh` checks for this.",
+        "spec": "The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own reachability check reports this as a `warn`, not a silent gap.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
+    "notify_events": {
+      "description": "Which notification classes `notify_post` actually sends: `escalation` (every issue `create_escalation_issue` files or auto-closes), `pager` (every `pager-fired`/`pager-cleared`, #1278), and `fleet-standdown` (every usage-limit cooldown, fleet switch, or merge-autonomy kill switch beginning or ending). An event whose class is missing from this list is dropped before `notify_webhook_url` is even read — never posted, never logged as suppressed. All three by default; narrowing it is an installation's own choice to quiet one channel without losing the others.",
+      "type": "array",
+      "uniqueItems": true,
+      "default": ["escalation", "pager", "fleet-standdown"],
+      "items": {
+        "type": "string",
+        "enum": ["escalation", "pager", "fleet-standdown"]
+      },
+      "x-docs": {
+        "readme": "Which notification classes actually POST: `escalation`, `pager` and `fleet-standdown`, all on by default. Drop one to quiet it without losing the others — a class not listed here is silently skipped before the webhook is even read.",
+        "spec": "Which of the three notify classes (requirement 2m) `notify_post` sends: `escalation`, `pager`, `fleet-standdown`. Default is all three. An event whose class is absent here is dropped before `notify_webhook_url` is read — never sent, never logged as suppressed.",
+        "value": "`[\"escalation\", \"pager\", \"fleet-standdown\"]`"
+      }
+    },
+    "notify_min_interval_seconds": {
+      "description": "The minimum gap, per `(event, key)` pair, between two POSTs to `notify_webhook_url` (requirement 2m) — a burst of the same fact repeating (the thirty escalations in 48h of 2026-08-28, issue #933–#938, filed every cycle for as long as a dead credential persisted) coalesces into one message and a count rather than arriving as thirty. A POST suppressed within the interval logs a local `notify-suppressed` event instead; the next allowed POST for that pair folds every suppressed one since the last send into its own `count` field. The event is half of the coalescing key because the two halves of a transition pair share one `key` by construction (`fleet-standdown-begin`/`-end`, `pager-fired`/`pager-cleared`) and the `begin` half re-posts every cycle a stand-down holds — keying on the key alone would suppress the `end` an operator is waiting on.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 600,
+      "x-docs": {
+        "readme": "How long, per notify event *and* key, between two pushes — so a fact that keeps repeating (the same dead-credential escalation refiling every cycle) arrives as one message and a count, not one per cycle, while the `end` of a stand-down is never swallowed by the `begin` that shares its key. `0` disables coalescing outright: every eligible event posts.",
+        "spec": "Minimum gap between two `notify_post` POSTs of the same event on the same key (requirement 2m) — a burst of one repeating fact coalesces into one send and a `count` field, read from `notify-suppressed` events logged in between, while the other half of a transition pair sharing that key (`fleet-standdown-end`, `pager-cleared`) still posts. `0` disables coalescing: every eligible event posts.",
+        "value": "`600`"
       }
     },
     "pager_enabled": {

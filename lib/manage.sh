@@ -463,6 +463,13 @@ if [[ -n "$MANAGE_ACTION" ]]; then
           --arg scope "$enable_scope" --arg ff "$fleet_flag_outcome" \
           '{detail: "cleared by hand", was: $r, scope: $scope}
            + (if $ff == "" then {} else {fleet_flag: $ff} end)')"
+        if [[ "$enable_scope" == "node" ]]; then
+          notify_post_cycle "fleet-standdown-end" "standdown:node-switch:$node_name" \
+            "Node switch cleared by hand" "" "" "cleared by hand"
+        else
+          notify_post_cycle "fleet-standdown-end" "standdown:fleet-switch" \
+            "Fleet switch cleared by hand" "" "" "cleared by hand"
+        fi
       fi
       refresh_dashboard
       exit 0
@@ -482,6 +489,9 @@ if [[ -n "$MANAGE_ACTION" ]]; then
         '{was: (if $w == "" then null else $w end),
           reason: (if $r == "" then "cleared by hand" else $r end),
           by: $by, actor: $by, kind: "manual"}')"
+      notify_post_cycle "fleet-standdown-end" "standdown:usage-limit" \
+        "Usage-limit cooldown cleared by hand" "" "" \
+        "${CLEAR_LIMIT_REASON:-cleared by hand}"
 
       # Carrier 2: the live flag. Deleting it rather than shortening it,
       # because fleet_limit_publish is extend-only by design (concurrent hits
@@ -528,6 +538,8 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       log_event "merge-autonomy-killed" "$(jq -nc --arg r "$KILL_MERGE_AUTONOMY_REASON" \
         --arg by "$by" --arg actor "$(toggle_actor)" --arg outcome "$outcome" \
         '{reason: $r, by: $by, actor: $actor, kind: "manual", fleet_flag: $outcome}')"
+      notify_post_cycle "fleet-standdown-begin" "standdown:merge-autonomy-kill" \
+        "Merge-autonomy kill switch set" "" "" "$KILL_MERGE_AUTONOMY_REASON"
       refresh_dashboard
       exit 0
       ;;
@@ -545,6 +557,8 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       if [[ "$outcome" == "ok" ]]; then
         log_event "merge-autonomy-restored" "$(jq -nc --arg by "$(toggle_actor)" \
           '{detail: "cleared by hand", by: $by, actor: $by, kind: "manual"}')"
+        notify_post_cycle "fleet-standdown-end" "standdown:merge-autonomy-kill" \
+          "Merge-autonomy kill switch cleared" "" "" "cleared by hand"
       fi
       refresh_dashboard
       exit 0

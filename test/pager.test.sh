@@ -397,6 +397,26 @@ assert_eq "  ... and it can clear again, with nothing to close" \
   "1" "$(count_events "$union_log" pager-cleared norepo)"
 assert_eq "  ... state back to clear" "clear" "$(pager_state_for norepo < "$union_log")"
 
+# --- the notify guard leaves the exit status alone ----------------------------
+# This file sources lib/pager.sh without lib/notify.sh, so `notify_post` is
+# undefined for every assertion above — which is the whole point of the
+# `declare -F` guard in `pager_file`/`pager_close` (issue #1279). The guard
+# must also be invisible in the *exit status*: written as a `&&` list it
+# carried its own failed left-hand side out as the function's result, so
+# `pager_close` returned 1 on every standalone source and any caller under
+# `set -e` died on it. Asserted in a `set -e` subshell, because `set -uo
+# pipefail` alone (this file's own options, line 24) cannot see the fault.
+assert_eq "notify_post is genuinely undefined here (the guard is under test)" \
+  "" "$(declare -F notify_post 2>/dev/null || true)"
+guard_log="$(mktemp)"
+assert_eq "pager_close returns 0 when lib/notify.sh is not alongside" "0" \
+  "$(pager_close gk "ev" "" "pw::pager" "$guard_log" n1 c1 >/dev/null 2>&1; printf '%s' "$?")"
+assert_eq "  ... and a set -e caller survives the call" "survived" \
+  "$(set -e; pager_close gk "ev" "" "pw::pager" "$guard_log" n1 c1 >/dev/null 2>&1; printf 'survived')"
+assert_eq "  ... while still logging the pager-cleared transition" "2" \
+  "$(count_events "$guard_log" pager-cleared gk)"
+rm -f "$guard_log"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"
