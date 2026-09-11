@@ -214,9 +214,13 @@ M4. **Cadence: an hourly tick and a due gate.** The crontab line fires every
      that triggered it, so one page buys one run.
 
    A tick that is neither logs `monitor-stand-down` with `cause: "not-due"`
-   and exits 0. Such a tick costs one lock acquisition and two `jq` folds over
-   the union logs, and no model call. `--once` and `--dry-run` are themselves
-   a trigger (`requested`): an operator asking for a run now gets one.
+   and exits 0. What such a tick costs is one union snapshot of `log.jsonl`
+   and `monitor-log.jsonl`, the same stage-budget derivation over it that
+   every implementation cycle already performs, the usage-limit fold, two
+   `jq` folds for the gate itself, and a lock taken and released — and **no
+   model call**, which is the cost that matters. `--once` and `--dry-run` are
+   themselves a trigger (`requested`): an operator asking for a run now gets
+   one.
 
 M5. **One run per slot, fleet-wide.** Before the digest is built, the run
    claims its slot through `lib/claim.sh`: `claim file monitor <slot-key>`,
@@ -635,8 +639,8 @@ One Sonnet invocation per run, over a digest bounded by
 own bound, and with no repository clone at all. The daily slot is one run per
 fleet per day; a `pager-fired` event buys at most one extra run per hour, and
 in practice far fewer, since a page that fires and stays fired triggers
-exactly one. A not-due tick costs no model call at all: one lock, two `jq`
-folds and an exit. The Script itself makes at most four forge listings per run
+exactly one. A not-due tick costs no model call at all — a union snapshot, a
+few `jq` folds, a lock taken and released, and an exit. The Script itself makes at most four forge listings per run
 plus one per configured repository for the dedup.
 
 ## Design decisions

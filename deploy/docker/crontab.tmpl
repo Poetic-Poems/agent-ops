@@ -60,8 +60,9 @@
 # and supercronic cannot express the second half at all — no crontab line can
 # read the fleet's own log. So the line fires hourly and `monitor-cycle.sh`
 # decides, standing itself down with `cause: "not-due"` on every tick that is
-# neither. A not-due tick costs one lock, two jq folds over the union log and
-# no model call. It ends `|| true` for the same reason the doctor line does:
+# neither. A not-due tick takes and releases a lock, folds the union log a
+# few times, and makes no model call at all — the cost that matters. It ends
+# `|| true` for the same reason the doctor line does:
 # nothing on this image reads a cron job's exit status, and a stood-down tick
 # is not a crashed script.
 #

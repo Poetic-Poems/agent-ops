@@ -60,7 +60,8 @@
 # and no crontab line can express the second half — none of them can read the
 # fleet's own log. So this line fires hourly and `monitor-cycle.sh` decides,
 # standing itself down with `cause: "not-due"` on every tick that is neither.
-# It ends `|| true` for the same reason the doctor line does.
+# A not-due tick makes no model call at all. It ends `|| true` for the same
+# reason the doctor line does.
 #
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
