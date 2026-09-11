@@ -86,6 +86,7 @@ fi
 # reaches.
 # shellcheck source=lib/author-token.sh
 . "$APP_DIR/lib/author-token.sh"
+# shellcheck disable=SC2119 # "is this identity configured at all", deliberately no owner
 if author_token_credential_present; then
   # Stash the ambient PAT (if any) as the seam's fallback — lib/forge-auth.sh
   # owns this variable's name — and leave GH_TOKEN explicitly empty
@@ -100,9 +101,10 @@ if author_token_credential_present; then
 elif [[ -n "${GH_TOKEN:-}" ]]; then
   say "no forge authoring App configured — GH_TOKEN authenticates every git/gh call"
 else
-  say "WARNING: neither GH_TOKEN nor the forge authoring App's credentials (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) are set — this node can read nothing from GitHub and push nothing to it"
+  say "WARNING: neither GH_TOKEN nor the forge authoring App's credentials (PULLWRIGHT_AUTHOR_APP_ID, PULLWRIGHT_AUTHOR_INSTALLATION_ID or _INSTALLATION_IDS, PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH) are set — this node can read nothing from GitHub and push nothing to it"
 fi
 
+# shellcheck disable=SC2119 # as above — the helper is wired for either credential
 if author_token_credential_present || [[ -n "${GH_TOKEN:-}" ]]; then
   # Wired directly, never via `gh auth setup-git`: that command bakes the
   # *absolute path* of whichever `gh` process ran it (`os.Executable()`) into
@@ -125,6 +127,23 @@ if author_token_credential_present || [[ -n "${GH_TOKEN:-}" ]]; then
     say "git credential helper wired to the credential seam"
   else
     say "WARNING: could not configure the git credential helper — pushes will not authenticate"
+  fi
+  # Without this, git tells the helper only the protocol and the host, and
+  # `gh_shim_target_owner` has nothing in the request that names the
+  # repository — so every push and fetch would mint against the scalar
+  # default installation whatever organisation it was for. `useHttpPath`
+  # adds `path=<owner>/<repo>.git` to the credential request, which is the
+  # one attribute that distinguishes them. It changes nothing else here:
+  # the helper is `gh`, not a credential *store*, so the finer key this
+  # setting normally affects has nothing to key.
+  # Not fatal, for the same reason the helper itself is not: a node that
+  # could not write it still authenticates, just always as the default
+  # installation.
+  # `--replace-all`, like the helper above: this runs on every container
+  # start, and a key that somehow acquired two values would otherwise make
+  # a plain `git config` set error out.
+  if ! git config --global --replace-all credential.https://github.com.useHttpPath true; then
+    say "WARNING: could not set credential.useHttpPath — git pushes will mint against the default installation whatever repository they target"
   fi
 fi
 

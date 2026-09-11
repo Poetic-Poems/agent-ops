@@ -13,6 +13,17 @@
 # implements, end to end against a stub "real gh" binary — never a live App
 # or network call.
 #
+# Since the per-owner installation map it also covers `gh_shim_target_owner`,
+# which decides *which* installation a given call mints against. Two things
+# must hold there and are asserted separately: every invocation shape this
+# fleet issues names its owner (an explicit `-R`, a positional slug or URL, a
+# `gh api` path, a graphql `owner` field or `repository(owner:)` literal, a
+# buffered `gh auth git-credential` request's `path=`, and finally the
+# `origin` remote of the work tree the call was made from), and an invocation
+# that names *no* owner prints nothing — because a wrong guess resolves to
+# some other account's installation, where a token 404s at write time,
+# whereas no guess resolves to the operator's own scalar default.
+#
 # The stub "real gh" answers two shapes, both logging the `GH_TOKEN` it saw:
 #
 #   - `auth git-credential` — stands in for the credential helper `git push`
@@ -97,7 +108,7 @@ d="${STUB_LOG_DIR:?}"
 { printf '%s\x1f' "$@"; printf '\n'; } >> "$d/calls.log"
 printf '%s\n' "${GH_TOKEN:-}" >> "$d/tokens.log"
 if [[ "${1:-}" == "auth" && "${2:-}" == "git-credential" ]]; then
-  cat >/dev/null 2>&1
+  cat >> "$d/stdin.log" 2>/dev/null
   printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n' "${GH_TOKEN:-}"
   exit 0
 fi
@@ -206,6 +217,236 @@ assert_eq "nothing configured: the call still reaches the real binary, with an e
 
 clear_author_env
 unset GH_TOKEN
+
+# === gh_shim_target_owner: which account one `gh` invocation acts against ==
+#
+# Sourced directly, not run through the shim, because every rule below is a
+# pure argv (plus buffered-stdin, plus `origin`) derivation and the point is
+# to pin each rule on its own rather than through a mint. What must hold:
+# every shape this fleet actually issues names its owner, a *flag's value*
+# never does, and an invocation naming none prints nothing at all — which is
+# the input `author_token_get`'s scalar default answers, so a wrong guess
+# here is worse than no guess.
+clear_author_env
+unset GH_TOKEN
+# shellcheck source=lib/gh-shim.sh
+. "$SCRIPT_DIR/lib/gh-shim.sh"
+
+# Every case below must be judged outside a git work tree, or the `origin`
+# fallback (rule 5) would answer the ones meant to answer nothing.
+no_repo_dir="$tmp_dir/not-a-repo"
+mkdir -p "$no_repo_dir"
+
+owner_of() { ( cd "$no_repo_dir" && gh_shim_target_owner "$@" ); }
+
+assert_eq "-R owner/repo names the owner" "acme-org" "$(owner_of -R acme-org/widgets pr view 5)"
+assert_eq "--repo=owner/repo names the owner" "acme-org" "$(owner_of --repo=acme-org/widgets pr list)"
+assert_eq "-R HOST/OWNER/REPO names the owner, not the host" \
+  "acme-org" "$(owner_of -R github.com/acme-org/widgets pr list)"
+assert_eq "-R with a full github.com URL names the owner" \
+  "acme-org" "$(owner_of -R https://github.com/acme-org/widgets pr list)"
+assert_eq "-R outranks a positional that names another owner" \
+  "acme-org" "$(owner_of repo view other-org/widgets -R acme-org/widgets)"
+
+assert_eq "a positional OWNER/REPO (gh repo clone) names the owner" \
+  "acme-org" "$(owner_of repo clone acme-org/widgets)"
+assert_eq "a positional OWNER/REPO (gh repo view) names the owner" \
+  "acme-org" "$(owner_of repo view acme-org/widgets)"
+assert_eq "a pull-request URL names the owner" \
+  "acme-org" "$(owner_of pr view https://github.com/acme-org/widgets/pull/5)"
+assert_eq "an issue URL names the owner" \
+  "acme-org" "$(owner_of issue view https://github.com/acme-org/widgets/issues/9)"
+assert_eq "a clone URL with a .git suffix names the owner" \
+  "acme-org" "$(owner_of repo clone https://github.com/acme-org/widgets.git)"
+assert_eq "a URL on another forge names nobody — this identity is a github.com App" \
+  "" "$(owner_of repo view https://gitlab.com/acme-org/widgets)"
+
+assert_eq "gh api repos/OWNER/... names the owner" \
+  "acme-org" "$(owner_of api repos/acme-org/widgets/pulls/5)"
+assert_eq "  ... with a leading slash too" \
+  "acme-org" "$(owner_of api /repos/acme-org/widgets)"
+assert_eq "  ... and with a query string" \
+  "acme-org" "$(owner_of api "repos/acme-org/widgets/issues?state=open")"
+assert_eq "gh api orgs/OWNER names the owner" \
+  "acme-org" "$(owner_of api orgs/acme-org/installations)"
+assert_eq "gh api users/OWNER names the owner" \
+  "acme-org" "$(owner_of api users/acme-org)"
+assert_eq "gh api on a path that names no owner names none" \
+  "" "$(owner_of api rate_limit)"
+assert_eq "  ... including the ones every cycle makes about itself" \
+  "" "$(owner_of api user)"
+
+# shellcheck disable=SC2016 # a GraphQL variable reference, not a shell expansion
+assert_eq "gh api graphql with an owner field names the owner" \
+  "acme-org" "$(owner_of api graphql -f 'query=query($owner:String!){x}' -f owner=acme-org -f name=widgets)"
+assert_eq "  ... in the --field spelling too" \
+  "acme-org" "$(owner_of api graphql --field owner=acme-org)"
+assert_eq "  ... or, with no field, from the query's own repository(owner:) literal" \
+  "acme-org" "$(owner_of api graphql -f 'query=query { repository(owner: "acme-org", name: "widgets") { id } }')"
+assert_eq "  ... across a line break, as a multi-line query writes it" \
+  "acme-org" "$(owner_of api graphql -f 'query=query {
+  repository(
+    owner: "acme-org"
+    name: "widgets"
+  ) { id }
+}')"
+assert_eq "  ... and a graphql call naming neither names nobody" \
+  "" "$(owner_of api graphql -f 'query=query { viewer { login } }')"
+
+# The case that makes the flag-value skip load-bearing rather than tidy: on a
+# map-only fleet, reading `feat` as an owner would resolve to no installation
+# and degrade `gh pr create` — the pipeline's single most important write —
+# to the PAT.
+assert_eq "a branch name in --head is never read as an owner" \
+  "" "$(owner_of pr create --head feat/author-installation-map --base main --title x --body y)"
+assert_eq "  ... nor one in --base" \
+  "" "$(owner_of pr create --base release/2.0 --title x)"
+assert_eq "  ... nor a label that happens to be shaped like one" \
+  "" "$(owner_of issue list --label area/build)"
+assert_eq "an invocation with no arguments at all names nobody" "" "$(owner_of --version)"
+
+# --- The git-credential request's own `path=` line --------------------------
+cred_req="$tmp_dir/cred-request"
+printf 'protocol=https\nhost=github.com\npath=acme-org/widgets.git\n\n' > "$cred_req"
+assert_eq "gh auth git-credential: the buffered request's path= names the owner" \
+  "acme-org" "$( cd "$no_repo_dir" && GH_SHIM_STDIN_FILE="$cred_req" gh_shim_target_owner auth git-credential get )"
+assert_eq "  ... read by the pure reader on its own" \
+  "acme-org" "$(gh_shim_credential_owner "$cred_req")"
+
+printf 'protocol=https\nhost=gitlab.com\npath=acme-org/widgets.git\n\n' > "$cred_req"
+assert_eq "  ... a request for another host names nobody" \
+  "" "$(gh_shim_credential_owner "$cred_req")"
+
+printf 'protocol=https\nhost=github.com\n\n' > "$cred_req"
+assert_eq "  ... a request with no path= (useHttpPath unset) names nobody" \
+  "" "$(gh_shim_credential_owner "$cred_req")"
+assert_eq "  ... and a missing buffer file names nobody rather than erroring" \
+  "" "$(gh_shim_credential_owner "$tmp_dir/no-such-file")"
+
+# --- The `origin` remote of the work tree the call was made from ------------
+# The rule that covers the large remainder: `gh pr list`, `gh pr checks`, `gh
+# issue comment 12` — every bare call a stage makes inside its cloned
+# workspace, which names no repository because `gh` itself resolves them
+# exactly this way.
+origin_repo="$tmp_dir/origin-repo"
+mkdir -p "$origin_repo"
+git -C "$origin_repo" init -q 2>/dev/null
+git -C "$origin_repo" remote add origin https://github.com/acme-org/widgets.git
+assert_eq "a bare call inside a work tree falls back to its origin remote" \
+  "acme-org" "$( cd "$origin_repo" && gh_shim_target_owner pr list )"
+assert_eq "  ... an SSH origin resolves the same owner" \
+  "acme-org" "$( cd "$origin_repo" && git remote set-url origin git@github.com:acme-org/widgets.git && gh_shim_target_owner pr checks )"
+assert_eq "  ... an origin on another forge names nobody" \
+  "" "$( cd "$origin_repo" && git remote set-url origin https://gitlab.com/acme-org/widgets.git && gh_shim_target_owner pr list )"
+git -C "$origin_repo" remote set-url origin https://github.com/acme-org/widgets.git
+assert_eq "  ... and an explicit -R still outranks the remote" \
+  "other-org" "$( cd "$origin_repo" && gh_shim_target_owner -R other-org/widgets pr list )"
+
+# === gh_shim_resolve_token: the owner selects the installation =============
+#
+# The three outcomes the two-organisation fleet needs, end to end through the
+# shim: a mapped owner mints that owner's own token; an owner the map and the
+# scalar are both silent about degrades to the PAT rather than presenting a
+# token GitHub would 404; and an invocation naming no owner takes the scalar
+# default, or the PAT when there is none.
+map_curl="$tmp_dir/curl-by-id"
+cat > "$map_curl" <<STUB
+#!/usr/bin/env bash
+d="$tmp_dir"
+printf 'call\n' >> "\$d/curl_calls"
+cat >/dev/null 2>&1
+url=""
+for a in "\$@"; do case "\$a" in https://*) url="\$a" ;; esac; done
+case "\$url" in
+  */access_tokens)
+    id="\${url#*/app/installations/}"; id="\${id%%/access_tokens}"
+    printf '{"token":"ghs_for_%s","expires_at":"2099-01-01T00:00:00Z"}\n201' "\$id"
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$map_curl"
+
+setup_map_env() {  # [SCALAR]
+  export PULLWRIGHT_AUTHOR_APP_ID="7710033"
+  export PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH="$key_path"
+  export PULLWRIGHT_AUTHOR_INSTALLATION_IDS='{"acme-org": 111111111, "other-org": 222222222}'
+  export AUTHOR_TOKEN_CURL="$map_curl"
+  export AUTHOR_TOKEN_CACHE_DIR="$cache_dir"
+  if [[ -n "${1:-}" ]]; then
+    export PULLWRIGHT_AUTHOR_INSTALLATION_ID="$1"
+  else
+    unset PULLWRIGHT_AUTHOR_INSTALLATION_ID
+  fi
+}
+
+setup_map_env
+rm -f "$cache_dir"/* "$log_dir"/*.log "$tmp_dir/curl_calls"
+
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R acme-org/widgets pr view 5 >/dev/null
+assert_eq "a mapped owner mints that owner's own installation token" \
+  "ghs_for_111111111" "$(last_token)"
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R other-org/widgets pr view 5 >/dev/null
+assert_eq "the other mapped owner mints the other installation's, never the first's" \
+  "ghs_for_222222222" "$(last_token)"
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R third-org/widgets pr view 5 >/dev/null
+assert_eq "an owner neither the map nor a scalar names degrades to the PAT, not to another owner's token" \
+  "ghp_the_owner_pat" "$(last_token)"
+( cd "$no_repo_dir" && run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- api rate_limit >/dev/null )
+assert_eq "an invocation naming no owner, with no scalar default, degrades to the PAT" \
+  "ghp_the_owner_pat" "$(last_token)"
+
+setup_map_env 999999999
+rm -f "$cache_dir"/* "$log_dir"/*.log "$tmp_dir/curl_calls"
+( cd "$no_repo_dir" && run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- api rate_limit >/dev/null )
+assert_eq "the same call with a scalar default mints against it" \
+  "ghs_for_999999999" "$(last_token)"
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R third-org/widgets pr view 5 >/dev/null
+assert_eq "  ... and an unmapped owner falls back to it rather than to the PAT" \
+  "ghs_for_999999999" "$(last_token)"
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R acme-org/widgets pr view 5 >/dev/null
+assert_eq "  ... while a mapped owner still wins over the default" \
+  "ghs_for_111111111" "$(last_token)"
+
+# Explicit still wins, per owner: a caller's own GH_TOKEN is never re-minted
+# for the repository it happens to name.
+run_shim GH_TOKEN=approver_own_token PW_GH_NOW_EPOCH="$now0" \
+  -- -R acme-org/widgets pr view 5 >/dev/null
+assert_eq "a non-empty GH_TOKEN passes through even when the owner is mapped" \
+  "approver_own_token" "$(last_token)"
+
+# --- The credential helper: git's own `path=` selects the installation, and
+#     the request reaches the real binary byte for byte --------------------
+setup_map_env
+rm -f "$cache_dir"/* "$log_dir"/*.log "$tmp_dir/curl_calls" "$log_dir/stdin.log"
+cred_out="$(run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- auth git-credential get <<<$'protocol=https\nhost=github.com\npath=acme-org/widgets.git\n')"
+assert_eq "git-credential for a mapped owner presents that owner's own token" \
+  "yes" "$(grep -qF 'password=ghs_for_111111111' <<<"$cred_out" && echo yes || echo no)"
+assert_eq "  ... and the buffered request reaches the real binary unchanged" \
+  "$(printf 'protocol=https\nhost=github.com\npath=acme-org/widgets.git\n')" \
+  "$(cat "$log_dir/stdin.log")"
+
+rm -f "$log_dir/stdin.log"
+cred_out="$(run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- auth git-credential get <<<$'protocol=https\nhost=github.com\npath=other-org/state.git\n')"
+assert_eq "git-credential for the other owner presents the other installation's token" \
+  "yes" "$(grep -qF 'password=ghs_for_222222222' <<<"$cred_out" && echo yes || echo no)"
+
+cred_out="$(run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- auth git-credential get <<<$'protocol=https\nhost=github.com\npath=third-org/thing.git\n')"
+assert_eq "git-credential for an owner named by neither degrades to the PAT" \
+  "yes" "$(grep -qF 'password=ghp_the_owner_pat' <<<"$cred_out" && echo yes || echo no)"
+
+unset PULLWRIGHT_AUTHOR_INSTALLATION_IDS PULLWRIGHT_AUTHOR_INSTALLATION_ID
+clear_author_env
 
 printf '\n'
 if (( failures == 0 )); then

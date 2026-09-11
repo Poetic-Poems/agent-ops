@@ -435,16 +435,57 @@ fi
 # GitHub section.
 author_app_id_env="${PULLWRIGHT_AUTHOR_APP_ID:-}"
 author_installation_id_env="${PULLWRIGHT_AUTHOR_INSTALLATION_ID:-}"
+author_installation_ids_env="${PULLWRIGHT_AUTHOR_INSTALLATION_IDS:-}"
 author_key_path_env="${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-}"
 author_any_set=0
-[[ -n "$author_app_id_env" || -n "$author_installation_id_env" || -n "$author_key_path_env" ]] \
+[[ -n "$author_app_id_env" || -n "$author_installation_id_env" \
+   || -n "$author_installation_ids_env" || -n "$author_key_path_env" ]] \
   && author_any_set=1
+# shellcheck disable=SC2119 # "is this identity configured at all", deliberately no owner
 if author_token_credential_present; then
   ok "the forge authoring App's runtime credential is present and its key is readable — this node prefers it over GH_TOKEN for authoring (D18 decision 1)"
 elif (( author_any_set )); then
-  warn "only some of PULLWRIGHT_AUTHOR_APP_ID, PULLWRIGHT_AUTHOR_INSTALLATION_ID and PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH are set (and/or the key file is unreadable) — a forge authoring App credential needs all three or none; this node degrades to GH_TOKEN until all three are set correctly"
+  warn "only some of PULLWRIGHT_AUTHOR_APP_ID, an installation id (PULLWRIGHT_AUTHOR_INSTALLATION_ID, or PULLWRIGHT_AUTHOR_INSTALLATION_IDS naming at least one owner) and PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH are set (and/or the key file is unreadable) — a forge authoring App credential needs all of them or none; this node degrades to GH_TOKEN until they are set correctly"
 else
   ok "no forge authoring App configured — this node authors via GH_TOKEN (D18 decision 1's degrade path, agent-ops#607)"
+fi
+
+# Every distinct owner this node authors into, in one list the per-owner
+# checks below both read: `repos[]` (the cycles' own targets), `state_repo`
+# (scripts/state-sync.sh's pushes — the reason this check exists at all,
+# since re-homing left it on a different organisation from `repos[]`'s
+# newest member), `crash_loop_repo` and `pager_repo`. Distinct
+# case-insensitively, because the map is matched that way.
+author_owner_list="$(jq -r '
+  [ (.repos // [])[]?.slug, .state_repo, .crash_loop_repo, .pager_repo ]
+  | map(select(type == "string" and . != "") | split("/")[0])
+  | map(select(. != ""))
+  | unique_by(ascii_downcase)
+  | .[]' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+
+# One App, several installations (the same shape agent-ops#913 gave the
+# Approver): a GitHub App installation is per account, so an owner named by
+# neither PULLWRIGHT_AUTHOR_INSTALLATION_IDS nor the scalar default resolves
+# nowhere, and every authoring call into it degrades to GH_TOKEN — silently,
+# at write time, wherever the owner happened to differ. That is a `fail`
+# naming the owner and both variables, never a silent skip, and it is made
+# here rather than in the GitHub section below because it costs nothing and
+# is true offline. Only when a credential is configured at all: absence is
+# the expected steady state until an owner provisions the App
+# (agent-ops#1083), and is already reported above.
+# shellcheck disable=SC2119 # the gate, not a per-owner question — each owner is asked below
+if author_token_credential_present && [[ -n "$author_owner_list" ]]; then
+  author_owner_gap=0
+  while IFS= read -r author_owner; do
+    [[ -n "$author_owner" ]] || continue
+    if ! author_token_installation_for_owner "$author_owner" >/dev/null 2>&1; then
+      fail "no forge authoring App installation is configured for $author_owner — set PULLWRIGHT_AUTHOR_INSTALLATION_IDS (a JSON map naming $author_owner) or PULLWRIGHT_AUTHOR_INSTALLATION_ID as the fleet-wide default (D18 decision 1, agent-ops#913's shape)"
+      author_owner_gap=1
+    fi
+  done <<<"$author_owner_list"
+  if (( ! author_owner_gap )); then
+    ok "every repository owner this node authors into ($(tr '\n' ' ' <<<"$author_owner_list" | sed 's/ $//')) resolves to a forge authoring App installation"
+  fi
 fi
 
 # D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per configured
@@ -1120,15 +1161,51 @@ fi
 # id, or a private key that no longer matches the App would otherwise be
 # discovered only mid-cycle, silently degraded to GH_TOKEN with no operator
 # ever told why.
+#
+# Once per *distinct installation*, not once per owner and not once
+# fleet-wide (agent-ops#913's own arithmetic, applied here): two owners
+# sharing one installation cost one mint, not two, and two owners on two
+# installations are two separate facts — an expired key on one says nothing
+# about the other. The verdict is still reported per owner, since an owner is
+# what an operator can act on. An owner that resolves to no installation at
+# all was already failed in the Configuration section above, and is skipped
+# here rather than failed twice.
+# shellcheck disable=SC2119 # the credential-present gate below is deliberately owner-less
 if ((offline)); then
   :  # already covered by "every GitHub check (--offline)" above
-elif author_token_credential_present; then
+elif ! author_token_credential_present; then
+  :  # already covered by the presence check in the Configuration section
+elif [[ -z "$author_owner_list" ]]; then
+  # No repository owner is configured at all — exercise the default
+  # installation, which is the only one such a node could ever use.
   if author_mint_out="$(author_token_get "" 2>/dev/null)" && [[ -n "$author_mint_out" ]]; then
     author_login="$(author_token_identity_login "" 2>/dev/null || echo '(login unavailable)')"
     ok "the forge authoring App installation token minted successfully — this node authors as $author_login"
   else
     fail "the forge authoring App's credential is present but a token could not be minted — PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID may not name a real installation, or the key does not match (D18 decision 1, agent-ops#607); this node still authors via GH_TOKEN in the meantime"
   fi
+else
+  declare -A author_mint_verdict=()   # installation id -> ok|fail
+  declare -A author_mint_login=()     # installation id -> the App's own login
+  while IFS= read -r author_owner; do
+    [[ -n "$author_owner" ]] || continue
+    author_inst="$(author_token_installation_for_owner "$author_owner" 2>/dev/null)" || author_inst=""
+    [[ -n "$author_inst" ]] || continue
+    if [[ -z "${author_mint_verdict[$author_inst]:-}" ]]; then
+      if author_mint_out="$(author_token_get "" "$author_owner" 2>/dev/null)" \
+         && [[ -n "$author_mint_out" ]]; then
+        author_mint_verdict[$author_inst]="ok"
+        author_mint_login[$author_inst]="$(author_token_identity_login "" "$author_owner" 2>/dev/null || echo '(login unavailable)')"
+      else
+        author_mint_verdict[$author_inst]="fail"
+      fi
+    fi
+    if [[ "${author_mint_verdict[$author_inst]}" == "ok" ]]; then
+      ok "the forge authoring App installation token minted successfully for $author_owner (id $author_inst) — this node authors as ${author_mint_login[$author_inst]}"
+    else
+      fail "the forge authoring App's credential is present but a token could not be minted for $author_owner (id $author_inst) — PULLWRIGHT_AUTHOR_APP_ID, PULLWRIGHT_AUTHOR_INSTALLATION_IDS/_INSTALLATION_ID may not name a real installation on that account, or the key does not match (D18 decision 1, agent-ops#607); this node still authors into $author_owner via GH_TOKEN in the meantime"
+    fi
+  done <<<"$author_owner_list"
 fi
 
 if ((gh_ready)); then
