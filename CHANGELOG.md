@@ -864,6 +864,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   function it fired from, before falling back to the unchanged
   continue/return behaviour.
 
+- **A schema-illegal `approver_unreviewed_engage_after_hours` (e.g. `"2h"`)
+  no longer disables the `pr-unreviewed` pager invariant with no warning
+  logged anywhere** (issue #1403, following on from #1366 above). That
+  warning, added for the case where the cutoff computation itself fails
+  (a non-numeric value reaching `tonumber`, or a schema-legal but extreme one
+  overflowing `strftime`), lives in `_pager_ready_pr_candidates` — but
+  `lib/pager-invariants.sh`'s `_pager_pr_unreviewed_candidates`, the only
+  production caller, rejects a schema-illegal value with its own upstream
+  numeric-format guard before it ever reaches that function, so the
+  misconfiguration stayed silent in the pager/monitor's own log (visible only
+  via `lib/approver.sh`'s separate sweep warning, in the implementation
+  pipeline's own cycle log — never reached if that pipeline is paused).
+  `_pager_pr_unreviewed_candidates` now logs the identical warning shape
+  itself at that guard, naming the config key, the raw value and its own
+  function name, before falling back to the unchanged `return 0`.
+
 - **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
   timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
   --paginate --jq` re-runs its filter once per page and prints each page's

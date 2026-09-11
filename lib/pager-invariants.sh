@@ -1394,7 +1394,14 @@ _pager_ready_pr_candidates() {
 _pager_pr_unreviewed_candidates() {
   local repos_json="$1" pr_label="$2" cutoff_hours="$3" union_log_file="$4"
   [[ -n "$repos_json" && -n "$pr_label" ]] || return 0
-  [[ "$cutoff_hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+  if [[ ! "$cutoff_hours" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    pager_log_event "${PAGER_REMEDY_LOG_FILE:-}" "${PAGER_REMEDY_NODE:-}" "${PAGER_REMEDY_CYCLE:-}" "warning" \
+      "$(jq -nc --arg k "approver_unreviewed_engage_after_hours" --arg v "$cutoff_hours" \
+        --arg fn "_pager_pr_unreviewed_candidates" \
+        --arg d "schema-illegal cutoff approver_unreviewed_engage_after_hours=$cutoff_hours in _pager_pr_unreviewed_candidates — the pr-unreviewed pager invariant is skipped this evaluation" \
+        '{detail: $d, key: $k, value: $v, fn: $fn}')"
+    return 0
+  fi
   local raw touched='[]'
   raw="$(_pager_ready_pr_candidates "$repos_json" "$pr_label" "$cutoff_hours" \
     "approver_unreviewed_engage_after_hours")"
