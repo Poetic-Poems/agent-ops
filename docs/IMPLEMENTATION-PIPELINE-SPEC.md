@@ -14153,7 +14153,12 @@ implements.
     decision log and veto (requirement 36e). One field of the pass's runtime
     input differs: `mandate`, `"tactical"` at `decide-tactical` and
     `"delegate"` at `decide-with-veto`, and it is the only thing that tells
-    the pass which of the two reaches below are open to it.
+    the pass which of the two reaches below are open to it. Every pass at
+    this rung is logged as the same `enabler-adjudication` event carrying
+    `pass: "decide-tactical"` that requirement 36d's own passes are, which is
+    what keeps one bound over both: the two rungs are one ladder position
+    apart, and a repository moved between them must not find its per-reason
+    bound and its cap suddenly unspent.
 
     **What the delegate mandate reaches, and nothing else.** Written once
     here and referenced — never restated — by `prompts/enabler-decide.md`,
