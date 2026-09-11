@@ -1333,20 +1333,23 @@ pager_remedy_landing_refused_unknown() {
   return 1
 }
 
-# _pager_ready_pr_candidates REPOS_JSON PR_LABEL CUTOFF_HOURS -> one
-# "<repo>\t<number>\t<url>\t<head>" line per open, non-draft, PR_LABEL pull
-# request, in every repo REPOS_JSON names, whose own `createdAt` is older
-# than CUTOFF_HOURS and whose `reviewDecision` names no terminal review at
-# all (empty or `REVIEW_REQUIRED`) — a superset of "no standing *App*
-# review" specific enough in practice, since a third party reviewing an
-# autonomous pipeline's own pull request ahead of the Approver is not the
+# _pager_ready_pr_candidates REPOS_JSON PR_LABEL CUTOFF_HOURS [CONFIG_KEY] ->
+# one "<repo>\t<number>\t<url>\t<head>" line per open, non-draft, PR_LABEL
+# pull request, in every repo REPOS_JSON names, whose own `createdAt` is
+# older than CUTOFF_HOURS and whose `reviewDecision` names no terminal
+# review at all (empty or `REVIEW_REQUIRED`) — a superset of "no standing
+# *App* review" specific enough in practice, since a third party reviewing
+# an autonomous pipeline's own pull request ahead of the Approver is not the
 # ordinary case this invariant needs to rule out, and reading it straight off
 # the one `gh pr list` call every candidate repository needs anyway costs no
 # further per-pull-request API call the way a live per-pull-request read
 # (`landing_approver_standing_review_at`, which additionally needs the
-# Approver App's own login) would.
+# Approver App's own login) would. CONFIG_KEY, defaulted to the generic
+# parameter name below, names the actual config.schema.json key CUTOFF_HOURS
+# was read from, so an empty-cutoff warning (below) points a human at the
+# setting to fix rather than at this function's own local parameter name.
 _pager_ready_pr_candidates() {
-  local repos_json="$1" pr_label="$2" cutoff_hours="$3"
+  local repos_json="$1" pr_label="$2" cutoff_hours="$3" config_key="${4:-cutoff_hours}"
   local gh cutoff repo open
   gh="${PAGER_GH:-gh}"
   cutoff="$(jq -n -r --arg h "$cutoff_hours" \
@@ -1359,8 +1362,8 @@ _pager_ready_pr_candidates() {
     # this directly): `pager_log_event`'s own `>> "$log_file" 2>/dev/null || true`
     # then silently writes nothing rather than failing.
     pager_log_event "${PAGER_REMEDY_LOG_FILE:-}" "${PAGER_REMEDY_NODE:-}" "${PAGER_REMEDY_CYCLE:-}" "warning" \
-      "$(jq -nc --arg k "cutoff_hours" --arg v "$cutoff_hours" --arg fn "_pager_ready_pr_candidates" \
-        --arg d "empty cutoff computed from cutoff_hours=$cutoff_hours in _pager_ready_pr_candidates — the pr-unreviewed pager invariant is skipped this evaluation" \
+      "$(jq -nc --arg k "$config_key" --arg v "$cutoff_hours" --arg fn "_pager_ready_pr_candidates" \
+        --arg d "empty cutoff computed from $config_key=$cutoff_hours in _pager_ready_pr_candidates — the pr-unreviewed pager invariant is skipped this evaluation" \
         '{detail: $d, key: $k, value: $v, fn: $fn}')"
     return 0
   fi
@@ -1393,7 +1396,8 @@ _pager_pr_unreviewed_candidates() {
   [[ -n "$repos_json" && -n "$pr_label" ]] || return 0
   [[ "$cutoff_hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
   local raw touched='[]'
-  raw="$(_pager_ready_pr_candidates "$repos_json" "$pr_label" "$cutoff_hours")"
+  raw="$(_pager_ready_pr_candidates "$repos_json" "$pr_label" "$cutoff_hours" \
+    "approver_unreviewed_engage_after_hours")"
   [[ -n "$raw" ]] || return 0
   if [[ -f "$union_log_file" ]]; then
     touched="$(jq -c -R -n '

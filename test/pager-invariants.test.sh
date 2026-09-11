@@ -942,8 +942,8 @@ PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="99999999999999999999"
 verdict="$(pager_eval_pr_unreviewed "[]" "$pru_log")"
 assert_eq "a cutoff so large jq's own strftime overflows still fails safe: never fires" \
   "false" "$(jq -r '.firing' <<<"$verdict")"
-assert_eq "  ... but logs a warning naming the cutoff_hours key" "1" \
-  "$(grep -c '\"key\":\"cutoff_hours\"' "$pr_unreviewed_warn_log")"
+assert_eq "  ... but logs a warning naming the actual config key" "1" \
+  "$(grep -c '\"key\":\"approver_unreviewed_engage_after_hours\"' "$pr_unreviewed_warn_log")"
 assert_eq "  ... and the raw value that failed to produce a cutoff" "1" \
   "$(grep -c '\"value\":\"99999999999999999999\"' "$pr_unreviewed_warn_log")"
 assert_eq "  ... and the function it fired from" "1" \

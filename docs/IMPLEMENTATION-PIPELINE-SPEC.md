@@ -17506,7 +17506,8 @@ with the Reviewer's own.
       empty — a schema-illegal `approver_unreviewed_engage_after_hours`
       reaching jq's `tonumber` and erroring, or a schema-legal but extreme
       one overflowing `strftime` — logs its own `warning` (naming
-      `cutoff_hours`, the raw value and `_pager_ready_pr_candidates`) and
+      `approver_unreviewed_engage_after_hours`, the raw value and
+      `_pager_ready_pr_candidates`) and
       never fires, rather than being silently indistinguishable from an
       empty backlog. Caught: PR #1059, stranded
       when the kill-switch read failed closed with no log line (#1081) —
