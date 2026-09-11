@@ -1122,8 +1122,23 @@ assert_eq "bulk spend total counts every envelope" \
 
 # --- The launcher's exit status --------------------------------------------------
 # A shortened window (LAUNCHER_WINDOW) runs one real tick and stops; five
-# minutes of wall clock is the one thing a test may not spend.
-env HOME="$a" LAUNCHER_WINDOW=15 "$LAUNCHER" >/dev/null 2>&1
+# minutes of wall clock is the one thing a test may not spend. Both ticks
+# below are genuine: the real launcher wraps the real publish-dashboard.sh,
+# unstubbed — what is asserted is the launcher's own exit code and its
+# lock-skip logging, neither of which depends on what a GitHub fetch answers,
+# so `DASHBOARD_GH_CMD` points at a stand-in that fails every call at once
+# rather than reaching the network. Without it, "$a"'s real config.json (this
+# repo's own, real repos and a real state_repo) sends the real publish on a
+# real fetch — several seconds to many minutes depending on the host's GitHub
+# reachability and rate limits — to answer a question this section never asks.
+launcher_gh_stub="$tmp_dir/launcher-gh-stub.sh"
+cat > "$launcher_gh_stub" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$launcher_gh_stub"
+
+env HOME="$a" LAUNCHER_WINDOW=15 DASHBOARD_GH_CMD="$launcher_gh_stub" "$LAUNCHER" >/dev/null 2>&1
 assert_eq "launcher exits 0 on a healthy window" "0" "$?"
 
 # And with the lock already held: every tick skips (exit 111 inside), which
@@ -1133,7 +1148,7 @@ log="$a/.local/state/poetic-agents/dashboard.log"
 : > "$log"
 flock "$lck" sleep 30 &
 holder=$!
-env HOME="$a" LAUNCHER_WINDOW=15 "$LAUNCHER" >/dev/null 2>&1
+env HOME="$a" LAUNCHER_WINDOW=15 DASHBOARD_GH_CMD="$launcher_gh_stub" "$LAUNCHER" >/dev/null 2>&1
 rc=$?
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 assert_eq "launcher exits 0 while another publish holds the lock" "0" "$rc"

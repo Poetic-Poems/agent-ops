@@ -1277,49 +1277,41 @@ rank_reads() { grep -c "app/installations/$1\$" "$rank_log" 2>/dev/null || true;
 
 # `idle-org` is named by the map and has one repository, at `human`;
 # `unmapped-org` is at `human` and named by nothing at all. Neither may
-# produce a fail, and neither may cost an installation read.
-rank_human_config="$tmp/rank-human-config.json"
+# produce a fail, and neither may cost an installation read. `dup-org` is
+# listed first at `human` and again at `agent-approves`: the order of the
+# skip below is itself load-bearing — the loop de-duplicates by owner, so a
+# rank-0 skip placed *after* the owner is marked seen would leave an owner
+# whose first listed repository is at `human` and whose second is at
+# `agent-approves` unresolved, and the readiness verdict would then fail that
+# second repository for a variable that is set. All four owners are folded
+# into the one config below and read in a single doctor.sh run — owner
+# de-duplication is keyed on owner, not on position relative to other owners'
+# entries, so interleaving idle-org/unmapped-org/dup-org's repositories among
+# acme-org's changes nothing about what each one individually proves.
+rank_config="$tmp/rank-config.json"
 jq '.repos += [{slug: "idle-org/idle-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
-               {slug: "unmapped-org/other-idle-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"}]' \
-  "$ma_approves_config" > "$rank_human_config"
+               {slug: "unmapped-org/other-idle-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
+               {slug: "dup-org/first-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
+               {slug: "dup-org/second-repo", sources: ["security", "abandoned-drafts"]}]' \
+  "$ma_approves_config" > "$rank_config"
 : > "$rank_log"
 rm -f "$rank_cache"/*
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 \
-  PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"acme-org": 111111111, "idle-org": 222222222}' \
+  PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"acme-org": 111111111, "idle-org": 222222222, "dup-org": 333444555}' \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$rank_key" APPROVER_TOKEN_CURL="$rank_curl" \
   APPROVER_TOKEN_CACHE_DIR="$rank_cache" RANK_CURL_LOG="$rank_log" \
-  bash "$DOCTOR" --config "$rank_human_config" 2>&1)"
+  bash "$DOCTOR" --config "$rank_config" 2>&1)"
 rc=$?
 assert_not_contains "a human-level repository whose owner is named by neither variable is no fail" \
   "no Approver App installation is configured for unmapped-org" "$out"
 assert_not_contains "  ... and earns no consolidated readiness verdict either, as at every other check" \
   "unmapped-org/other-idle-repo's autonomy readiness" "$out"
-assert_eq "  ... and doctor.sh does not exit non-zero over a repository that never mints a token" "0" "$rc"
 assert_contains "  ... while the agent-approves repository beside it still resolves and reads normally" \
   "the installation for acme-org (id 111111111)" "$out"
 assert_eq "  ... reading acme-org's own installation exactly once" "1" "$(rank_reads 111111111)"
 assert_eq "  ... and spending no read at all on the installation only a human-level repository names" \
   "0" "$(rank_reads 222222222)"
-
-# The order of the skip is itself load-bearing: the loop de-duplicates by
-# owner, so a rank-0 skip placed *after* the owner is marked seen would leave
-# an owner whose first listed repository is at `human` and whose second is at
-# `agent-approves` unresolved — and the readiness verdict below would then
-# fail that second repository for a variable that is set.
-rank_dup_config="$tmp/rank-dup-config.json"
-jq '.repos += [{slug: "dup-org/first-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
-               {slug: "dup-org/second-repo", sources: ["security", "abandoned-drafts"]}]' \
-  "$ma_approves_config" > "$rank_dup_config"
-: > "$rank_log"
-rm -f "$rank_cache"/*
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
-  PULLWRIGHT_APPROVER_APP_ID=123456 \
-  PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"acme-org": 111111111, "dup-org": 333444555}' \
-  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$rank_key" APPROVER_TOKEN_CURL="$rank_curl" \
-  APPROVER_TOKEN_CACHE_DIR="$rank_cache" RANK_CURL_LOG="$rank_log" \
-  bash "$DOCTOR" --config "$rank_dup_config" 2>&1)"
-rc=$?
 assert_contains "an owner listed first at human and again at agent-approves still resolves" \
   "the installation for dup-org (id 333444555)" "$out"
 assert_contains "  ... and its agent-approves repository is fully supported, not failed for an unset variable" \
@@ -1328,7 +1320,7 @@ assert_not_contains "  ... while its human-level repository still earns no verdi
   "dup-org/first-repo's autonomy readiness" "$out"
 assert_eq "  ... reading dup-org's installation exactly once for the two repositories" \
   "1" "$(rank_reads 333444555)"
-assert_eq "  ... and doctor.sh exits 0" "0" "$rc"
+assert_eq "  ... and doctor.sh does not exit non-zero over any repository in this fixture" "0" "$rc"
 
 # --- agent-ops#575: a permissions payload this run could not *compare* is
 #     unreadable, never an all-clear. `approver_token_installation_permissions`
@@ -1364,36 +1356,66 @@ assert_eq "a single-owner fleet: PULLWRIGHT_APPROVER_INSTALLATION_IDS is unset t
   "" "${PULLWRIGHT_APPROVER_INSTALLATION_IDS:-}"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
-#     source this repository's own sources list never gathers ---------------
-# $base_config's own repo lists only ["security", "abandoned-drafts"], and
-# neither is in the shipped default ["register-hygiene", "tech-debt"], so the
-# default itself already exercises the warning with no override needed.
-run_doctor
+#     source this repository's own sources list never gathers, plus
+#     agent-ops#519's banded-token warning and agent-ops#558's bare-"issues"
+#     normalisation -----------------------------------------------------
+# All six scenarios below are pure config-vs-sources computations — nothing
+# here reads gh, claude or any other live state — so they do not need one
+# subprocess apiece: a single config naming six differently-configured
+# repositories produces every one of these verdicts in the one doctor.sh run,
+# each keyed to its own slug so rs_line() below can isolate it from the
+# other five the same way a single-repo $out used to isolate it for free.
+# $base_config's own repo (unmodified, at $slug) lists only ["security",
+# "abandoned-drafts"], and neither is in the shipped default
+# ["register-hygiene", "tech-debt"], so it alone already exercises the
+# warning with no override needed.
+rs_ok_slug="acme-org/rs-ok-repo"
+rs_override_slug="acme-org/rs-override-repo"
+rs_banded_slug="acme-org/rs-banded-repo"
+rs_plain_slug="acme-org/rs-plain-repo"
+rs_noissues_slug="acme-org/rs-noissues-repo"
+rs_config="$tmp/rs-config.json"
+jq --arg slug "$slug" --arg ok_slug "$rs_ok_slug" --arg override_slug "$rs_override_slug" \
+   --arg banded_slug "$rs_banded_slug" --arg plain_slug "$rs_plain_slug" \
+   --arg noissues_slug "$rs_noissues_slug" '
+  .repos = [
+    {slug: $slug, sources: ["security", "abandoned-drafts"]},
+    {slug: $ok_slug, sources: ["security", "abandoned-drafts", "tech-debt", "register-hygiene"]},
+    {slug: $override_slug, sources: ["security", "abandoned-drafts", "code-quality"],
+     merge_autonomy_routine_sources: ["code-quality", "tech-debt"]},
+    {slug: $banded_slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
+     merge_autonomy_routine_sources: ["issues:low", "tech-debt"]},
+    {slug: $plain_slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
+     merge_autonomy_routine_sources: ["issues", "tech-debt"]},
+    {slug: $noissues_slug, sources: ["security", "tech-debt"],
+     merge_autonomy_routine_sources: ["issues", "tech-debt"]}
+  ]' "$base_config" > "$rs_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_config" 2>&1)"
+# Every line this check ever prints for SLUG opens "SLUG's
+# merge_autonomy_routine_sources" (doctor.sh's own rs_slug ok/warn/banded
+# lines), so grepping that prefix isolates exactly — and only — this
+# repository's own verdict(s) out of the combined six-repository output.
+rs_line() { grep -F "$1's merge_autonomy_routine_sources" <<<"$out"; }
+
+rs_default_line="$(rs_line "$slug")"
 assert_contains "the shipped default merge_autonomy_routine_sources warns when this repo gathers neither" \
   "[warn] $slug's merge_autonomy_routine_sources names [register-hygiene,tech-debt], which its own sources list never gathers" \
-  "$out"
+  "$rs_default_line"
 
-rs_ok_config="$tmp/rs-ok-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "tech-debt", "register-hygiene"]}]' \
-  "$base_config" > "$rs_ok_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
+rs_ok_line="$(rs_line "$rs_ok_slug")"
 assert_not_contains "a repo whose sources cover the default routine list gets no warning" \
-  "merge_autonomy_routine_sources names" "$out"
+  "merge_autonomy_routine_sources names" "$rs_ok_line"
 assert_contains "  ... and a positive ok instead" \
-  "[ ok ] $slug's merge_autonomy_routine_sources are all sources it actually gathers" "$out"
+  "[ ok ] $rs_ok_slug's merge_autonomy_routine_sources are all sources it actually gathers" "$rs_ok_line"
+assert_not_contains "an unbanded routine list never triggers the banded-token warning" \
+  "banded issues:<band> token" "$rs_ok_line"
 
-rs_override_config="$tmp/rs-override-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "code-quality"],
-              merge_autonomy_routine_sources: ["code-quality", "tech-debt"]}]' \
-  "$base_config" > "$rs_override_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_override_config" 2>&1)"
+rs_override_line="$(rs_line "$rs_override_slug")"
 assert_contains "a repo-level override is checked against that repo's own sources, naming only the missing entry" \
-  "[warn] $slug's merge_autonomy_routine_sources names [tech-debt], which its own sources list never gathers" \
-  "$out"
+  "[warn] $rs_override_slug's merge_autonomy_routine_sources names [tech-debt], which its own sources list never gathers" \
+  "$rs_override_line"
 assert_not_contains "  ... code-quality is not named — the repo does gather it" \
-  "names [tech-debt,code-quality]" "$out"
+  "names [tech-debt,code-quality]" "$rs_override_line"
 
 # --- agent-ops#519: a banded issues:<band> token validates clean against the
 #     "does the repo gather this" check above — it is typically present in
@@ -1401,21 +1423,12 @@ assert_not_contains "  ... code-quality is not named — the repo does gather it
 #     every issues:<band> candidate's own source collapses to the plain word
 #     "issues" before landing_eligible's comparison ever runs (lib/landing.sh's
 #     own header). --------------------------------------------------------
-rs_banded_config="$tmp/rs-banded-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
-              merge_autonomy_routine_sources: ["issues:low", "tech-debt"]}]' \
-  "$base_config" > "$rs_banded_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_banded_config" 2>&1)"
+rs_banded_line="$(rs_line "$rs_banded_slug")"
 assert_contains "a banded issues:<band> token warns even though the repo's own sources list gathers it" \
-  "[warn] $slug's merge_autonomy_routine_sources names [issues:low], a banded issues:<band> token — every issues:<band> work order's own source collapses to the plain word \"issues\" before landing_eligible's comparison ever runs (lib/landing.sh's own header), so this entry can never match a work order; list \"issues\" itself if this repository should land issues work routinely (D18 WI-7)" \
-  "$out"
+  "[warn] $rs_banded_slug's merge_autonomy_routine_sources names [issues:low], a banded issues:<band> token — every issues:<band> work order's own source collapses to the plain word \"issues\" before landing_eligible's comparison ever runs (lib/landing.sh's own header), so this entry can never match a work order; list \"issues\" itself if this repository should land issues work routinely (D18 WI-7)" \
+  "$rs_banded_line"
 assert_not_contains "  ... the 'never gathers' warning does not also fire — the repo does gather issues:low" \
-  "which its own sources list never gathers" "$out"
-
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
-assert_not_contains "an unbanded routine list never triggers the banded-token warning" \
-  "banded issues:<band> token" "$out"
+  "which its own sources list never gathers" "$rs_banded_line"
 
 # --- agent-ops#558: the remedy #519's warning names — a bare `issues` in the
 #     routine list — is now a writable token (the key takes landingSourceToken,
@@ -1424,107 +1437,101 @@ assert_not_contains "an unbanded routine list never triggers the banded-token wa
 #     the routine side is normalised before the difference is taken. Without
 #     that, following doctor's own advice would trade one warning for another
 #     and there would still be no clean way to land issues work. ------------
-rs_plain_config="$tmp/rs-plain-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
-              merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
-  "$base_config" > "$rs_plain_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_plain_config" 2>&1)"
+rs_plain_line="$(rs_line "$rs_plain_slug")"
 assert_contains "a bare 'issues' routine entry is gathered, because the repo's sources carry issues:low" \
-  "[ ok ] $slug's merge_autonomy_routine_sources are all sources it actually gathers" "$out"
+  "[ ok ] $rs_plain_slug's merge_autonomy_routine_sources are all sources it actually gathers" "$rs_plain_line"
 assert_not_contains "  ... so the 'never gathers' warning does not fire on the normalised token" \
-  "which its own sources list never gathers" "$out"
+  "which its own sources list never gathers" "$rs_plain_line"
 assert_not_contains "  ... and the banded-token warning does not fire either — nothing here is banded" \
-  "banded issues:<band> token" "$out"
+  "banded issues:<band> token" "$rs_plain_line"
 
 # A bare `issues` in a repository that gathers no issues at all is still a
 # real fault, and the normalisation must not swallow it.
-rs_noissues_config="$tmp/rs-noissues-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "tech-debt"],
-              merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
-  "$base_config" > "$rs_noissues_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_noissues_config" 2>&1)"
+rs_noissues_line="$(rs_line "$rs_noissues_slug")"
 assert_contains "a bare 'issues' entry still warns where the repository gathers no issues source at all" \
-  "[warn] $slug's merge_autonomy_routine_sources names [issues], which its own sources list never gathers" \
-  "$out"
+  "[warn] $rs_noissues_slug's merge_autonomy_routine_sources names [issues], which its own sources list never gathers" \
+  "$rs_noissues_line"
 
 # --- D18 WI-12 (Stage 4, agent-ops#415): landing_cool_off_hours reported
 #     per configured source, and a warn when a repository trusted at
 #     agent-merges-all resolves it to 0 — the cool-off control disabled
 #     entirely, which §7 risk 1 accepts the residual risk of only with both
 #     compensating controls in force. ---------------------------------------
+# landing_cool_off_hours's fleet-wide figure is a single top-level value, so
+# the "24h default" and "0h" scenarios still each need their own doctor.sh
+# run; but each run's *other* scenario — a repo-level override, or a
+# repository trusted below agent-merges-all — rides along as a second,
+# distinctly-slugged repository in the same config and run instead of
+# spending a subprocess of its own, isolated by slug-prefixed substrings the
+# same way rs_line() isolated the block above.
 lc_config="$tmp/lc-config.json"
-jq --arg slug "$slug" \
+lc_override_slug="acme-org/lc-override-repo"
+jq --arg slug "$slug" --arg override_slug "$lc_override_slug" \
   '.merge_autonomy = "agent-merges-all" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"
-   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]' \
+   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]},
+               {slug: $override_slug, sources: ["security", "abandoned-drafts"], landing_cool_off_hours: 0}]' \
   "$base_config" > "$lc_config"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_config" 2>&1)"
 assert_contains "the shipped default landing_cool_off_hours is reported ok" \
   "[ ok ] landing_cool_off_hours is 24h" "$out"
-assert_not_contains "  ... and agent-merges-all with the default cool-off in force draws no warning" \
-  "landing_cool_off_hours 0" "$out"
+assert_not_contains "  ... and agent-merges-all with the default cool-off in force draws no warning for the unmodified repo" \
+  "$slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0" "$out"
+assert_contains "a repo-level override is reported under its own label" \
+  "[ ok ] $lc_override_slug's landing_cool_off_hours override is 0h (no wait)" "$out"
+assert_contains "  ... and still warns, resolved through the repo's own override" \
+  "[warn] $lc_override_slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0" "$out"
 
 lc_zero_config="$tmp/lc-zero-config.json"
-jq '.landing_cool_off_hours = 0' "$lc_config" > "$lc_zero_config"
+lc_routine_slug="acme-org/lc-routine-repo"
+jq --arg routine_slug "$lc_routine_slug" \
+  '.landing_cool_off_hours = 0
+   | .repos += [{slug: $routine_slug, sources: ["security", "abandoned-drafts"], merge_autonomy: "agent-merges-routine"}]' \
+  "$lc_config" > "$lc_zero_config"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_zero_config" 2>&1)"
 assert_contains "landing_cool_off_hours 0 is reported ok, as a value (the sanity check is separate)" \
   "[ ok ] landing_cool_off_hours is 0h (no wait)" "$out"
 assert_contains "  ... but agent-merges-all with it at 0 draws a warning naming both facts" \
   "[warn] $slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0 — a protected-path pull request lands the moment its critical-tier Approver review stands, with no fleet-day observation window (D18 WI-12)" \
   "$out"
-
-lc_repo_override_config="$tmp/lc-repo-override-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts"], landing_cool_off_hours: 0}]' \
-  "$lc_config" > "$lc_repo_override_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_repo_override_config" 2>&1)"
-assert_contains "a repo-level override is reported under its own label" \
-  "[ ok ] $slug's landing_cool_off_hours override is 0h (no wait)" "$out"
-assert_contains "  ... and still warns, resolved through the repo's own override" \
-  "[warn] $slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0" "$out"
-
-lc_routine_config="$tmp/lc-routine-config.json"
-jq '.merge_autonomy = "agent-merges-routine" | .landing_cool_off_hours = 0' "$lc_config" > "$lc_routine_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_routine_config" 2>&1)"
 assert_not_contains "below agent-merges-all, landing_cool_off_hours 0 draws no warning — the control does not bind there" \
-  "landing_cool_off_hours 0 —" "$out"
+  "$lc_routine_slug's merge_autonomy is \"agent-merges-routine\" with landing_cool_off_hours 0" "$out"
 
 # --- D18 Stage 3 (agent-ops#724, TD-PPagop-26082403): merge_autonomy_protected_paths
 #     resolved to an empty list disables gate 4 (the protected-path refusal)
 #     entirely for a repository trusted at agent-merges-routine or above —
 #     the same shape of configured-off compensating control as
 #     landing_cool_off_hours 0 above, and worth the same warning. -----------
+# The same two-runs-not-four shape as landing_cool_off_hours above:
+# merge_autonomy_protected_paths's default-vs-empty split is a single
+# top-level value, so each of those two still needs its own run, but the
+# repo-level-override and below-the-tier scenarios ride along as a second
+# repository rather than a subprocess apiece.
+pp_override_slug="acme-org/pp-override-repo"
 pp_config="$tmp/pp-config.json"
-jq --arg slug "$slug" \
+jq --arg slug "$slug" --arg override_slug "$pp_override_slug" \
   '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"
-   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]' \
+   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]},
+               {slug: $override_slug, sources: ["security", "abandoned-drafts"], merge_autonomy_protected_paths: []}]' \
   "$base_config" > "$pp_config"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_config" 2>&1)"
 assert_not_contains "the shipped nine-path default draws no warning at agent-merges-routine" \
-  "merge_autonomy_protected_paths empty" "$out"
+  "$slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty" "$out"
+assert_contains "a repos[]-level override to [] warns for that repository, resolved through its own override" \
+  "[warn] $pp_override_slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty ([])" \
+  "$out"
 
+pp_below_slug="acme-org/pp-below-repo"
 pp_empty_config="$tmp/pp-empty-config.json"
-jq '.merge_autonomy_protected_paths = []' "$pp_config" > "$pp_empty_config"
+jq --arg below_slug "$pp_below_slug" \
+  '.merge_autonomy_protected_paths = []
+   | .repos += [{slug: $below_slug, sources: ["security", "abandoned-drafts"], merge_autonomy: "agent-approves"}]' \
+  "$pp_config" > "$pp_empty_config"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_empty_config" 2>&1)"
 assert_contains "a top-level merge_autonomy_protected_paths: [] at agent-merges-routine draws the warning" \
   "[warn] $slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty ([]) — no path can refuse a routine landing there (D18 Stage 3)" \
   "$out"
-
-pp_repo_override_config="$tmp/pp-repo-override-config.json"
-jq --arg slug "$slug" \
-  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts"], merge_autonomy_protected_paths: []}]' \
-  "$pp_config" > "$pp_repo_override_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_repo_override_config" 2>&1)"
-assert_contains "a repos[]-level override to [] warns for that repository, resolved through its own override" \
-  "[warn] $slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty ([])" \
-  "$out"
-
-pp_below_config="$tmp/pp-below-config.json"
-jq '.merge_autonomy = "agent-approves" | .merge_autonomy_protected_paths = []' "$pp_config" > "$pp_below_config"
-out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_IDS -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_below_config" 2>&1)"
 assert_not_contains "below agent-merges-routine, merge_autonomy_protected_paths: [] draws no warning — the control does not bind there" \
-  "merge_autonomy_protected_paths empty" "$out"
+  "$pp_below_slug's merge_autonomy is \"agent-approves\" with merge_autonomy_protected_paths empty" "$out"
 
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------

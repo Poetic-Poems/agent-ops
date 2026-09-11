@@ -333,18 +333,52 @@ assert_eq "with its consecutive-failure count intact" "5" \
 assert_eq "the heartbeat carries a mirror-rebuild slot" "true" "$(jq 'has("mirror")' <<<"$hb")"
 assert_eq "unset until this node has actually rebuilt its mirror" "null" "$(jq -c '.mirror' <<<"$hb")"
 
-# --- The heartbeat carries the compose-drift verdict (#131) -------------------
-# End to end: a node whose compose.yaml has drifted publishes that fact with
-# its next push. The check's paths are forced to fixtures, because this suite
-# runs both on developer hosts and inside the CI image, and the defaults
-# would answer for whichever environment it happens to be in.
+# --- The heartbeat carries the compose-drift verdict (#131) and the updater
+# --- verdict (agent-ops#603), from a single push ------------------------------
+# Two independent heartbeat fields, assembled by do_push from unrelated
+# inputs (compose-drift's forced fixture paths, the updater ledger keyed by
+# $HOSTNAME) with no interaction between them — so both fixtures are staged
+# before one push, and one clone answers for both, rather than paying for a
+# second real push-and-clone that would only be exercising the first push's
+# own amend-not-accumulate behaviour a second time (already covered below).
+#
+# Compose: end to end, a node whose compose.yaml has drifted publishes that
+# fact with its next push. The check's paths are forced to fixtures, because
+# this suite runs both on developer hosts and inside the CI image, and the
+# defaults would answer for whichever environment it happens to be in.
+#
+# Updater: lib/updater-health.sh's own suite (test/updater-health.test.sh)
+# covers what the verdict says; what belongs here is that a ledger
+# deploy/docker/watchtower-pre-update.sh wrote reaches the heartbeat, keyed by
+# the container's own $HOSTNAME rather than NODE_NAME — the two need not
+# match — and that the raw ledger itself does not replicate. Two entries, not
+# one (agent-ops#1071): `updater_status` now reads liveness first, off the
+# ledger's own newest entry, so a single entry old enough to prove "stuck" is
+# also old enough to read null outright — the fixture needs a poll recent
+# enough to stay live *and* a first allow old enough to be stuck, the same
+# shape a container watchtower is still polling actually writes. Both entries
+# also carry `started` (agent-ops#1072), matching this test process's own
+# reading of PID 1's start time (field 22 of /proc/1/stat, the same field the
+# hook stamps) — `updater_status` inside the pushed subshell reads the same
+# value back (no sixth argument passed here, exactly as state-sync.sh's own
+# call site never passes one), so the fixture is read as genuinely this
+# container's own unbroken run, never a foreign generation's.
 drift_image="$tmp_dir/drift-image.yaml"
 drift_host="$tmp_dir/drift-host.yaml"
 printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:latest\n' > "$drift_image"
 printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:pinned\n' > "$drift_host"
+own_started="$(awk '{ sub(/^.*\) /, ""); print $20 }' /proc/1/stat)"
+mkdir -p "$state/updater-ledger"
+{
+  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
+    "$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
+  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
+    "$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
+} > "$state/updater-ledger/updater-host.jsonl"
 sync_as "$active_home" active push \
-  COMPOSE_DRIFT_HOST="$drift_host" COMPOSE_DRIFT_IMAGE="$drift_image" >/dev/null
-assert_eq "the drift-carrying push exits 0" "0" "$?"
+  COMPOSE_DRIFT_HOST="$drift_host" COMPOSE_DRIFT_IMAGE="$drift_image" \
+  HOSTNAME=updater-host >/dev/null
+assert_eq "the drift- and updater-carrying push exits 0" "0" "$?"
 drift_pushed="$tmp_dir/pushed-drift"
 git clone --quiet --branch nodes/active-node "$remote" "$drift_pushed"
 assert_eq "a drifted compose.yaml is published in the heartbeat" "drifted" \
@@ -363,39 +397,10 @@ assert_eq "the reconciler's verdict travels beside the drift verdict it acts on"
 assert_eq "with the reason it recorded intact" "the merged compose.yaml requires NODE_NAME" \
   "$(jq -r '.compose_reconcile.reason' "$drift_pushed/heartbeat.json" 2>/dev/null)"
 
-# --- The heartbeat carries the updater verdict (agent-ops#603) ----------------
-# lib/updater-health.sh's own suite (test/updater-health.test.sh) covers what
-# the verdict says; what belongs here is that a ledger deploy/docker/
-# watchtower-pre-update.sh wrote reaches the heartbeat, keyed by the
-# container's own $HOSTNAME rather than NODE_NAME — the two need not match —
-# and that the raw ledger itself does not replicate. Two entries, not one
-# (agent-ops#1071): `updater_status` now reads liveness first, off the
-# ledger's own newest entry, so a single entry old enough to prove "stuck"
-# is also old enough to read null outright — the fixture needs a poll
-# recent enough to stay live *and* a first allow old enough to be stuck,
-# the same shape a container watchtower is still polling actually writes.
-# Both entries also carry `started` (agent-ops#1072), matching this test
-# process's own reading of PID 1's start time (field 22 of /proc/1/stat, the
-# same field the hook stamps) — `updater_status` inside the pushed subshell
-# reads the same value back (no sixth argument passed here, exactly as
-# state-sync.sh's own call site never passes one), so the fixture is read as
-# genuinely this container's own unbroken run, never a foreign generation's.
-own_started="$(awk '{ sub(/^.*\) /, ""); print $20 }' /proc/1/stat)"
-mkdir -p "$state/updater-ledger"
-{
-  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
-    "$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
-  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
-    "$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
-} > "$state/updater-ledger/updater-host.jsonl"
-sync_as "$active_home" active push HOSTNAME=updater-host >/dev/null
-assert_eq "the updater-carrying push exits 0" "0" "$?"
-updater_pushed="$tmp_dir/pushed-updater"
-git clone --quiet --branch nodes/active-node "$remote" "$updater_pushed"
 assert_eq "a container that never rolled after an allow is published as stuck" "stuck" \
-  "$(jq -r '.updater.status' "$updater_pushed/heartbeat.json" 2>/dev/null)"
+  "$(jq -r '.updater.status' "$drift_pushed/heartbeat.json" 2>/dev/null)"
 assert_eq "the raw ledger does not replicate" "0" \
-  "$(test -e "$updater_pushed/updater-ledger" && echo 1 || echo 0)"
+  "$(test -e "$drift_pushed/updater-ledger" && echo 1 || echo 0)"
 
 # --- A second push amends rather than accumulating history ---
 printf '{"ts":"2026-07-20T01:00:00Z","event":"cycle-end"}\n' >> "$state/log.jsonl"
@@ -933,14 +938,23 @@ assert_eq "and no log-repaired event appears" "0" \
 # and --enable now attempt (requirement 2.3a) go to a stub that fails like an
 # unreachable state repo — never to the real one — and the local switch keeps
 # working regardless, which is exactly the degraded mode being asserted here.
+# DASHBOARD_GH_CMD is pinned the same way: both actions end in
+# lib/manage.sh's refresh_dashboard, which shells out to the real
+# publish-dashboard.sh — unstubbed, that script reads this repository's own
+# (real) config.json and makes real `gh` calls against every configured repo,
+# which is no part of what this section asserts and, unlike the fleet-flag
+# stub above, was costing minutes rather than milliseconds. Stubbed, its `gh`
+# calls fail immediately like the offline path they are standing in for, and
+# refresh_dashboard already swallows the failure (`|| true`) exactly as it
+# does for a real node with no network.
 cycle_home="$(new_node cycle-node)"
 env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
-  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false \
+  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false DASHBOARD_GH_CMD=/bin/false \
   "$SCRIPT_DIR/agent-cycle.sh" --disable "state-sync test" >/dev/null 2>&1
 assert_contains "switch events carry the node's name" '"node":"cycle-node"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
 env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
-  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false \
+  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false DASHBOARD_GH_CMD=/bin/false \
   "$SCRIPT_DIR/agent-cycle.sh" --enable >/dev/null 2>&1
 assert_contains "the enable is logged too" '"event":"enabled"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"

@@ -693,6 +693,55 @@ run_node() {  # run_node <home> <script> [args…]
     "$SCRIPT_DIR/$script" "$@"
 }
 
+# direct_enable HOME [--this-node]
+# The state-only equivalent of `agent-cycle.sh --enable`/`--enable
+# --this-node`: clears the local record and, unless --this-node, the shared
+# fleet flag too (mirroring lib/manage.sh's `enable)` branch — a plain
+# --enable always attempts the fleet delete when a state repo is configured,
+# whether or not there was a local record to clear).
+#
+# Used only where a run_node --enable exists purely to reset fleet/node state
+# for a *later* assertion, and nothing checks this step's own output, exit
+# code or log — --enable's CLI wiring (the message it prints, the log event,
+# refresh_dashboard) is already exercised by the real --enable subprocess
+# calls elsewhere in this file, so re-paying a full script spawn here would
+# prove nothing this file does not already prove.
+direct_enable() {
+  local home="$1" this_node="${2:-}" state_dir
+  state_dir="$home/.local/state/poetic-agents"
+  toggle_clear "$state_dir" >/dev/null
+  if [[ "$this_node" != "--this-node" ]]; then
+    fleet_flag_delete "$slug" "$state_dir" disabled >/dev/null 2>&1 || true
+  fi
+}
+
+# direct_disable HOME REASON SPEC MODE [--this-node]
+# The state-only equivalent of `agent-cycle.sh --disable`/`--drain` (MODE is
+# "stop" or "drain"), --this-node included: writes the local record and,
+# unless --this-node, publishes the identical record as the fleet flag too
+# (mirroring lib/manage.sh's `disable)`/`drain)` branches, which both tag the
+# local record's scope "fleet" and publish it whenever a state repo is
+# configured and --this-node was not given).
+#
+# Same justification as direct_enable: only for a run_node --disable/--drain
+# that exists to put a node into a known state for a later assertion, with no
+# assertion reading this step's own output. `by`/`actor` are cosmetic here —
+# no assertion this function replaces inspects them — chosen only to look
+# like a real record if a failure ever prints one for debugging.
+direct_disable() {
+  local home="$1" reason="$2" spec="$3" mode="$4" this_node="${5:-}"
+  local state_dir scope rec
+  state_dir="$home/.local/state/poetic-agents"
+  scope=fleet
+  [[ "$this_node" == "--this-node" ]] && scope=node
+  rec="$(toggle_disable "$state_dir" "$reason" "$spec" 4 "test-setup pid $$" \
+    "$(basename "$home")" manual "$scope" "$mode")"
+  if [[ "$scope" == "fleet" ]]; then
+    fleet_flag_write "$slug" disabled "$rec" "fleet: test setup" "$state_dir" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 a_home="$(new_home fleet-node-a)"
 b_home="$(new_home fleet-node-b)"
 a_log="$a_home/.local/state/poetic-agents/log.jsonl"
@@ -752,7 +801,10 @@ assert_contains "and reports the fleet flag delete as ok" '"fleet_flag":"ok"' \
 # but the fleet flag's own state is unconfirmed, and the operator must be
 # warned rather than told the fleet switch is clear.
 c_home="$(new_home fleet-node-c)"
-run_node "$c_home" agent-cycle.sh --disable "e2e unconfirmed-clear setup" --for forever >/dev/null 2>&1
+# Setup only: nothing below asserts anything about this write itself, only
+# about the --enable that follows it, so it is a direct record write rather
+# than a real agent-cycle.sh subprocess (see direct_disable's own header).
+direct_disable "$c_home" "e2e unconfirmed-clear setup" forever stop
 rm -f "$gh_backing/fleet/disabled.json"
 unconfirmed_enable_out="$(GH_STUB_MODE=repo-404 run_node "$c_home" agent-cycle.sh --enable 2>&1)"
 assert_eq "--enable still exits cleanly when the fleet flag could not be confirmed cleared" "0" "$?"
@@ -854,7 +906,8 @@ assert_contains "so a plain --enable resumes the whole fleet" \
 
 # A node carrying both a node-scoped disable and the (still-set) fleet switch
 # stays down when only the node-scoped one is cleared.
-run_node "$a_home" agent-cycle.sh --disable "editing again" --this-node --for 1h >/dev/null 2>&1
+# Setup only: only the --status call right below is asserted on.
+direct_disable "$a_home" "editing again" 1h stop --this-node
 
 # With both set, `--status` has to spell out the asymmetry rather than
 # reporting two disables and leaving the operator to guess which `--enable`
@@ -873,7 +926,8 @@ assert_eq "a node under both switches exits cleanly" "0" "$?"
 assert_contains "and stands down for its own node-scoped switch first" \
   '"reason":"disabled:' "$(cat "$a_log" 2>/dev/null)"
 
-run_node "$a_home" agent-cycle.sh --enable --this-node >/dev/null 2>&1
+# Setup only: the cycle run right below is what is asserted on.
+direct_enable "$a_home" --this-node
 rm -f "$a_log"
 run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
 assert_eq "clearing only the node-scoped switch still exits cleanly" "0" "$?"
@@ -887,7 +941,9 @@ fleet_flag_delete "$slug" "$fs_a" disabled >/dev/null
 # A node-scoped disable still expires on its own TTL, exactly like the fleet
 # one — --this-node changes only which levels a write reaches, never how a
 # record already written decides it has lapsed.
-TOGGLE_NOW_EPOCH=1784289600 run_node "$a_home" agent-cycle.sh --disable "editing" --this-node --for 1h >/dev/null 2>&1
+# Setup only (clock already pinned to 1784289600, lib/toggle.sh's own
+# TOGGLE_NOW_EPOCH): the cycle run below, past the TTL, is what is asserted.
+direct_disable "$a_home" "editing" 1h stop --this-node
 rm -f "$a_log"
 TOGGLE_NOW_EPOCH=$(( 1784289600 + 3900 )) run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
 assert_eq "a cycle past a node-scoped disable's TTL exits cleanly" "0" "$?"
@@ -1027,8 +1083,9 @@ assert_eq "a record with no scope reads as node-scoped" "node" \
 assert_eq "and toggle_switch_summary defaults it the same way" "node" \
   "$(jq -r '.scope' <<<"$(toggle_switch_summary "$a_home/.local/state/poetic-agents")")"
 
-# Back to the baseline the limit tests below assume: nothing set at either level.
-run_node "$a_home" agent-cycle.sh --enable >/dev/null 2>&1
+# Back to the baseline the limit tests below assume: nothing set at either
+# level. Setup only — no assertion follows this directly.
+direct_enable "$a_home"
 
 # A usage limit published by one node stands another node down until resume_at.
 fleet_limit_publish "$slug" "$fs_a" "2030-01-01T00:00:00Z" "monthly-spend" true node-a
@@ -1188,8 +1245,10 @@ assert_contains "--status reports DRAINING for a drain record" "switch:   DRAINI
 assert_not_contains "and never DISABLED, which a stop alone reads as" "switch:   DISABLED" "$drain_status_out"
 
 # Loosening a stop into a drain is refused outright — only --enable may loosen.
-run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
-run_node "$d_home" agent-cycle.sh --disable "full stop" --for 4h >/dev/null 2>&1
+# Both lines above the refusal attempt are setup only: nothing checks their
+# own output, only the state they leave behind for the refused --drain below.
+direct_enable "$d_home"
+direct_disable "$d_home" "full stop" 4h stop
 drain_over_stop_out="$(run_node "$d_home" agent-cycle.sh --drain "trying to loosen" 2>&1)"
 assert_eq "--drain over an active --disable is a usage error" "64" "$?"
 assert_contains "and names --enable as the way out" "run --enable first" "$drain_over_stop_out"
@@ -1198,8 +1257,11 @@ assert_eq "the stop record is untouched by the refused --drain" "stop" \
 assert_eq "and its reason is untouched too" "full stop" "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
 
 # --disable over an active drain tightens it to a full stop immediately.
-run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
-run_node "$d_home" agent-cycle.sh --drain "clearing the backlog" --for 4h >/dev/null 2>&1
+# The two lines above the real --disable below are setup only, in the same
+# sense as above: they exist to leave d_home mid-drain for the real call to
+# tighten, and nothing checks their own output.
+direct_enable "$d_home"
+direct_disable "$d_home" "clearing the backlog" 4h drain
 run_node "$d_home" agent-cycle.sh --disable "actually need it fully stopped" >/dev/null 2>&1
 assert_eq "--disable over an active drain tightens it to mode stop" "stop" \
   "$(jq -r '.mode' "$d_switch" 2>/dev/null)"
@@ -1208,8 +1270,10 @@ assert_eq "and overwrites the reason, like an ordinary re-disable" \
 
 # --drain over an active drain extends it — a fresh disabled_at, same as
 # re-issuing --disable over a live stop already does.
-run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
-run_node "$d_home" agent-cycle.sh --drain "first drain" --for 1h >/dev/null 2>&1
+# Setup only, as above: the extend attempt right below is the real assertion
+# target, and needs only a live drain already in place to extend.
+direct_enable "$d_home"
+direct_disable "$d_home" "first drain" 1h drain
 run_node "$d_home" agent-cycle.sh --drain "extending the drain" --for 2h >/dev/null 2>&1
 assert_eq "extending a drain succeeds" "0" "$?"
 assert_eq "the reason is updated" "extending the drain" "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
@@ -1222,15 +1286,18 @@ assert_eq "--enable clears a drain record" "0" "$(test -f "$d_switch" && echo 1 
 
 # review-cycle.sh stands down under a drain exactly as under a stop (R2a):
 # `.state == "disabled"` already reads true regardless of mode, so this
-# asserts the observable behaviour rather than the (absent) branch.
-run_node "$d_home" agent-cycle.sh --drain "reviewer should stand down too" --for 1h >/dev/null 2>&1
+# asserts the observable behaviour rather than the (absent) branch. The
+# --drain setup below is not itself asserted on — only the review-cycle.sh
+# run right after is.
+direct_disable "$d_home" "reviewer should stand down too" 1h drain
 run_node "$d_home" review-cycle.sh >/dev/null 2>&1
 assert_eq "a review cycle exits cleanly under a drain" "0" "$?"
 assert_contains "and logs a review-stand-down" '"event":"review-stand-down"' \
   "$(cat "$d_review_log" 2>/dev/null)"
 assert_contains "naming drain mode in its reason, not a bare disabled" \
   "drain mode" "$(cat "$d_review_log" 2>/dev/null)"
-run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
+# Cleanup only: nothing about d_home is asserted on again below.
+direct_enable "$d_home"
 
 # A *peer's* fleet-wide stop is a stop this node may not loosen either, even
 # though it has no local record of its own to read: an unmodified --disable
@@ -1260,8 +1327,9 @@ assert_eq "--drain --this-node under a fleet stop is allowed" "drain" \
   "$(jq -r '.mode' "$q_switch" 2>/dev/null)"
 assert_eq "and leaves the fleet flag a full stop" "stop" \
   "$(jq -r '.mode' "$gh_backing/fleet/disabled.json" 2>/dev/null)"
-run_node "$q_home" agent-cycle.sh --enable --this-node >/dev/null 2>&1
-run_node "$p_home" agent-cycle.sh --enable >/dev/null 2>&1
+# End-of-file cleanup only: nothing after this reads either node's state.
+direct_enable "$q_home" --this-node
+direct_enable "$p_home"
 
 printf '\n'
 if (( failures > 0 )); then

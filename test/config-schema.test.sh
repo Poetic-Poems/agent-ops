@@ -132,15 +132,40 @@ assert_rejected() {
 # silently inherit it (TD-PPagop-26082201). A fixture that wants one of these
 # variables set has to say so itself, by setting it before calling
 # assert_doctor/assert_doctor_shipped.
+#
+# A handful of call sites below build byte-identical fixtures on purpose —
+# most visibly the six assert_doctor_shipped cases that pass the shipped
+# config.json through untouched, each to check a different substring of the
+# same run — and on this host a single doctor.sh invocation against that
+# fixture costs several real seconds (it walks the fleet's own accumulated
+# log history under state_dir, which for the shipped config is this
+# installation's real one). The env clearing above and the --offline flag are
+# the same for every call here, so doctor.sh's output is otherwise a pure
+# function of the fixture's content; _DOCTOR_CACHE_OUT/_DOCTOR_CACHE_STATUS
+# key that output by the fixture file's own content hash, so a repeat of the
+# exact same fixture reuses the prior run's real output instead of spawning
+# doctor.sh again. This changes nothing about what is asserted — each call
+# site still grades its own substring against a real doctor.sh run, just not
+# always a freshly-spawned one — so it must never be reached for a fixture
+# that differs by even one byte from one already cached.
+declare -A _DOCTOR_CACHE_OUT _DOCTOR_CACHE_STATUS
 _assert_doctor_check() {
-  local desc="$1" expected_exit="$2" expect="$3" fixture="$4" out status
-  # Not --quiet: several of the rules below are asserted through the `ok` line
-  # they print, and a check that passes silently cannot be told from one that
-  # never ran.
-  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID \
-    -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH \
-    bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$fixture" 2>&1)"
-  status=$?
+  local desc="$1" expected_exit="$2" expect="$3" fixture="$4" out status key
+  key="$(md5sum "$fixture" | cut -d' ' -f1)"
+  if [[ -v "_DOCTOR_CACHE_STATUS[$key]" ]]; then
+    out="${_DOCTOR_CACHE_OUT[$key]}"
+    status="${_DOCTOR_CACHE_STATUS[$key]}"
+  else
+    # Not --quiet: several of the rules below are asserted through the `ok`
+    # line they print, and a check that passes silently cannot be told from
+    # one that never ran.
+    out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID \
+      -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH \
+      bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$fixture" 2>&1)"
+    status=$?
+    _DOCTOR_CACHE_OUT[$key]="$out"
+    _DOCTOR_CACHE_STATUS[$key]="$status"
+  fi
   if (( status != expected_exit )); then
     printf 'FAIL - %s\n     expected exit %s, got %s\n     output: %s\n' \
       "$desc" "$expected_exit" "$status" "$out"
