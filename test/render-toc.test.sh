@@ -200,6 +200,23 @@ fi
 assert_contains "the duplicate-markers error names the file" "$dup_out" "README.md"
 mv "$tmp/README.md.bak" "$tmp/README.md"
 
+# --- Markers present exactly once each, but in reversed order ---
+cp "$tmp/README.md" "$tmp/README.md.bak"
+awk '
+  /^<!-- toc:start -->/ { start = $0; next }
+  /^<!-- toc:end -->/ { print; print start; next }
+  { print }
+' "$tmp/README.md" > "$tmp/README.md.tmp" && mv "$tmp/README.md.tmp" "$tmp/README.md"
+reversed_out="$(run_script --check 2>&1)"
+reversed_rc=$?
+if (( reversed_rc != 0 )); then
+  pass "--check refuses a file with reversed markers"
+else
+  fail "--check refuses a file with reversed markers (got rc=0)"
+fi
+assert_contains "the reversed-markers error names the file" "$reversed_out" "README.md"
+mv "$tmp/README.md.bak" "$tmp/README.md"
+
 # --- A correctly paired region is unaffected: --check is clean afterwards ---
 run_script --check >/dev/null 2>&1
 final_check_rc=$?

@@ -105,16 +105,27 @@ generate_toc() {
 }
 
 # True when a file contains exactly one <!-- toc:start --> and exactly one
-# <!-- toc:end --> marker. A file with neither, only one of the pair, or more
-# than one of either has no well-formed region to render into — the awk pass
-# below would otherwise copy such a file through unchanged, making
-# regeneration a silent no-op and --check a false pass.
+# <!-- toc:end --> marker, with the start marker on an earlier line than the
+# end marker. A file with neither, only one of the pair, or more than one of
+# either has no well-formed region to render into — the awk pass below would
+# otherwise copy such a file through unchanged, making regeneration a silent
+# no-op and --check a false pass. A file with exactly one of each but in
+# reversed order is just as malformed: the awk pass below only recognises a
+# toc:end line reached *after* a toc:start line, so a reversed pair would
+# have it consume every line to the end of the file looking for one,
+# silently discarding whatever lay between the markers.
 markers_ok() {
   local file="$1"
   local start_count end_count
   start_count=$(grep -c '^<!-- toc:start -->$' "$file" || true)
   end_count=$(grep -c '^<!-- toc:end -->$' "$file" || true)
-  (( start_count == 1 && end_count == 1 ))
+  if (( start_count != 1 || end_count != 1 )); then
+    return 1
+  fi
+  local start_line end_line
+  start_line=$(grep -n '^<!-- toc:start -->$' "$file" | cut -d: -f1)
+  end_line=$(grep -n '^<!-- toc:end -->$' "$file" | cut -d: -f1)
+  (( start_line < end_line ))
 }
 
 # Render ToC for a file between markers
