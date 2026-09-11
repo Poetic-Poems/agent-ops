@@ -161,13 +161,30 @@ limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 enabler_assignee="$(cfg '.enabler_assignee')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 crash_loop_repo="$(cfg '.crash_loop_repo')"
-pager_repo="$(cfg '.pager_repo')"
 repos_json="$(cfg_json '.repos')"
+
+# Where the pager's pages are. This *must* be resolved the same way the pager
+# itself resolves it, and the pager's own resolution is the one in
+# `scripts/publish-dashboard.sh` beside its `pager_evaluate` call: an empty
+# `pager_repo` falls back to `crash_loop_repo`, because both name "the
+# pipeline's own repository" and an installation that has set the one for
+# crash-loop escalations wants the same repository for pages absent a reason
+# to split them.
+#
+# Reading it bare here was a real defect, not a missing configuration: this
+# installation leaves `pager_repo` unset and the pager files every `pw::pager`
+# issue into `crash_loop_repo`, so a Monitor reading the bare key looked at
+# nothing, found no pages, and reported M15's triage as vacuous while pages
+# were actively being filed a repository away. The Monitor is the consumer of
+# pages (M15); a consumer that reads a different repository from the one the
+# producer writes to is not a consumer at all.
+pager_repo="$(cfg '.pager_repo')"
+[[ -n "$pager_repo" ]] || pager_repo="$(cfg '.crash_loop_repo')"
 
 # Where an escalation or a decision record is filed. `crash_loop_repo` is the
 # installation's declared escalation repository (lib/labels.sh's `escalation`
-# role names it); `pager_repo` is the same thing for the pager and is the
-# fallback for an installation that configured only that one. Both empty is
+# role names it); the pager repository resolved above is the fallback for an
+# installation that configured only that one. Both empty is
 # not a fault — it is an installation that has nowhere to file, which the
 # report says in as many words rather than this script failing over
 # (lib/pager.sh's own empty-`pager_repo` reasoning, applied here).
