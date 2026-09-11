@@ -890,6 +890,7 @@ and the schema must carry every one of them.
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy. |
+| `crash_loop_min_clear_minutes` | 30 min | Requirement 2.7's own retirement hysteresis: a Co-Ordinator-class escalation's clearing success must be at least this many minutes old, with the same detail never having resumed since, before `crash_loop_retire_resolved` closes the issue. `30` is two `schedule.cycle_interval_minutes`-default cycles, long enough for a same-detail recurrence to reach this node's own peer-synced union before the success is trusted. `0` disables the hysteresis outright, retiring on the first...[continued below](#extended-notes-crash_loop_min_clear_minutes) |
 | `escalation_webhook_url` | *(unset)* | An alias for `notify_webhook_url` (requirement 2m), accepted for one release when `notify_webhook_url` is itself empty. `scripts/doctor.sh` warns whenever this key is set. Empty contributes nothing. |
 | `notify_webhook_url` | *(unset)* | The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own...[continued below](#extended-notes-notify_webhook_url) |
 | `notify_events` | `["escalation", "pager", "fleet-standdown"]` | Which of the three notify classes (requirement 2m) `notify_post` sends: `escalation`, `pager`, `fleet-standdown`. Default is all three. An event whose class is absent here is dropped before `notify_webhook_url` is read — never sent, never logged as suppressed. |
@@ -1147,6 +1148,10 @@ D18 Stage 3 (requirement 8d, `lib/landing.sh`'s `landing_eligible`, agent-ops#72
 ### Extended notes: `landing_cool_off_hours`
 
 D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — the compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
+
+### Extended notes: `crash_loop_min_clear_minutes`
+
+Requirement 2.7's own retirement hysteresis: a Co-Ordinator-class escalation's clearing success must be at least this many minutes old, with the same detail never having resumed since, before `crash_loop_retire_resolved` closes the issue. `30` is two `schedule.cycle_interval_minutes`-default cycles, long enough for a same-detail recurrence to reach this node's own peer-synced union before the success is trusted. `0` disables the hysteresis outright, retiring on the first nameable success exactly as before this key existed.
 
 ### Extended notes: `notify_webhook_url`
 
@@ -4355,8 +4360,13 @@ implements.
    earlier cycle or it did not, and any union snapshot since would show it
    either way. For each `crash-loop-escalated` event not yet followed by a
    `crash-loop-retired` event naming the same `issue_number`
-   (`crash_loop_open_escalations`), a `crash_loop_reverify` finding the run
-   broken *and* a `crash_loop_last_success_since` naming the Co-Ordinator
+   (`crash_loop_open_escalations`) — when more than one `crash-loop-escalated`
+   event names the same `issue_number` (a rebind: `create_escalation_issue`'s
+   own open-issue dedup keys on the item ref and label alone, never on
+   `detail`/`first_ts`, so a run reusing a still-open issue logs a second
+   such event against it, agent-ops#1140), the one judged is the newest by
+   `ts` — a `crash_loop_reverify` finding the run broken *and* a
+   `crash_loop_last_success_since` naming the Co-Ordinator
    success that broke it close the issue with a comment naming that success,
    and log `crash-loop-retired`; a run still active leaves the issue
    untouched. Both conditions are required, and the second is the load-
@@ -4396,6 +4406,54 @@ implements.
      reverify` alone cannot see this — it only refuses to retire the *exact*
      run an open issue names (same `detail` **and** `first_ts`), and the new
      run's `first_ts` necessarily differs from the old one's.
+
+   A third and fourth guard, added for the 2026-09-05 fleet flap, stop
+   retirement from closing an issue a same-detail run is about to reclaim
+   within minutes: six escalations filed in four hours, every one the
+   identical detail, each retired within minutes of a lone fleet-wide
+   Co-Ordinator success — one node's own cycle succeeding once — before that
+   same detail resumed failing and re-crossed `crash_loop_after` as what the
+   two guards above read as a "new" run only a few cycles later. Neither
+   guard above catches this while it is happening: the reordering only
+   protects one node's own cycle, and the same-detail-active check recomputes
+   `crash_loop_verdict`, which stays silent until the resumed failures
+   themselves re-cross threshold — a ramp that took as little as two minutes
+   of fleet time, nowhere near long enough for another cycle's own
+   `crash_loop_reverify` to catch first. Retiring the instant a clearing
+   success is found is what let each flap open a fresh issue:
+   `create_escalation_issue`'s own open-issue dedup is a live query, and a
+   closed issue leaves it nothing to find.
+
+   - **`crash_loop_detail_recurred_since`** (lib/crash-loop.sh) blocks
+     retirement outright when the same `detail` has already resumed failing,
+     anywhere in `$union_log`, at or after the clearing success — whether or
+     not it has reached `crash_loop_after` again. Unconditional, not a
+     tunable: closing the issue while the very log the decision is reading
+     already contradicts the "the loop has broken" comment the close is
+     about to post is the mistake "silence must never retire an alarm"
+     always forbade, met here from the other direction.
+   - **`crash_loop_min_clear_minutes`** requires the clearing success itself
+     to be at least this many minutes older than the union snapshot's own
+     requirement-39f horizon (`log_latest_ts`, passed to
+     `crash_loop_retire_resolved` as `UNION_LOG_HORIZON`) before it is
+     trusted — a deterministic stand-in for "now" that never reads the wall
+     clock, giving a same-detail recurrence that has not yet reached this
+     node's own peer-synced union time to arrive and trip the guard above
+     instead. The default, 30, is two of `schedule.cycle_interval_minutes`'s
+     own default 15-minute firings: long enough that a same-detail
+     recurrence gets at least two more fleet-wide chances to reach this
+     node's own union before the clearing success is trusted — the
+     2026-09-05 flap's own gaps between a retirement and the next same-
+     detail failure were as short as two minutes, nowhere near enough
+     without this. `0` restores instant retirement on the first nameable
+     success, the behaviour before this key existed, for an installation
+     that would rather see every flap than wait out a window.
+
+   Together the two guards turn a flapping incident into one issue that
+   stays open and gets rebound — with a fresh `crash-loop-escalated` event
+   logged against the same `issue_number` each time, per the tie-break
+   above — across every recurrence inside the window, rather than a fresh
+   issue per flap.
 
    A `crash_loop_verdict` run whose `escalate` is `false` — the API was
    unreachable, not refusing a request — never reaches `crash_loop_escalate`
@@ -21992,7 +22050,32 @@ oblige anyone to edit a test.
    of 0 is the off switch. For `crash_loop_escalated_since`, an escalation
    event for the same detail after the run's first failure suppresses
    re-escalation, while an older one — a closed issue from a past loop —
-   does not, and a different detail never matches.
+   does not, and a different detail never matches. For
+   `crash_loop_open_escalations`, two `crash-loop-escalated` events bound to
+   the same `issue_number` (a rebind, agent-ops#1140) yield only the
+   newer-by-`ts` one's own fields, regardless of the events' order in the
+   log, while a single escalation still round-trips exactly as it always
+   did. For `crash_loop_detail_recurred_since` (the 2026-09-05 fleet flap):
+   a same-detail Co-Ordinator failure at or after a given timestamp reads as
+   a recurrence whether or not it ever reaches `crash_loop_after`; no such
+   failure, a different detail, or one strictly before the timestamp does
+   not; a failure exactly at the timestamp counts (the boundary is
+   inclusive). The same file replays the 2026-09-05 incident's own real
+   timestamps end to end: the first run's verdict names its real first
+   failure and count, a verdict computed once the clearing success is
+   already logged never fires, the second flap is on its own a genuinely new
+   threshold-crossing run, and `crash_loop_detail_recurred_since` correctly
+   reads that second flap as a recurrence of the first run's own detail
+   since its clearing success — the fact `crash_loop_retire_resolved` (lib/
+   enabler.sh) relies on to keep the first run's issue open across the flap
+   rather than closing it and forcing a fresh one. `test/crash-loop-escalate.
+   test.sh` covers that reliance directly, with `gh`/`create_escalation_issue`
+   stubbed: replaying the same incident, a clearing success younger than
+   `crash_loop_min_clear_minutes` is never retired, a same-detail failure
+   since the clearing success blocks retirement outright regardless of how
+   old that success is, a success that has genuinely held the window with no
+   recurrence is retired exactly as before, and `crash_loop_min_clear_
+   minutes` 0 restores instant retirement on the first nameable success.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
 5b. **A personal access token's own expiry is read, recorded, and escalated
