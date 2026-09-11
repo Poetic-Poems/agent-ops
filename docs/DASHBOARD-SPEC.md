@@ -958,14 +958,17 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   image's copy (#131); null if
                                             //   unreported
                          compose_reconcile: { status, at,   // what that
-                                              reason, from, //   node's own
-                                              to },         //   reconciler did
+                                              reason,       //   node's own
+                                              detail,       //   reconciler did
+                                              from, to },   //
                                             //   about that drift (2.5a):
                                             //   "in-sync", "reconciled"
                                             //   (carrying both files' SHA-256
                                             //   as `from`/`to`), "deferred"
                                             //   or "refused" (both carrying
-                                            //   `reason`); null on a node
+                                            //   `reason`, and `detail` where
+                                            //   a command's own output is
+                                            //   worth keeping); null on a node
                                             //   with no reconciler, which is
                                             //   every node until its owner's
                                             //   one enabling `up -d`

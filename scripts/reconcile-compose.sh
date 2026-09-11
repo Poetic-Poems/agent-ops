@@ -79,6 +79,8 @@ case "$status" in
       "$(jq -r '(.from // "unknown")[0:12]' <<<"$verdict")" \
       "$(jq -r '(.to // "unknown")[0:12]' <<<"$verdict")" ;;
   *)
-    printf 'reconcile-compose: %s — %s\n' "$status" "$(jq -r '.reason // "no reason recorded"' <<<"$verdict")" ;;
+    printf 'reconcile-compose: %s — %s%s\n' "$status" \
+      "$(jq -r '.reason // "no reason recorded"' <<<"$verdict")" \
+      "$(jq -r 'if .detail then " (" + .detail + ")" else "" end' <<<"$verdict")" ;;
 esac
 exit 0

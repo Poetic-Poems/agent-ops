@@ -87,7 +87,10 @@ export DOCKER_STUB_LOG="$tmp_dir/docker-calls.log"
 cat > "$bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_STUB_LOG"
-printf 'Container agent-ops-scheduler-1  Recreated\n'
+# Deliberately different on every call — compose's own last line carries
+# per-run timings, and a verdict that folded that into the field the
+# transition test compares would log one event per tick for ever.
+printf 'Container agent-ops-scheduler-1  Recreated %s.%ss\n' "$RANDOM" "$RANDOM"
 exit "${DOCKER_STUB_RC:-0}"
 EOF
 chmod +x "$bin/docker"
@@ -304,14 +307,22 @@ export DOCKER_STUB_RC
 verdict="$(run_reconcile)"
 assert_eq "a failed recreate defers rather than refusing — it is retried" \
   "deferred" "$(jq -r '.status' <<<"$verdict")"
-assert_contains "and says what docker said" "exited 1" "$(jq -r '.reason' <<<"$verdict")"
+assert_contains "and says what docker exited with" "exited 1" "$(jq -r '.reason' <<<"$verdict")"
+assert_contains "carrying docker's own last line as detail, not as the reason" \
+  "Recreated" "$(jq -r '.detail' <<<"$verdict")"
 assert_eq "the file is installed regardless, so drift alone can no longer ask" \
   "$(sha256sum "$image_file" | cut -d' ' -f1)" "$(sha256sum "$host_file" | cut -d' ' -f1)"
 assert_eq "so the retry rides on the verdict itself" "true" "$(jq -r '.pending_apply' "$marker")"
+# The retry logs no second event, although docker's output differs every run:
+# the varying half is `detail`, which the transition test does not compare.
+run_reconcile 2026-09-11T00:05:00Z >/dev/null
+run_reconcile 2026-09-11T00:10:00Z >/dev/null
+assert_eq "a repeated failure whose docker output differs is still one event" \
+  "1" "$(events_of compose-reconcile-deferred)"
 
 unset DOCKER_STUB_RC
 : > "$DOCKER_STUB_LOG"
-verdict="$(run_reconcile 2026-09-11T00:05:00Z)"
+verdict="$(run_reconcile 2026-09-11T00:15:00Z)"
 assert_eq "the next tick retries the recreate even though there is no drift left" \
   "reconciled" "$(jq -r '.status' <<<"$verdict")"
 assert_eq "and does recreate" "1" "$(docker_calls)"

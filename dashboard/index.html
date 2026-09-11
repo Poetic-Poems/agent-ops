@@ -1232,6 +1232,10 @@
   // badge, and the manual ritual in its title.
   function composeLine(n) {
     var c = n.compose, r = n.compose_reconcile, kids = [];
+    // `reason` is the stable half of a verdict and `detail` the varying one
+    // (a command's own last line); the title shows both, since a human
+    // reading a badge wants the error text the transition test cannot use.
+    var why = !r ? "" : (r.reason || "no reason recorded") + (r.detail ? " — " + r.detail : "");
     if (c && c.status && c.status !== "in-sync") {
       kids.push(c.status === "drifted"
         ? el("span", {class:"badge b-amber", text:"compose drifted",
@@ -1250,12 +1254,11 @@
     }
     if (r && r.status === "refused") {
       kids.push(el("span", {class:"badge b-amber", text:"reconcile refused",
-        title: "this node's compose reconciler will not apply the merged compose.yaml: " +
-               (r.reason || "no reason recorded") +
+        title: "this node's compose reconciler will not apply the merged compose.yaml: " + why +
                ". Nothing was applied, and nothing will be until this is dealt with by hand."}));
     } else if (r && r.status === "deferred") {
       kids.push(el("span", {class:"badge b-grey", text:"reconcile deferred",
-        title: "this node's compose reconciler is waiting: " + (r.reason || "no reason recorded") +
+        title: "this node's compose reconciler is waiting: " + why +
                ". It retries on its own every few minutes; this is the mechanism working."}));
     }
     if (!kids.length) return null;

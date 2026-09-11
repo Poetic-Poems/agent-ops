@@ -326,9 +326,14 @@ compose_reconcile_run() {
   if (( up_rc != 0 )); then
     # The file is installed and the containers are not yet created from it, so
     # the retry has to be driven by the marker rather than by drift.
+    # The docker output rides in `detail`, never in `reason`: `reason` is what
+    # the transition test compares one tick against the next, and compose's
+    # own last line carries timings and progress that differ every run — in
+    # `reason` it would make every retry a fresh transition and log one event
+    # per tick, the same trap the lock description's age already sprang once.
     _compose_reconcile_settle "$state_dir" "$now" deferred \
-      "docker compose up -d exited $up_rc ($(printf '%s' "$up_log" | tail -n 1)) — the file is installed, retrying the recreate on the next tick" \
-      true
+      "docker compose up -d exited $up_rc — the file is installed, retrying the recreate on the next tick" \
+      true "" "" "$(printf '%s' "$up_log" | tail -n 1)"
     return 0
   fi
 
@@ -359,15 +364,20 @@ _compose_reconcile_install() {  # <image-file> <host-file> <expected-sha>
 # or a different reason for the same status. A tick every few minutes must not
 # write eight identical deferrals through one long cycle; what a reader needs
 # is when the node entered this state and why.
-_compose_reconcile_settle() {  # <state-dir> <now> <status> <reason> [pending] [from] [to]
-  local state_dir="$1" now="$2" status="$3" reason="$4" pending="${5:-false}" from="${6:-}" to="${7:-}"
+#
+# `detail` is recorded but never compared: it is for whatever varies run to
+# run — a command's own last line of output — which in `reason` would defeat
+# the whole transition test.
+_compose_reconcile_settle() {  # <state-dir> <now> <status> <reason> [pending] [from] [to] [detail]
+  local state_dir="$1" now="$2" status="$3" reason="$4" pending="${5:-false}" from="${6:-}" to="${7:-}" detail="${8:-}"
   local marker="$state_dir/.compose-reconcile.json" previous="" prev_status="" prev_reason=""
   local verdict=""
 
   verdict="$(jq -nc --arg at "$now" --arg s "$status" --arg r "$reason" \
-    --argjson p "${pending:-false}" --arg from "$from" --arg to "$to" \
+    --argjson p "${pending:-false}" --arg from "$from" --arg to "$to" --arg d "$detail" \
     '{status: $s, at: $at}
      + (if $r  == "" then {} else {reason: $r} end)
+     + (if $d  == "" then {} else {detail: $d} end)
      + (if $to == "" then {} else {from: (if $from == "" then null else $from end), to: $to} end)
      + (if $p then {pending_apply: true} else {} end)' 2>/dev/null)" || return 0
   [[ -n "$verdict" ]] || return 0

@@ -3820,10 +3820,13 @@ implements.
    recorded — append `compose-reconciled`, `compose-reconcile-deferred` or
    `compose-reconcile-refused` to `log.jsonl` through `lib/log-event.sh`'s
    envelope with `cycle: null`; an unchanged verdict appends nothing, and
-   `in-sync` never appends at all. A deferral's recorded reason names the lock,
-   the container that wrote it and when, and carries no age: the reason is the
-   key the transition test compares, so a live age in it would make every one
-   of a long cycle's ticks a transition.
+   `in-sync` never appends at all. **Only `status` and `reason` are compared**
+   for that test, and both are stable while the state is: a deferral's reason
+   names the lock, the container that wrote it and when, and carries no age,
+   and a failed recreate's reason names the exit status alone. Anything that
+   varies run to run — `docker compose`'s own last line of output — is
+   recorded beside them in `detail`, which is never compared, because in
+   `reason` it would make every tick of a long deferral a fresh transition.
 
    **Two things it does not do.** It does not close the window between reading
    the lock and Compose stopping a container: a cycle that starts inside those
@@ -20254,7 +20257,10 @@ oblige anyone to edit a test.
    `review-lock.json`; and a second and third deferral for the same reason log
    no further event. A `docker compose up -d` that exits non-zero reads
    `deferred` with `pending_apply`, having already installed the file, and the
-   next tick retries the recreate although no drift remains. `compose.yaml`
+   next tick retries the recreate although no drift remains — and two further
+   failed ticks whose stubbed `docker` prints a different last line each time
+   still log one event between them, the stub varying deliberately because
+   that line lives in `detail` and only `reason` is compared. `compose.yaml`
    declares the service in the `auto-update` profile with the socket, the
    same-absolute-path project mount, `network_mode: none`, neither shared
    anchor and no secret of its own — the lines through which the reconciler is
