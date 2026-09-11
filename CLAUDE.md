@@ -40,21 +40,34 @@ requirements, so bring the spec in line first, then the affected prompt(s).
 
 ## Generated regions
 
-`README.md`'s two configuration tables and each as-built spec's own
-(`docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s, `docs/REVIEW-PIPELINE-SPEC.md`'s)
-are rendered from `config.schema.json` by `scripts/render-config-table.sh` —
-four `<!-- config-table:start id=... -->` … `<!-- config-table:end -->`
-regions in total, each paired with a `<!-- config-table:notes id=... -->` …
-`<!-- config-table:notes-end -->` region below the table for notes too long
-to fit a cell. Never hand-edit a row inside either region: edit the owning
-key's `description`, `x-docs.readme`/`x-docs.spec` or `x-docs.value` in the
-schema instead, then run `scripts/render-config-table.sh` (no arguments) to
-regenerate every region and `scripts/render-config-table.sh --check` before
-you push — `.github/workflows/config-table.yml` runs the same check on every
-pull request, and a hand-edit fails it even when the wording was right,
-because only the schema copy survives a regeneration. Each region's start
-marker carries this same contract inline, so it reads even to someone who
-reaches the row directly and never opened this file.
+Two types of generated regions exist in this repository:
+
+1. **Configuration tables** — `README.md`'s two configuration tables and each
+   as-built spec's own (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s,
+   `docs/REVIEW-PIPELINE-SPEC.md`'s) are rendered from `config.schema.json`
+   by `scripts/render-config-table.sh` — four `<!-- config-table:start
+   id=... -->` … `<!-- config-table:end -->` regions in total, each paired
+   with a `<!-- config-table:notes id=... -->` … `<!-- config-table:notes-end
+   -->` region below the table for notes too long to fit a cell. Never
+   hand-edit a row inside either region: edit the owning key's `description`,
+   `x-docs.readme`/`x-docs.spec` or `x-docs.value` in the schema instead,
+   then run `scripts/render-config-table.sh` (no arguments) to regenerate
+   every region and `scripts/render-config-table.sh --check` before you push
+   — `.github/workflows/config-table.yml` runs the same check on every pull
+   request, and a hand-edit fails it even when the wording was right, because
+   only the schema copy survives a regeneration. Each region's start marker
+   carries this same contract inline, so it reads even to someone who reaches
+   the row directly and never opened this file.
+
+2. **Table of contents** — `README.md` and `docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+   have a table of contents between `<!-- toc:start -->` … `<!-- toc:end -->`
+   markers, extracted from their `##` and `###` headings by
+   `scripts/render-toc.sh`. Never hand-edit the content between these markers:
+   edit headings instead, then run `scripts/render-toc.sh` (no arguments) to
+   regenerate and `scripts/render-toc.sh --check` before you push —
+   `.github/workflows/toc.yml` runs the same check on every pull request. The
+   same contract applies: a hand-edit fails the check even when the wording
+   was right, because only the rendered copy survives a regeneration.
 
 ## Branch workflow
 

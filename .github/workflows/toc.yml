@@ -1,0 +1,29 @@
+name: Table of Contents check
+
+# Gates the generated table of contents in README.md and
+# docs/IMPLEMENTATION-PIPELINE-SPEC.md: both must be exactly what
+# scripts/render-toc.sh renders from their ## and ### headings, or a heading
+# can drift out of the ToC (see the script's own header). Modelled on
+# config-table.yml and tech-debt-register.yml.
+#
+# Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
+# runs with write-scoped secrets, and ungated by `paths:` — a heading edit
+# without a matching ToC edit both need catching, and either can touch files
+# outside a narrow path filter.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  toc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check generated table of contents is fresh
+        run: scripts/render-toc.sh --check

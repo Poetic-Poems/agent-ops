@@ -11,6 +11,71 @@ accurate (see `CLAUDE.md`, "As-built specifications"). Where this document is
 silent, follow the conventions of the two target repositories (their
 `CLAUDE.md` files are binding on any agent working inside them).
 
+<!-- toc:start -->
+- [About this document](#about-this-document)
+- [What it is](#what-it-is)
+- [Actors](#actors)
+- [Environment (verified 2026-07-20)](#environment-verified-2026-07-20)
+  - [The node image (`deploy/docker/`)](#the-node-image-deploydocker)
+  - [The node stack (`deploy/docker/compose.yaml`)](#the-node-stack-deploydockercomposeyaml)
+  - [Target repositories](#target-repositories)
+- [Configuration](#configuration)
+  - [Extended notes: `repos`](#extended-notes-repos)
+  - [Extended notes: `state_repo`](#extended-notes-state_repo)
+  - [Extended notes: `cycles_retained`](#extended-notes-cycles_retained)
+  - [Extended notes: `state_local_cycles_retained`](#extended-notes-state_local_cycles_retained)
+  - [Extended notes: `state_local_streams_retained`](#extended-notes-state_local_streams_retained)
+  - [Extended notes: `approver_restale_escalate_after_hours`](#extended-notes-approver_restale_escalate_after_hours)
+  - [Extended notes: `enabler_assignee`](#extended-notes-enabler_assignee)
+  - [Extended notes: `escalation_autonomy`](#extended-notes-escalation_autonomy)
+  - [Extended notes: `escalation_adjudication_max_passes`](#extended-notes-escalation_adjudication_max_passes)
+  - [Extended notes: `standing_decisions_file`](#extended-notes-standing_decisions_file)
+  - [Extended notes: `decision_veto_window_hours`](#extended-notes-decision_veto_window_hours)
+  - [Extended notes: `escalation_refile_after_hours`](#extended-notes-escalation_refile_after_hours)
+  - [Extended notes: `needs_refinement_label`](#extended-notes-needs_refinement_label)
+  - [Extended notes: `refined_label`](#extended-notes-refined_label)
+  - [Extended notes: `refinement_policy`](#extended-notes-refinement_policy)
+  - [Extended notes: `label_prefix`](#extended-notes-label_prefix)
+  - [Extended notes: `prompt_overrides`](#extended-notes-prompt_overrides)
+  - [Extended notes: `pr_label`](#extended-notes-pr_label)
+  - [Extended notes: `tech_debt_branch_prefix`](#extended-notes-tech_debt_branch_prefix)
+  - [Extended notes: `coordinator_prompt_max_bytes`](#extended-notes-coordinator_prompt_max_bytes)
+  - [Extended notes: `claim_ttl_hours`](#extended-notes-claim_ttl_hours)
+  - [Extended notes: `abandoned_draft_after_hours`](#extended-notes-abandoned_draft_after_hours)
+  - [Extended notes: `human_nudge_idle_hours`](#extended-notes-human_nudge_idle_hours)
+  - [Extended notes: `merge_queue_dequeue_notice_max_age_hours`](#extended-notes-merge_queue_dequeue_notice_max_age_hours)
+  - [Extended notes: `merge_autonomy`](#extended-notes-merge_autonomy)
+  - [Extended notes: `merge_budget_per_day`](#extended-notes-merge_budget_per_day)
+  - [Extended notes: `merge_autonomy_routine_sources`](#extended-notes-merge_autonomy_routine_sources)
+  - [Extended notes: `merge_autonomy_protected_paths`](#extended-notes-merge_autonomy_protected_paths)
+  - [Extended notes: `merge_autonomy_routine_complexity`](#extended-notes-merge_autonomy_routine_complexity)
+  - [Extended notes: `landing_cool_off_hours`](#extended-notes-landing_cool_off_hours)
+  - [Extended notes: `crash_loop_min_clear_minutes`](#extended-notes-crash_loop_min_clear_minutes)
+  - [Extended notes: `notify_webhook_url`](#extended-notes-notify_webhook_url)
+  - [Extended notes: `min_free_memory_bytes`](#extended-notes-min_free_memory_bytes)
+  - [Extended notes: `host_budget_enforce`](#extended-notes-host_budget_enforce)
+  - [Extended notes: `host_budget_reserved_memory_bytes`](#extended-notes-host_budget_reserved_memory_bytes)
+  - [Extended notes: `host_budget_reserved_cpus`](#extended-notes-host_budget_reserved_cpus)
+  - [Extended notes: `none_selected_recheck_hours`](#extended-notes-none_selected_recheck_hours)
+- [The Landing Gate](#the-landing-gate)
+- [Requirements](#requirements)
+  - [The Script (`agent-cycle.sh`)](#the-script-agent-cyclesh)
+  - [Every stage (untrusted external content)](#every-stage-untrusted-external-content)
+  - [The Co-Ordinator (selection only)](#the-co-ordinator-selection-only)
+  - [The Implementer](#the-implementer)
+  - [The Reviewer](#the-reviewer)
+  - [Logging and state](#logging-and-state)
+  - [The Enabler](#the-enabler)
+  - [The Refiner](#the-refiner)
+  - [The Approver](#the-approver)
+- [Components](#components)
+- [Acceptance checks](#acceptance-checks)
+- [Host provisioning (human steps)](#host-provisioning-human-steps)
+- [Cost profile](#cost-profile)
+- [Design decisions](#design-decisions)
+- [Gotchas](#gotchas)
+<!-- toc:end -->
+
 ## What it is
 
 A pipeline that, on a configured cadence
@@ -1893,6 +1958,26 @@ implements.
    terms, independent of the implementation cycle's. `log_retained_bytes`
    triggers rotation on size, which self-corrects regardless of how often
    the log is written to.
+52. **The table of contents is generated from headings, not hand-maintained,
+   and regenerating it is gated in CI.** `README.md` and
+   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` each carry a `<!-- toc:start -->`
+   … `<!-- toc:end -->` region, placed immediately after the document's
+   title (and any lead-in paragraph, before its first `##` heading), holding
+   a nested bullet list of every `##`/`###` heading in the document — the
+   same "generated, never hand-edited" contract CLAUDE.md's "Generated
+   regions" note states for the configuration tables (requirement 1b,
+   component 16), for a second kind of region. `scripts/render-toc.sh`
+   (component 24) renders it: extracting headings in document order while
+   skipping fenced code blocks, slugging each to GitHub's own heading-anchor
+   algorithm — lower-cased, stripped to `[a-z0-9_-]` and space, spaces to
+   `-`, with no further collapsing of consecutive hyphens, since GitHub's
+   own algorithm does not collapse them either — and de-duplicating repeated
+   slugs across the whole document the way GitHub's own renderer does (the
+   first occurrence keeps the bare slug, each later one is suffixed `-1`,
+   `-2`, …), so every generated link resolves to a real in-document anchor.
+   `.github/workflows/toc.yml` runs `scripts/render-toc.sh --check` on every
+   pull request, failing it the moment a heading is added, removed or
+   reworded without a matching regeneration.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
 
    Before check 0 below, and before every other check in this list: which
@@ -20539,6 +20624,23 @@ What exists, and the requirements each part answers to:
     twice while a different `closed_at` is judged fresh; a failed post
     reported as a warning; malformed arguments exiting 2); must pass
     `shellcheck`.
+24. `scripts/render-toc.sh` and `.github/workflows/toc.yml` implementing
+   requirement 52's generated-table-of-contents property: with no
+   arguments, extracts every `##`/`###` heading from `README.md` and
+   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — skipping anything inside a
+   fenced (```` ``` ```` or `~~~`) code block — and rewrites each file's own
+   `<!-- toc:start -->` … `<!-- toc:end -->` region with a nested bullet
+   list linking to GitHub's own heading-anchor slug (lower-cased, stripped
+   to `[a-z0-9_-]` and space, spaces to `-`; GitHub does not collapse
+   consecutive hyphens, so this script does not either), de-duplicated in
+   heading order the way GitHub's own renderer de-duplicates repeated
+   headings (the first occurrence keeps the bare slug, each later one is
+   suffixed `-1`, `-2`, …). `--check` renders both regions to a temporary
+   file instead, leaving the working tree untouched, and exits non-zero
+   naming the first stale file — the same contract
+   `scripts/render-config-table.sh` (component 16) follows. `.github/workflows/toc.yml`
+   runs `--check` on every pull request and on push to `main`, modelled on
+   `config-table.yml`. Must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -25882,6 +25984,23 @@ oblige anyone to edit a test.
     `test/dashboard-render.test.sh`'s `overlap-only.json` fixture confirms
     the page's summary line renders the overrun count even when
     `noop_ticks.total` is `0`.
+
+52. **The table of contents is generated from headings, and regenerating it
+    is gated (requirement 52, component 24).** `scripts/render-toc.sh` with
+    no arguments run against this repository's own `README.md` and
+    `docs/IMPLEMENTATION-PIPELINE-SPEC.md` leaves both files byte-identical
+    to what is committed — regenerating a clean tree is a no-op — and
+    `--check` exits 0 against it; `git diff` confirms nothing moved.
+    Renaming a heading without regenerating makes `--check` exit non-zero
+    naming that file; regenerating repairs it. Every generated link
+    resolves to a real in-document anchor, matching GitHub's own
+    heading-anchor algorithm exactly rather than an approximation of it —
+    in particular, a heading whose removed character (`&`, `—`) leaves two
+    adjacent spaces behind renders two hyphens, not one, since GitHub does
+    not collapse consecutive hyphens either. `.github/workflows/toc.yml`
+    runs `--check` on every pull request, so a heading edited without a
+    matching regeneration fails CI rather than leaving a stale or broken
+    link.
 
 ## Host provisioning (human steps)
 
