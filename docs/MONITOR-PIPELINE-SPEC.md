@@ -560,8 +560,13 @@ M19. **No `node-state` transition.** The Monitor writes none of requirement
 
 ## Components
 
-1. `monitor-cycle.sh` implementing M1–M5, M9a, M11–M16 and M18.
-   `shellcheck`-clean; sets its own `PATH`.
+1. `monitor-cycle.sh` implementing M1–M5 (the boundary, the lock, both
+   switches, the role guard, the CronJob shape, both stand-downs, the due gate
+   and the slot claim), M9/M9a/M10b (the stage and its caps, assembled through
+   `lib/prompt-overrides.sh`), M11–M16 (every filing, the triage comments and
+   the report), M17 (the stage-health verdict, through
+   `lib/stage-health.sh`), M18 (its own stream) and M19 (no `node-state`
+   event). `shellcheck`-clean; sets its own `PATH`.
 2. `lib/monitor-digest.sh` implementing M6, M6a, M6b and M7. Pure readers,
    unit-tested over fixture logs (`test/monitor-digest.test.sh`);
    `shellcheck`-clean.
