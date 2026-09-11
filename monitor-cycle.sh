@@ -772,6 +772,17 @@ monitor_provenance() {  # monitor_provenance <index>
   printf 'Monitor: monitor/%s M-%02d' "$monitor_date" "$1"
 }
 
+# monitor_claim_index — take the next `M-<nn>` for this day.
+#
+# Called only where a number is about to be written into an issue body, never
+# on every stated finding, so a citation and a filing are one-to-one: no
+# `M-<nn>` ever names a row that no issue carries. A ledger row with no number
+# renders `—` and is identified by its finding key instead, which is what the
+# dedup and the next run both read anyway. The one gap this can leave is a
+# number claimed for a create the forge then refused; that is a number spent
+# on an attempt, and the row records it as `failed`.
+monitor_claim_index() { finding_index=$(( finding_index + 1 )); }
+
 # The highest M-<nn> the day's report already carries, so this run's first
 # finding continues from it. A fresh day (no report file) starts at zero.
 finding_index=0
@@ -845,13 +856,12 @@ while IFS= read -r finding; do
     continue
   fi
 
-  finding_index=$(( finding_index + 1 ))
-
   # Already open from an earlier run: nothing is filed, and the report cites
-  # the issue that is already carrying it (M13).
+  # the issue that is already carrying it (M13). No `M-<nn>` is spent on it —
+  # see `monitor_claim_index` below.
   existing="$(monitor_open_finding "$f_key")"
   if [[ -n "$existing" ]]; then
-    monitor_ledger already-open "$finding" "$finding_index" \
+    monitor_ledger already-open "$finding" 0 \
       "${existing%%$'\t'*}" "${existing#*$'\t'}" "an open issue already carries this finding key"
     continue
   fi
@@ -863,39 +873,40 @@ while IFS= read -r finding; do
       # proposes every lever and moves none.
       if [[ -z "$f_config_key" ]] \
          || ! jq -e --arg k "$f_config_key" 'index($k) != null' <<<"$monitor_tactical_keys_json" >/dev/null 2>&1; then
-        monitor_ledger proposed "$finding" "$finding_index" "" "" \
+        monitor_ledger proposed "$finding" 0 "" "" \
           "tactical: $f_config_key is not in monitor_tactical_keys, so this is proposed in the report only"
         continue
       fi
       ;;
     mechanical|strategic) ;;
     *)
-      monitor_ledger refused "$finding" "$finding_index" "" "" \
+      monitor_ledger refused "$finding" 0 "" "" \
         "unknown finding class: $f_class"
       continue
       ;;
   esac
 
   if (( monitor_max_filings > 0 )) && (( filed_count >= monitor_max_filings )); then
-    monitor_ledger deferred "$finding" "$finding_index" "" "" \
+    monitor_ledger deferred "$finding" 0 "" "" \
       "the run's filing budget (monitor_max_filings_per_run=$monitor_max_filings) was already spent"
     continue
   fi
   if (( monitor_max_filings == 0 )); then
-    monitor_ledger deferred "$finding" "$finding_index" "" "" \
+    monitor_ledger deferred "$finding" 0 "" "" \
       "monitor_max_filings_per_run is 0 — this run files nothing and reports everything"
     continue
   fi
 
-  body_file="$run_dir/finding-$finding_index.md"
   created=""
   case "$f_class" in
     mechanical)
       if ! jq -e --arg r "$f_repo" 'index($r) != null' <<<"$filing_repos_json" >/dev/null 2>&1; then
-        monitor_ledger refused "$finding" "$finding_index" "" "" \
+        monitor_ledger refused "$finding" 0 "" "" \
           "mechanical: $f_repo is not a repository this installation configures"
         continue
       fi
+      monitor_claim_index
+      body_file="$run_dir/finding-$finding_index.md"
       {
         printf '%s\n\n' "$f_body"
         printf -- '---\n%s\nmonitor-finding-key: %s\n' "$(monitor_provenance "$finding_index")" "$f_key"
@@ -905,10 +916,12 @@ while IFS= read -r finding; do
       ;;
     tactical)
       if [[ -z "$escalation_repo" ]]; then
-        monitor_ledger proposed "$finding" "$finding_index" "" "" \
+        monitor_ledger proposed "$finding" 0 "" "" \
           "tactical: no crash_loop_repo or pager_repo is configured, so there is nowhere to record the decision"
         continue
       fi
+      monitor_claim_index
+      body_file="$run_dir/finding-$finding_index.md"
       # The decide-tactical seam's own durable record: filed, then closed
       # immediately, exactly as lib/enabler.sh's `create_decision_log_issue`
       # and lib/pager.sh's `config-lever` class do. Reopening it is the veto
@@ -930,10 +943,12 @@ while IFS= read -r finding; do
       ;;
     strategic)
       if [[ -z "$escalation_repo" ]]; then
-        monitor_ledger proposed "$finding" "$finding_index" "" "" \
+        monitor_ledger proposed "$finding" 0 "" "" \
           "strategic: no crash_loop_repo or pager_repo is configured, so there is nowhere to escalate to"
         continue
       fi
+      monitor_claim_index
+      body_file="$run_dir/finding-$finding_index.md"
       {
         printf '%s\n\n' "$f_body"
         printf '## Options\n\n%s\n\n' "${f_options:-_the Monitor stated no options; treat this as a question, not a proposal._}"

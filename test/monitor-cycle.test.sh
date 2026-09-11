@@ -183,7 +183,7 @@ jq -c -n --rawfile r "\$D/result.json" \\
 exit 0
 STUB
   chmod +x "$dir/stub/claude"
-  printf '{"status":"complete","report_markdown":"## What is broken now\\n\\nnothing","findings":[],"page_triage":[]}' \
+  printf '{"status":"complete","report_markdown":"### What is broken now\\n\\nnothing","findings":[],"page_triage":[]}' \
     > "$dir/stub/result.json"
   printf '%s' "$dir"
 }
@@ -228,7 +228,7 @@ BASE='.state_repo = ""
 d="$(make_node budget "$BASE")"
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nthree things\n\n## What limited throughput\n\nthe fit ladder\n\n## What is new\n\nnothing\n\n## Pages\n\nnone open",
+ "report_markdown":"### What is broken now\n\nthree things\n\n### What limited throughput\n\nthe fit ladder\n\n### What is new\n\nnothing\n\n### Pages\n\nnone open",
  "findings":[
    {"key":"first-fault","class":"mechanical","title":"The first fault","body":"what/why/where/fix","repo":"o/target"},
    {"key":"second-fault","class":"mechanical","title":"The second fault","body":"what/why/where/fix","repo":"o/target"},
@@ -246,9 +246,13 @@ assert_contains "and the report carries the citation an issue body can be greppe
 assert_contains "the third is too" "\`third-fault\` | filed" "$report"
 assert_contains "the fourth is deferred, and the report says why" \
   "deferred — the run's filing budget" "$report"
+assert_eq "and spends no citation, since nothing carries one for it" "3" \
+  "$(grep -c "Monitor: monitor/$TODAY M-" "$(state_of "$d")/monitor/$TODAY/report.md")"
 assert_contains "and the deferral carries the finding's own key, so the next run can tell" \
   "\`fourth-fault\`" "$report"
-assert_contains "the stage's own three readings reach the report" "## What limited throughput" "$report"
+assert_contains "the stage's own three readings reach the report" "### What limited throughput" "$report"
+assert_contains "nested under the run heading the Script owns, not beside it" \
+  "## Run \`" "$report"
 first_body="$(cat "$d/stub/bodies/900.md")"
 assert_contains "a filed issue carries the R12a-shaped provenance line" \
   "Monitor: monitor/$TODAY M-01" "$first_body"
@@ -284,7 +288,7 @@ assert_eq "recorded against the stage name lib/stage-health.sh already reads" "1
 # the prompt asks a Monitor to do with a fault that is still true.
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nstill the same three\n\n## What limited throughput\n\nunchanged\n\n## What is new\n\nnothing\n\n## Pages\n\nnone open",
+ "report_markdown":"### What is broken now\n\nstill the same three\n\n### What limited throughput\n\nunchanged\n\n### What is new\n\nnothing\n\n### Pages\n\nnone open",
  "findings":[
    {"key":"first-fault","class":"mechanical","title":"The first fault","body":"still true","repo":"o/target"},
    {"key":"second-fault","class":"mechanical","title":"The second fault","body":"still true","repo":"o/target"},
@@ -303,7 +307,7 @@ assert_contains "the day's report is appended to, not overwritten — run one's 
   "filed — filed as a mechanical finding" "$report"
 assert_eq "and both runs have their own section in it" "2" \
   "$(grep -c '^## Run ' "$(state_of "$d")/monitor/$TODAY/report.md")"
-assert_contains "the second run's numbering continues the day's, rather than restarting at 01" \
+assert_lacks "a restated finding spends no M-<nn> — a citation names a filing, or nothing" \
   "Monitor: monitor/$TODAY M-05" "$report"
 
 # And the finding run one deferred is filed by a run that reaches it, since
@@ -311,13 +315,17 @@ assert_contains "the second run's numbering continues the day's, rather than res
 # deferral by key rather than dropping it.
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nthe deferred one\n\n## What limited throughput\n\nunchanged\n\n## What is new\n\nnothing\n\n## Pages\n\nnone open",
+ "report_markdown":"### What is broken now\n\nthe deferred one\n\n### What limited throughput\n\nunchanged\n\n### What is new\n\nnothing\n\n### Pages\n\nnone open",
  "findings":[
    {"key":"fourth-fault","class":"mechanical","title":"The fourth fault","body":"what/why/where/fix","repo":"o/target"}],
  "page_triage":[]}
 EOF
 out="$(run_monitor "$d" --once)"
 assert_eq "a later run files the finding an earlier one deferred" "$(( before + 1 ))" "$(creates_of "$d")"
+assert_contains "and its citation continues the day's numbering without reusing one" \
+  "Monitor: monitor/$TODAY M-04" "$(report_of "$d")"
+assert_eq "so the day's citations are exactly its filings, one each" "4" \
+  "$(grep -c "Monitor: monitor/$TODAY M-" "$(state_of "$d")/monitor/$TODAY/report.md")"
 
 # ============================================================================
 # 3. The tactical gate is closed by default (M14b)
@@ -325,7 +333,7 @@ assert_eq "a later run files the finding an earlier one deferred" "$(( before + 
 d="$(make_node tactical-closed "$BASE | .monitor_tactical_keys = []")"
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nnothing\n\n## What limited throughput\n\na cadence\n\n## What is new\n\nnothing\n\n## Pages\n\nnone",
+ "report_markdown":"### What is broken now\n\nnothing\n\n### What limited throughput\n\na cadence\n\n### What is new\n\nnothing\n\n### Pages\n\nnone",
  "findings":[
    {"key":"review-cadence-slow","class":"tactical","title":"The review cadence is too slow","body":"evidence","config_key":"project_review.defaults.min_days_between_reviews"}],
  "page_triage":[]}
@@ -343,7 +351,7 @@ d="$(make_node tactical-open \
   "$BASE | .monitor_tactical_keys = [\"project_review.defaults.min_days_between_reviews\"]")"
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nnothing\n\n## What limited throughput\n\na cadence\n\n## What is new\n\nnothing\n\n## Pages\n\nnone",
+ "report_markdown":"### What is broken now\n\nnothing\n\n### What limited throughput\n\na cadence\n\n### What is new\n\nnothing\n\n### Pages\n\nnone",
  "findings":[
    {"key":"review-cadence-slow","class":"tactical","title":"The review cadence is too slow","body":"evidence","config_key":"project_review.defaults.min_days_between_reviews"}],
  "page_triage":[]}
@@ -367,7 +375,7 @@ assert_contains "with a reason_key, so a fresh reason gets a fresh record" \
 d="$(make_node strategic "$BASE")"
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nnothing\n\n## What limited throughput\n\nthe shared quota\n\n## What is new\n\nyes\n\n## Pages\n\nnone",
+ "report_markdown":"### What is broken now\n\nnothing\n\n### What limited throughput\n\nthe shared quota\n\n### What is new\n\nyes\n\n### Pages\n\nnone",
  "findings":[
    {"key":"shared-quota-binds","class":"strategic","title":"The fleet exhausted its shared quota on 4 of 7 days","body":"evidence","options":"1. more accounts\n2. fewer nodes"}],
  "page_triage":[]}
@@ -394,7 +402,7 @@ cat > "$d/stub/open-pages.json" <<'EOF'
 EOF
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\na phantom page\n\n## What limited throughput\n\nnothing\n\n## What is new\n\nnothing\n\n## Pages\n\n#501 is a phantom; #502 needs the owner",
+ "report_markdown":"### What is broken now\n\na phantom page\n\n### What limited throughput\n\nnothing\n\n### What is new\n\nnothing\n\n### Pages\n\n#501 is a phantom; #502 needs the owner",
  "findings":[
    {"key":"node-stale-phantom","class":"mechanical","title":"node-stale fires on a node that is publishing","body":"what/why/where/fix","repo":"o/target"}],
  "page_triage":[
@@ -506,7 +514,7 @@ assert_eq "and writes no report" "" "$(report_of "$d")"
 d="$(make_node refused "$BASE")"
 cat > "$d/stub/result.json" <<'EOF'
 {"status":"complete",
- "report_markdown":"## What is broken now\n\nnothing\n\n## What limited throughput\n\nnothing\n\n## What is new\n\nnothing\n\n## Pages\n\nnone",
+ "report_markdown":"### What is broken now\n\nnothing\n\n### What limited throughput\n\nnothing\n\n### What is new\n\nnothing\n\n### Pages\n\nnone",
  "findings":[
    {"key":"Bad Key!","class":"mechanical","title":"A finding with an unusable key","body":"x","repo":"o/target"},
    {"key":"wrong-repository","class":"mechanical","title":"A finding naming a repository we do not configure","body":"x","repo":"someone/else"}],

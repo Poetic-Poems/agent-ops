@@ -369,7 +369,12 @@ M11. **Every filing carries a provenance line and a finding key.** The
    human reading the issue can find the report that produced it. `<nn>`
    numbers **within the day**, not within the run: a pager-triggered second
    run continues from the highest number the day's report already carries, so
-   one `M-<nn>` identifies one finding inside one day. The report's own ledger
+   one `M-<nn>` identifies one finding inside one day. A number is claimed only
+   where one is about to be written into an issue body — never on every stated
+   finding — so a citation and a filing are one-to-one and no `M-<nn>` names a
+   row that no issue carries; a ledger row with no number renders `—` and is
+   identified by its finding key, which is what the dedup and the next run both
+   read anyway. The report's own ledger
    carries each finding's whole provenance line rather than a bare `M-<nn>`,
    because that string has two consumers — a reader grepping issue bodies for
    it, and the next run reading the day's highest number back — and one form
@@ -479,7 +484,12 @@ M16. **A dated report in the state store.** `state_dir/monitor/<date>/report.md`
    ledger is what makes the report verifiable: one row per finding, naming its
    class, its key, its outcome (`filed`, `already-open`, `deferred`,
    `proposed`, `refused`, `failed`) with the reason, and the issue URL where
-   there is one. The report is **appended to** rather than overwritten: a
+   there is one. The Script owns the heading levels — `# Monitor report —
+   <date>` for the day, `## Run <id>` per run, `###` for everything inside one
+   — which is why `prompts/monitor.md` asks the stage for `###` sections
+   rather than `##`: a stage writing `##` would put its own readings beside
+   the run heading instead of under it, and the Script's ledger would then
+   read as part of the stage's last section. The report is **appended to** rather than overwritten: a
    pager-triggered second run the same day adds its own section under the
    day's heading, which is also why M11's finding numbers continue across the
    day. The file lives under `state_dir` and is carried fleet-wide by the
