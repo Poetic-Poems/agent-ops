@@ -768,11 +768,14 @@
         },
         "refiner": {
           "$ref": "#/$defs/promptOverride"
+        },
+        "monitor": {
+          "$ref": "#/$defs/promptOverride"
         }
       },
       "x-docs": {
         "readme": "Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides).",
-        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts."
+        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`/`monitor`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts."
       }
     },
     "pr_label": {
@@ -1207,6 +1210,49 @@
         "value": {
           "spec": "7 days"
         }
+      }
+    },
+    "monitor_model": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Pipeline Monitor's model — one headless invocation per monitor run, reading a digest the Script prepared and returning a report plus its findings. Empty disables the pipeline, which is how every release before this key behaved.",
+      "default": "claude-sonnet-5",
+      "x-docs": {
+        "readme": "The Pipeline Monitor: one scheduled read of the pipeline's own state, producing a dated report and at most `monitor_max_filings_per_run` filings — see [The Pipeline Monitor](#the-pipeline-monitor). Leave it empty to switch the pipeline off.",
+        "spec": "The Pipeline Monitor (`docs/MONITOR-PIPELINE-SPEC.md` M9). The same tier the repository review runs, for the same reason: the input is a bounded digest rather than a repository, and the judgement asked of it is the one a human operator would make reading the same records. Empty disables the pipeline."
+      }
+    },
+    "monitor_max_input_bytes": {
+      "description": "The largest digest the Script will hand the Pipeline Monitor. The digest is assembled deterministically from the fleet's own records and then bound to this size by a fixed drop ladder (samples, then the specs' gotcha sections, then samples entirely, then a hard truncation), so a fleet whose log grew overnight costs a bounded prompt rather than a refused one. 0 disables the bound.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 300000,
+      "x-docs": {
+        "readme": "The largest digest the Script will hand the Pipeline Monitor. The Monitor never reads the fleet log or `data.js` itself; it reads this digest, and the Script bounds it by shedding samples and the specs' gotcha sections before it ever truncates. `0` disables the bound.",
+        "spec": "The largest digest the Script hands the Monitor stage (M6). Stated in bytes for the reason `coordinator_prompt_max_bytes` is: bytes are what the Script can count without a tokenizer. The default is the same arithmetic that key records, against a prompt far shorter than the Co-Ordinator's and a report longer than a verdict. `0` disables the bound."
+      }
+    },
+    "monitor_max_filings_per_run": {
+      "description": "The most GitHub items one monitor run may file — tech-debt issues, decision records and escalations together. Findings past the cap are deferred, named in the report with their finding keys, and re-offered by the next run. Ideas are not this pipeline's bottleneck; a monitor that files everything it notices buys a backlog nobody works. 0 files nothing and reports everything.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 3,
+      "x-docs": {
+        "readme": "The most items one monitor run may file (tech-debt issues, `pw::decision` records and escalations together). Everything past the cap is deferred, named in the report with its finding key, and offered again next run. `0` files nothing and reports everything.",
+        "spec": "The filing budget of one monitor run (M12). Counted across every filing class, since the cap exists to bound what the fleet is asked to work, not what any one class produces."
+      }
+    },
+    "monitor_tactical_keys": {
+      "description": "The configuration keys the Pipeline Monitor may move on its own authority, through decide-tactical's seam: a tactical finding naming a key in this list is recorded as a `pw::decision` (filed closed, reopened to veto it); a tactical finding naming any other key is proposed in the report and nothing else. Empty — the default — means the Monitor proposes every lever and moves none, which is the posture to keep until an owner has read a few reports and chosen which levers to delegate.",
+      "type": "array",
+      "uniqueItems": true,
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "x-docs": {
+        "readme": "The configuration keys the Monitor may decide on its own authority, recorded as a `pw::decision` a human vetoes by reopening. Empty (the default) means it proposes tactical levers in its report and moves none.",
+        "spec": "The tactical allow-list (M14). A finding whose `config_key` is in this list is filed as a `pw::decision` through the same decision-log convention `escalation_autonomy: decide-tactical` already uses, veto window included (agent-ops#937); any other key is proposed in the report only. Empty by default, so the Monitor's tactical path is config-gated closed on a fresh installation."
       }
     },
     "timeout_coordinator": {
@@ -1812,6 +1858,28 @@
           "x-docs": {
             "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to (agent-ops#878), on the same per-node jitter `revert_rate_offset_minutes` uses.",
             "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to, jittering it across the fleet the same way `revert_rate_offset_minutes` jitters the revert-rate publish."
+          }
+        },
+        "monitor_hour": {
+          "description": "The hour the Pipeline Monitor's daily run is due. The Monitor's own crontab line fires hourly (monitor_offset_minutes) and stands itself down unless the run is due: this hour, once per UTC day, or within the hour after any pager-fired event.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "default": 5,
+          "x-docs": {
+            "readme": "The hour the containerised node's daily Pipeline Monitor run is due (`monitor-cycle.sh`). Its crontab line fires hourly and stands down unless this hour's daily run is still owed, or a pager page fired since the last run.",
+            "spec": "The hour the daily monitor run is due (`docs/MONITOR-PIPELINE-SPEC.md` M4). The crontab line itself is hourly, so a node asleep at this hour still picks the day's run up at its next firing."
+          }
+        },
+        "monitor_offset_minutes": {
+          "description": "Minutes past the node's cycle minute (mod 60) the hourly Pipeline Monitor tick's minute is set to, jittering it across the fleet the same way doctor_offset_minutes jitters the unattended doctor pass.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 19,
+          "x-docs": {
+            "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly Pipeline Monitor tick's minute is set to, on the same per-node jitter `doctor_offset_minutes` uses.",
+            "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly monitor tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass."
           }
         }
       }

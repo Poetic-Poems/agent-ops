@@ -51,6 +51,7 @@ assert_eq "enabler's display name" "Enabler" "$(pipeline_actor_label enabler)"
 assert_eq "refiner's display name" "Refiner" "$(pipeline_actor_label refiner)"
 assert_eq "review-script's display name" "Review Script" "$(pipeline_actor_label review-script)"
 assert_eq "project-reviewer's display name" "Project Reviewer" "$(pipeline_actor_label project-reviewer)"
+assert_eq "monitor's display name" "Pipeline Monitor" "$(pipeline_actor_label monitor)"
 
 # An Actor token this map has not learned about yet must degrade to its bare
 # token rather than vanish from a comment — the same convention

@@ -52,7 +52,8 @@
 #                                   it bounds that report's history and
 #                                   nothing else.
 #   log.jsonl, review-log.jsonl,    NEVER rotated. This is the fleet's
-#   revert-rate.jsonl               memory: the union readers (blocked/void
+#   monitor-log.jsonl,              memory: the union readers (blocked/void
+#   revert-rate.jsonl               
 #                                   extraction, the no-op fingerprint, the
 #                                   limit cooldown, the revert-rate panel)
 #                                   scan it whole, and dropping its head
@@ -82,7 +83,7 @@ usage: rotate-logs.sh
 
 Rotate the diagnostic and cron logs in state_dir once they exceed
 log_retained_bytes, keeping log_generations of history. log.jsonl,
-review-log.jsonl and revert-rate.jsonl are never touched.
+review-log.jsonl, monitor-log.jsonl and revert-rate.jsonl are never touched.
 
 Environment:
   ROTATE_LOGS_RETAINED_BYTES   override log_retained_bytes (tests use a
@@ -114,9 +115,9 @@ retained_bytes="${ROTATE_LOGS_RETAINED_BYTES:-$(cfg '.log_retained_bytes')}"
 generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 (( generations >= 1 )) || generations=1
 
-# The logs this script owns. log.jsonl, review-log.jsonl and
-# revert-rate.jsonl are deliberately absent — see the file header.
-LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log tech-debt-archive.log cron.log review-cron.log gh-shim/ledger.ndjson)
+# The logs this script owns. log.jsonl, review-log.jsonl, monitor-log.jsonl
+# and revert-rate.jsonl are deliberately absent — see the file header.
+LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log tech-debt-archive.log cron.log review-cron.log monitor-cron.log gh-shim/ledger.ndjson)
 
 file_size() {
   stat -c%s -- "$1" 2>/dev/null || stat -f%z -- "$1" 2>/dev/null || echo 0

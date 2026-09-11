@@ -21,7 +21,11 @@
 #
 # The review cycle runs at `schedule.review_offset_minutes` past
 # CYCLE_MINUTE (mod 60), past `schedule.review_hour` — keeping one node's
-# two heavy pipelines maximally apart within its hour.
+# two heavy pipelines maximally apart within its hour. The Pipeline Monitor's
+# line is hourly at `schedule.monitor_offset_minutes` past CYCLE_MINUTE: its
+# daily slot (`schedule.monitor_hour`) and its pager trigger are both decided
+# inside `monitor-cycle.sh`, because the second of the two needs the fleet's
+# own log and no crontab can read it.
 #
 # Failure never breaks the schedule: the output is written to a temp file
 # and moved into place only when it rendered completely; on any failure the
@@ -68,6 +72,8 @@ excluded_minutes="$(cfg_json '.schedule.excluded_minutes')"
 review_hour="$(cfg '.schedule.review_hour')"
 review_offset="$(cfg '.schedule.review_offset_minutes')"
 doctor_offset="$(cfg '.schedule.doctor_offset_minutes')"
+monitor_offset="$(cfg '.schedule.monitor_offset_minutes')"
+monitor_hour="$(cfg '.schedule.monitor_hour')"
 revert_rate_hour="$(cfg '.schedule.revert_rate_hour')"
 revert_rate_offset="$(cfg '.schedule.revert_rate_offset_minutes')"
 tech_debt_archive_hour="$(cfg '.schedule.tech_debt_archive_hour')"
@@ -129,6 +135,12 @@ review_minute=$(( (cycle_minute + review_offset) % 60 ))
 # base minute, mod 60 — so a fleet of nodes does not all hit GitHub's API in
 # the same minute.
 doctor_minute=$(( (cycle_minute + doctor_offset) % 60 ))
+# The Pipeline Monitor's tick (agent-ops#1284): hourly, jittered the same way,
+# because its cadence is decided inside `monitor-cycle.sh` rather than by the
+# crontab — the daily slot is `schedule.monitor_hour`, and a `pager-fired`
+# event earns an extra run within the hour, which no crontab line can see.
+# `monitor_hour` is read here only so the summary line below can state it.
+monitor_minute=$(( (cycle_minute + monitor_offset) % 60 ))
 # The daily revert-rate publishing tick (agent-ops#579): jittered the same
 # way, past schedule.revert_rate_hour rather than hourly, since it is a
 # once-a-day publish, not an hourly check.
@@ -169,6 +181,7 @@ if ! sed \
       -e "s#@STATE_SYNC_FETCH_MINUTES@#$fetch_minutes#g" \
       -e "s#@LOG_ROTATION_MINUTE@#$rotation_minute#g" \
       -e "s#@DOCTOR_MINUTE@#$doctor_minute#g" \
+      -e "s#@MONITOR_MINUTE@#$monitor_minute#g" \
       -e "s#@REVERT_RATE_MINUTE@#$revert_rate_minute#g" \
       -e "s#@REVERT_RATE_HOUR@#$revert_rate_hour#g" \
       -e "s#@TECH_DEBT_ARCHIVE_MINUTE@#$tech_debt_archive_minute#g" \
@@ -184,5 +197,5 @@ if grep -q '@[A-Z_]\{1,\}@' "$tmp"; then
   exit 1
 fi
 mv -f "$tmp" "$out"
-say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00, unattended doctor at :$doctor_minute hourly, revert-rate publish at $revert_rate_minute past $revert_rate_hour:00, tech-debt archive publish at $tech_debt_archive_minute past $tech_debt_archive_hour:00"
+say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00, unattended doctor at :$doctor_minute hourly, monitor tick at :$monitor_minute hourly (due daily at $monitor_hour:00, or after a page fires), revert-rate publish at $revert_rate_minute past $revert_rate_hour:00, tech-debt archive publish at $tech_debt_archive_minute past $tech_debt_archive_hour:00"
 exit 0

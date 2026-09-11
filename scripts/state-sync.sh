@@ -234,6 +234,13 @@ EXCLUDES=(
   --exclude=.git
   --exclude=lock.json
   --exclude=review-lock.json
+  # monitor-lock.json (monitor-cycle.sh, agent-ops#1284): a lock file is
+  # meaningful only in the PID namespace that minted it, exactly as the two
+  # above are. `monitor-log.jsonl` is deliberately absent from this list —
+  # the fleet unions it to decide whose turn the daily monitor run is and
+  # when the last report was written, so it must travel, the same as
+  # `review-log.jsonl`.
+  --exclude=monitor-lock.json
   --exclude=roll-pending.json
   --exclude=dashboard.lck
   --exclude=dashboard.log

@@ -922,7 +922,15 @@ above — on the same terms:
   nothing" above. The fold
   itself: `lib/node-time-state.sh`'s `node_time_state_fold`, behind the
   read-only `scripts/node-time-state.sh`, which unions `log.jsonl` and
-  `review-log.jsonl` before folding.
+  `review-log.jsonl` before folding. A third pipeline exists
+  (`monitor-cycle.sh`, `docs/MONITOR-PIPELINE-SPEC.md`) and deliberately
+  writes no `node-state` event of any kind, so `monitor-log.jsonl` is not in
+  that union: a third writer onto a timeline two writers already coordinate
+  over risks clobbering a live `producing` span for a smaller gain than the
+  risk, and the Monitor's own wall-clock is recoverable from its
+  `monitor-stage-start`/`stage-end` pair. The seconds it spends are therefore
+  absent from this fold; that gap is recorded at
+  `tech-debt/TD-PPagop-26091102.md` (MONITOR-PIPELINE-SPEC M19).
 - **Consumed:** nothing yet, for the same reason the rework record's own
   entry above gives: this document defines the record so it starts
   accumulating history from the moment it lands. The panel that reads it —

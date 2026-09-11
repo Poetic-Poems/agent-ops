@@ -51,6 +51,18 @@
 # whose label search or archive write failed this run is simply retried on
 # the next one, not a crashed script.
 #
+# 57 * is schedule.monitor_offset_minutes past the node's own base minute
+# (mod 60), the same jitter shape the doctor line above uses, and — unlike
+# the review and publish lines — it fires *every* hour rather than at one.
+# That is the whole cadence mechanism (agent-ops#1284,
+# docs/MONITOR-PIPELINE-SPEC.md M4): the Pipeline Monitor is due once a day at
+# schedule.monitor_hour *and* within the hour after any `pager-fired` event,
+# and no crontab line can express the second half — none of them can read the
+# fleet's own log. So this line fires hourly and `monitor-cycle.sh` decides,
+# standing itself down with `cause: "not-due"` on every tick that is neither.
+# A not-due tick makes no model call at all. It ends `|| true` for the same
+# reason the doctor line does.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 
@@ -60,6 +72,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 38,53 * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
 7 3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
 22 * * * *  /app/scripts/doctor.sh --unattended >> $LOGDIR/doctor.log 2>&1 || true
+57 * * * *  /app/monitor-cycle.sh >> $LOGDIR/monitor-cron.log 2>&1 || true
 29 2 * * *  /app/scripts/publish-revert-rate.sh >> $LOGDIR/revert-rate.log 2>&1 || true
 15 4 * * *  /app/scripts/publish-tech-debt-archive.sh >> $LOGDIR/tech-debt-archive.log 2>&1 || true
 

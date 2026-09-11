@@ -84,6 +84,23 @@ cron (schedule.cycle_interval_minutes)
    Enabler's: it writes no code, raises no pull request, and can neither
    escalate nor void.
 
+Two further Actors belong to the sibling pipelines rather than to this one,
+and are named here because `lib/pipeline-marker.sh`'s `pipeline_actor_label`
+and `dashboard/index.html`'s `ACTOR` map carry every Actor token this system
+has, whichever pipeline runs it (requirement 9d):
+
+9. The **Project Reviewer** (token `project-reviewer`) — the
+   repository-review pipeline's single agent. Specified at
+   `docs/REVIEW-PIPELINE-SPEC.md`, *Actors*, where that document calls it the
+   Reviewer-Agent.
+10. The **Pipeline Monitor** (token `monitor`) — the Monitor pipeline's
+   single agent: a scheduled reading of this pipeline's own recorded state,
+   whose mechanical findings are filed as `pw::type:tech-debt` issues that
+   this pipeline's own `tech-debt` work source then selects (requirement 16).
+   Specified at `docs/MONITOR-PIPELINE-SPEC.md`, *Actors*. It never runs as a
+   stage of `agent-cycle.sh` and writes no label this pipeline's Co-Ordinator
+   keys on.
+
 ## Environment (verified 2026-07-20)
 
 - WSL2 Ubuntu; `bash`, `git`, `jq` and `gh` available.
@@ -852,7 +869,7 @@ and the schema must carry every one of them.
 | `labels_ensure_interval_hours` | `24` | How often, at most, the Script re-lists a repository's labels to create any absent ones (requirement 6a), keyed per repository via a stamp file under `state_dir` rather than a single fleet-wide clock — so one repository's interval elapsing says nothing about another's. `0` disables the stamp check, so it ensures on every cycle regardless. |
 | `label_prefix` | `pw::` | Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (create, PATCH colour/description on drift, DELETE once no longer catalogued) rather than `labels_ensure`'s own create-only treatment. `labels_reconcile_role`'s `target` role — the one catalogue call that is a repository's complete desired label set — reconciles with deletion; `review` and `escalation`, each a partial subset of `target`'s own catalogue, reconcile colour/description drift but never...[continued below](#extended-notes-label_prefix) |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
-| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
+| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`/`monitor`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. The claim loop (requirement 17a) stamps this value onto every claimed work order's own `pr_label` field unconditionally, the guaranteed source regardless of whether the Co-Ordinator's runtime input...[continued below](#extended-notes-pr_label) |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `tech_debt_branch_prefix` | `td/` | Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only...[continued below](#extended-notes-tech_debt_branch_prefix) |
@@ -886,6 +903,10 @@ and the schema must carry every one of them.
 | `pager_repair_rate_percent` | 20% | Requirement 51's own `work-order-repaired-rate` threshold (agent-ops#1281): the percentage, of a trailing 24h window's `selection` events, also carrying a `work-order-repaired` event, above which this invariant fires. |
 | `pager_escalation_burst` | 10 escalations | Requirement 51's own `escalation-burst` threshold (agent-ops#1281): the count of `escalated` events in a trailing 24h window, fleet-wide, above which this invariant fires; a re-flag reason paging the same item twice inside that same window fires it regardless of this count. |
 | `pager_landing_armed_within_days` | 7 days | Requirement 51's own `landing-never-armed` threshold (agent-ops#1280): the trailing window, in days, over which a repository configured at merge_autonomy agent-merges-routine or above must log at least one landing-armed event given landing-refused activity in that same window, before this invariant fires. |
+| `monitor_model` | `claude-sonnet-5` | The Pipeline Monitor (`docs/MONITOR-PIPELINE-SPEC.md` M9). The same tier the repository review runs, for the same reason: the input is a bounded digest rather than a repository, and the judgement asked of it is the one a human operator would make reading the same records. Empty disables the pipeline. |
+| `monitor_max_input_bytes` | `300000` | The largest digest the Script hands the Monitor stage (M6). Stated in bytes for the reason `coordinator_prompt_max_bytes` is: bytes are what the Script can count without a tokenizer. The default is the same arithmetic that key records, against a prompt far shorter than the Co-Ordinator's and a report longer than a verdict. `0` disables the bound. |
+| `monitor_max_filings_per_run` | `3` | The filing budget of one monitor run (M12). Counted across every filing class, since the cap exists to bound what the fleet is asked to work, not what any one class produces. |
+| `monitor_tactical_keys` | `[]` | The tactical allow-list (M14). A finding whose `config_key` is in this list is filed as a `pw::decision` through the same decision-log convention `escalation_autonomy: decide-tactical` already uses, veto window included (agent-ops#937); any other key is proposed in the report only. Empty by default, so the Monitor's tactical path is config-gated closed on a fresh installation. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -931,6 +952,8 @@ and the schema must carry every one of them.
 | `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
 | `schedule.tech_debt_archive_hour` | `4` | The hour the daily tech-debt archive publishing tick fires. |
 | `schedule.tech_debt_archive_offset_minutes` | `37` | Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to, jittering it across the fleet the same way `revert_rate_offset_minutes` jitters the revert-rate publish. |
+| `schedule.monitor_hour` | `5` | The hour the daily monitor run is due (`docs/MONITOR-PIPELINE-SPEC.md` M4). The crontab line itself is hourly, so a node asleep at this hour still picks the day's run up at its next firing. |
+| `schedule.monitor_offset_minutes` | `19` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly monitor tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
 | `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Pullwright/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
 <!-- config-table:end -->
 
@@ -1069,7 +1092,7 @@ Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (
 
 ### Extended notes: `prompt_overrides`
 
-Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts.
+Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`/`monitor`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts.
 
 ### Extended notes: `pr_label`
 
@@ -8400,7 +8423,8 @@ implements.
    human's comment from the pipeline's, including which comments are a human's
    own. `lib/pipeline-marker.sh`'s `pipeline_comment_header ACTOR NODE` prints
    the line; `pipeline_actor_label TOKEN` is the token→display map, matching
-   this document's and `docs/REVIEW-PIPELINE-SPEC.md`'s *Actors* sections and
+   this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s and
+   `docs/MONITOR-PIPELINE-SPEC.md`'s *Actors* sections and
    the vocabulary `dashboard/index.html`'s `ACTOR` map already uses, and it
    fails open on an unknown token — prints it raw — so an Actor added later
    degrades gracefully rather than vanishing from a comment. `agent-cycle.sh`
@@ -8862,8 +8886,9 @@ implements.
    ```
 
    `prompts/project-reviewer.md` carries the same block under the review
-   pipeline's own requirement (REVIEW-PIPELINE-SPEC.md R18), pinned to this
-   same copy.
+   pipeline's own requirement (REVIEW-PIPELINE-SPEC.md R18), and
+   `prompts/monitor.md` under the Monitor's own (MONITOR-PIPELINE-SPEC.md
+   M10a), both pinned to this same copy.
 
 45b. **Pinned mechanically.** `test/prompt-untrusted-framing.test.sh` lifts
    the text between the markers from this requirement and from every prompt
@@ -21885,8 +21910,8 @@ oblige anyone to edit a test.
 2g. **Every pipeline comment is visibly attributed (requirement 9d).**
    `test/comment-identity.test.sh` passes: `pipeline_actor_label` returns the
    right display name for each of `script`, `coordinator`, `implementer`,
-   `reviewer`, `enabler`, `review-script` and `project-reviewer`, and fails
-   open — prints the token itself — for one it does not recognise;
+   `reviewer`, `enabler`, `review-script`, `project-reviewer` and `monitor`,
+   and fails open — prints the token itself — for one it does not recognise;
    `pipeline_comment_header` renders `**<Display>** · autonomous pipeline ·
    node \`<node>\`` for a known and an unknown actor alike;
    `pipeline_comment_marker` carries both the cycle id and the actor token,

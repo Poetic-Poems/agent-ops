@@ -51,6 +51,21 @@
 # exit status, and a repository whose label search or archive write failed
 # this run is simply retried on the next one, not a crashed script.
 #
+# @MONITOR_MINUTE@ is schedule.monitor_offset_minutes past the node's own base
+# minute (mod 60), the same jitter the doctor line above uses, and — unlike
+# the review and publish lines — it fires *every* hour rather than at one.
+# That is deliberate and is the whole cadence mechanism (agent-ops#1284,
+# docs/MONITOR-PIPELINE-SPEC.md M4): the Pipeline Monitor is due once a day at
+# schedule.monitor_hour *and* within the hour after any `pager-fired` event,
+# and supercronic cannot express the second half at all — no crontab line can
+# read the fleet's own log. So the line fires hourly and `monitor-cycle.sh`
+# decides, standing itself down with `cause: "not-due"` on every tick that is
+# neither. A not-due tick takes and releases a lock, folds the union log a
+# few times, and makes no model call at all — the cost that matters. It ends
+# `|| true` for the same reason the doctor line does:
+# nothing on this image reads a cron job's exit status, and a stood-down tick
+# is not a crashed script.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 
@@ -60,6 +75,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 @CYCLE_MINUTE@ @CYCLE_HOURS@ * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
 @REVIEW_MINUTE@ @REVIEW_HOUR@ * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
 @DOCTOR_MINUTE@ * * * *  /app/scripts/doctor.sh --unattended >> $LOGDIR/doctor.log 2>&1 || true
+@MONITOR_MINUTE@ * * * *  /app/monitor-cycle.sh >> $LOGDIR/monitor-cron.log 2>&1 || true
 @REVERT_RATE_MINUTE@ @REVERT_RATE_HOUR@ * * *  /app/scripts/publish-revert-rate.sh >> $LOGDIR/revert-rate.log 2>&1 || true
 @TECH_DEBT_ARCHIVE_MINUTE@ @TECH_DEBT_ARCHIVE_HOUR@ * * *  /app/scripts/publish-tech-debt-archive.sh >> $LOGDIR/tech-debt-archive.log 2>&1 || true
 

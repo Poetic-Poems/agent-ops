@@ -2,11 +2,11 @@
 #
 # test/prompt-untrusted-framing.test.sh — the untrusted-external-content
 # framing (IMPLEMENTATION-PIPELINE-SPEC.md requirement 45,
-# REVIEW-PIPELINE-SPEC.md R18) is present in every prompt that reads
-# forge-authored text, and every copy — the spec's canonical one included —
-# is byte-identical.
+# REVIEW-PIPELINE-SPEC.md R18, MONITOR-PIPELINE-SPEC.md M10a) is present in
+# every prompt that reads forge-authored text, and every copy — the spec's
+# canonical one included — is byte-identical.
 #
-# What this guards: the framing is one rule with nine copies, which is the
+# What this guards: the framing is one rule with eleven copies, which is the
 # shape the final-message parser already taught this repo to distrust
 # (test/extract-json-result.test.sh): copies drift. A prompt whose copy has
 # drifted is enforcing a different rule from the one the spec states; a
@@ -59,9 +59,11 @@ fi
 printf 'ok   - canonical block lifted from requirement 45a (%s lines)\n' "$(wc -l <<<"$canon")"
 
 # Requirement 45's implementation-pipeline prompts, plus
-# project-reviewer.md under REVIEW-PIPELINE-SPEC.md R18.
+# project-reviewer.md under REVIEW-PIPELINE-SPEC.md R18 and monitor.md under
+# MONITOR-PIPELINE-SPEC.md M10a.
 prompts=(coordinator implementer reviewer approver enabler enabler-adjudicate
-         enabler-decide approver-adjudicate-open-question refiner project-reviewer)
+         enabler-decide approver-adjudicate-open-question refiner project-reviewer
+         monitor)
 
 for p in "${prompts[@]}"; do
   f="$SCRIPT_DIR/prompts/$p.md"

@@ -1933,10 +1933,13 @@ panel, which stays node-local by design.
 The **Stage health** panel (agent-ops#662) renders `status.stage_health`: the
 most recent per-stage verdict computed on *this* node, read from
 `state_dir/.stage-health.json` (written by `lib/stage-health.sh`'s
-`stage_health_write_status` at the end of every cycle) rather than
+`stage_health_write_status` at the end of every cycle, and — for the
+`monitor` row alone — at the end of every Pipeline Monitor run that engaged
+its stage, `docs/MONITOR-PIPELINE-SPEC.md` M17) rather than
 recomputed, on `status.doctor`'s own precedent just above. One row per stage
 (`coordinator`, `approver`, `approver-adjudicate-open-question`,
-`enabler-adjudicate`, `enabler-decide`, `enabler`, `refiner`, `implementer`, `reviewer`),
+`enabler-adjudicate`, `enabler-decide`, `enabler`, `refiner`, `implementer`,
+`reviewer`, `monitor`),
 each carrying a verdict badge (`failing` red,
 `idle` grey, `ok` green), when it last succeeded, and — for a `failing`
 row — its consecutive-failure count and the most recent attempt's own
@@ -1947,6 +1950,16 @@ this is the reading that was missing entirely during the 2026-08-21
 incident (issue #662): `cycle: RUNNING` and a clean Doctor pass both stayed
 true while every stage failed for 10.5 hours, because neither reads a
 stage's own `exit_code`.
+
+The panel, the fleet-strip badge and the banner all iterate whatever keys
+`stages` actually holds rather than a fixed list, which is what lets the
+`monitor` row appear beside the implementation pipeline's nine without a
+render change: `monitor-cycle.sh` computes the verdict for `["monitor"]` over
+its own `monitor-log.jsonl` and **merges** it into the same file, so the two
+writers each replace only their own stages and carry the other's forward
+(`docs/MONITOR-PIPELINE-SPEC.md` M17). What the Monitor pipeline *found* is
+not on this page at all — its dated report lives in the state store — and
+surfacing it is deferred at `tech-debt/TD-PPagop-26091101.md`.
 
 A non-empty `pager` array (implementation spec requirement 51) raises its
 own page-top banner, `.banner.pager-firing` — a fourth colour modifier
@@ -2315,9 +2328,11 @@ number's twins elsewhere on the page.
   this Publisher either, on `doctor.sh --unattended`'s own precedent just
   above, even though (unlike doctor's GitHub section) recomputing it here
   would cost no network call: `agent-cycle.sh`'s own `cleanup()` already
-  computes and writes `<state_dir>/.stage-health.json`
+  computes and merges `<state_dir>/.stage-health.json`
   (`{computed_at, threshold, idle_after_hours, stages}`) at the end of every
-  cycle, so reading it keeps this Publisher and the fleet heartbeat
+  cycle — and `monitor-cycle.sh` merges its own `monitor` stage into the same
+  file at the end of every monitor run that engaged its stage — so reading it
+  keeps this Publisher and the fleet heartbeat
   (`scripts/state-sync.sh`, below) reading the identical file rather than two
   computations that could disagree. This Publisher reads it verbatim into
   `status.stage_health`; `null` until this node's first cycle since this

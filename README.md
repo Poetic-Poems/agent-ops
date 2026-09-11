@@ -32,6 +32,9 @@ to be blocked and wait for the Enabler at all — see
 
 If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
 
+Once a day, a third pipeline reads the other two and reports on them: see
+[The Pipeline Monitor](#the-pipeline-monitor).
+
 ## Responding to your review comments
 
 Request changes on an agent PR and the next cycle picks it up: it reads your
@@ -458,6 +461,10 @@ Keys:
 | `pager_repair_rate_percent` | `20` | Percent. How much of a trailing 24h's selections may need a work-order-repaired repair before the dashboard's `work-order-repaired-rate` pager invariant fires. |
 | `pager_escalation_burst` | `10` | How many escalations may be filed fleet-wide in a trailing 24h before the dashboard's `escalation-burst` pager invariant fires — independently of a re-flagged item's own repeat inside that window, which always fires it. |
 | `pager_landing_armed_within_days` | `7` | Days. How long a repository configured at merge_autonomy agent-merges-routine or above may go with zero landing-armed events, despite landing-refused activity in that same window, before the dashboard's `landing-never-armed` pager invariant fires. |
+| `monitor_model` | `claude-sonnet-5` | The Pipeline Monitor: one scheduled read of the pipeline's own state, producing a dated report and at most `monitor_max_filings_per_run` filings — see [The Pipeline Monitor](#the-pipeline-monitor). Leave it empty to switch the pipeline off. |
+| `monitor_max_input_bytes` | `300000` | The largest digest the Script will hand the Pipeline Monitor. The Monitor never reads the fleet log or `data.js` itself; it reads this digest, and the Script bounds it by shedding samples and the specs' gotcha sections before it ever truncates. `0` disables the bound. |
+| `monitor_max_filings_per_run` | `3` | The most items one monitor run may file (tech-debt issues, `pw::decision` records and escalations together). Everything past the cap is deferred, named in the report with its finding key, and offered again next run. `0` files nothing and reports everything. |
+| `monitor_tactical_keys` | `[]` | The configuration keys the Monitor may decide on its own authority, recorded as a `pw::decision` a human vetoes by reopening. Empty (the default) means it proposes tactical levers in its report and moves none. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
@@ -503,6 +510,8 @@ Keys:
 | `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to (agent-ops#579), on the same per-node jitter `doctor_offset_minutes` uses. |
 | `schedule.tech_debt_archive_hour` | `4` | The hour the containerised node's daily tech-debt archive publishing tick (`scripts/publish-tech-debt-archive.sh`, agent-ops#878) fires. |
 | `schedule.tech_debt_archive_offset_minutes` | `37` | Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to (agent-ops#878), on the same per-node jitter `revert_rate_offset_minutes` uses. |
+| `schedule.monitor_hour` | `5` | The hour the containerised node's daily Pipeline Monitor run is due (`monitor-cycle.sh`). Its crontab line fires hourly and stands down unless this hour's daily run is still owed, or a pager page fired since the last run. |
+| `schedule.monitor_offset_minutes` | `19` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly Pipeline Monitor tick's minute is set to, on the same per-node jitter `doctor_offset_minutes` uses. |
 | `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Pullwright/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one. |
 <!-- config-table:end -->
 
@@ -1971,6 +1980,73 @@ implementation pipeline down.
 
 See `docs/REVIEW-PIPELINE-SPEC.md` for the full specification.
 
+## The Pipeline Monitor
+
+A third pipeline — the **Pipeline Monitor** — reads the other two. Once a day
+(`schedule.monitor_hour`), and again within the hour after any fleet
+invariant fires a page, `monitor-cycle.sh` assembles a digest of everything
+the fleet recorded about itself in the last 24 hours and asks a model three
+questions: what is broken now, what limited throughput and which lever it
+points at, and what is new.
+
+It exists because half of what is worth knowing about a pipeline needs a
+*hypothesis*, not a threshold. Anything threshold-shaped — a node stopped
+publishing, a stage is failing — already has a pager invariant watching for
+it. The other half is the reading that only comes from holding several
+records side by side, and this is the pipeline that does that on a schedule
+instead of when somebody happens to look.
+
+**What a run produces.**
+
+- A dated report in the state store,
+  `~/.local/state/poetic-agents/monitor/<date>/report.md`, carrying the three
+  readings, a triage verdict for every open `pw::pager` page, and a ledger of
+  exactly what the run filed, deferred or skipped and why.
+- At most `monitor_max_filings_per_run` (default 3) GitHub items, each
+  carrying a stable finding key and a provenance line
+  (`Monitor: monitor/<date> M-<nn>`), deduplicated against what previous runs
+  already filed — so a fault that persists is restated in the report and cites
+  the issue already tracking it, rather than filing a second one.
+
+**What it files, by class.** A **mechanical** finding — a defect with a
+knowable fix — becomes a `pw::type:tech-debt` issue in the repository it
+names, which the implementation pipeline's own `tech-debt` source then picks
+up and works, with no human in the loop. A **tactical** finding — a
+configuration lever — is proposed in the report, and *moved* only for keys you
+have listed in `monitor_tactical_keys` (empty by default, so out of the box it
+proposes every lever and moves none); when it does move, it moves as a
+`pw::decision` record you veto by reopening. A **strategic** finding, or
+anything only you can decide, becomes one escalation assigned to
+`enabler_assignee`, with the options written out. That escalation is the only
+path from this pipeline to you.
+
+**What it never does.** It never closes a pager page — a page's lifecycle
+belongs to the pager, which retires it when the fact behind it clears — never
+edits `config.json`, never writes a label the Co-Ordinator keys on, and never
+runs as a stage of `agent-cycle.sh`. It holds no Docker socket and no host
+path: everything it knows about a host comes from that node's own host-facts
+record.
+
+**Cost and cadence.** Its crontab line fires hourly and stands itself down
+unless the day's run is still owed or a page has fired since the last report —
+a stood-down tick costs no model call at all. When a run *is* due, exactly one
+node in the fleet takes it, through the same claim mechanism that keeps two
+nodes off one work item. It defers to a running implementation or review
+cycle, and shares the one usage-limit signal with both.
+
+### Operate
+
+```bash
+./monitor-cycle.sh --dry-run   # build and print the digest; launch no model, file nothing
+./monitor-cycle.sh --once      # one run now in the foreground, whatever the schedule says
+tail -f ~/.local/state/poetic-agents/monitor-log.jsonl   # this pipeline's own event stream
+cat ~/.local/state/poetic-agents/monitor/$(date -u +%F)/report.md
+```
+
+Set `monitor_model` to `""` to switch the pipeline off entirely.
+
+See `docs/MONITOR-PIPELINE-SPEC.md` for the full specification.
+
 ## Monitoring
 
 ### Dashboard
@@ -2535,6 +2611,8 @@ To modify this system (add a new work source, change the selection logic, etc.),
 `docs/DASHBOARD-SPEC.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
 
 `docs/REVIEW-PIPELINE-SPEC.md` is the companion specification for the repository-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
+
+`docs/MONITOR-PIPELINE-SPEC.md` is the companion specification for the Pipeline Monitor (`monitor-cycle.sh`, `lib/monitor-digest.sh` and `prompts/monitor.md`).
 
 ## Branch workflow
 

@@ -2,7 +2,8 @@
 
 Operations tooling for the Poetic autonomous agent pipelines: the
 implementation cycle (`agent-cycle.sh`), the repository-review cycle
-(`review-cycle.sh`), and the local dashboard (`dashboard/`). `README.md`
+(`review-cycle.sh`), the Pipeline Monitor (`monitor-cycle.sh`), and the
+local dashboard (`dashboard/`). `README.md`
 explains what the pipelines do and how to configure, install, pause, and
 monitor them; `docs/*-SPEC.md` are the as-built requirement specifications
 for each component; `prompts/` holds the runtime prompts the pipelines pass
@@ -18,6 +19,9 @@ Each component has an as-built requirements specification in `docs/`:
 - `docs/REVIEW-PIPELINE-SPEC.md` — the repository-review pipeline: it reviews
   one repository per run (`review-cycle.sh`, `prompts/project-reviewer.md`,
   the vendored skill).
+- `docs/MONITOR-PIPELINE-SPEC.md` — the Pipeline Monitor: a scheduled
+  reading of the pipelines' own state (`monitor-cycle.sh`,
+  `lib/monitor-digest.sh`, `prompts/monitor.md`).
 - `docs/DASHBOARD-SPEC.md` — the monitoring dashboard
   (`scripts/publish-dashboard.sh`, `dashboard/index.html`).
 

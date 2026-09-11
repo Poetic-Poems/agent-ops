@@ -244,6 +244,35 @@ assert_contains "computed_at looks like a real UTC instant" \
 assert_eq "an unwritable state_dir is a silent no-op, not a failure" "0" \
   "$(stage_health_write_status "$scratch/does-not-exist" "$log_file" 3 48 "$NOW_EPOCH"; echo $?)"
 
+# --- Two writers, one file (agent-ops#1284) --------------------------------
+# `monitor-cycle.sh` computes a verdict for its own `monitor` stage over its
+# own stream and writes it into this same file, so the write has to merge
+# rather than overwrite. A plain write from either side would file the
+# *other's* stages as `idle` — they are absent from the stream it read — which
+# on the dashboard is indistinguishable from a pipeline that has genuinely had
+# no work, and is exactly the "green for the wrong reason" reading #662 exists
+# to prevent.
+monitor_log="$scratch/monitor-log.jsonl"
+printf '{"ts":"2026-08-21T10:00:00Z","monitor":"m1","node":"n","event":"stage-end","stage":"monitor","exit_code":0}\n' \
+  > "$monitor_log"
+stage_health_write_status "$scratch" "$monitor_log" 3 48 "$NOW_EPOCH" '["monitor"]'
+assert_eq "a narrowed write records the stage it was asked for" "ok" \
+  "$(jq -r '.stages.monitor.verdict' "$status_file")"
+assert_eq "and leaves the other pipeline's verdict exactly as it found it" "failing" \
+  "$(jq -r '.stages.coordinator.verdict' "$status_file")"
+monitor_only="$scratch/monitor-only"
+mkdir -p "$monitor_only"
+stage_health_write_status "$monitor_only" "$monitor_log" 3 48 "$NOW_EPOCH" '["monitor"]'
+assert_eq "a narrowed write on its own files one stage and no other" "1" \
+  "$(jq -r '.stages | length' "$monitor_only/.stage-health.json")"
+assert_eq "  ... and it is the one it was asked about" "monitor" \
+  "$(jq -r '.stages | keys[0]' "$monitor_only/.stage-health.json")"
+stage_health_write_status "$scratch" "$log_file" 3 48 "$NOW_EPOCH"
+assert_eq "and the implementation pipeline's own write carries the monitor verdict forward" "ok" \
+  "$(jq -r '.stages.monitor.verdict' "$status_file")"
+assert_eq "while refreshing its own" "failing" \
+  "$(jq -r '.stages.coordinator.verdict' "$status_file")"
+
 # --- stage_health_status_lines: the --status `stages:` block's own body ----
 
 lines="$(stage_health_status_lines "$status_file" "$NOW_EPOCH")"

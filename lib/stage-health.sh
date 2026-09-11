@@ -82,23 +82,47 @@
 # and a stage whose actual behaviour ever diverges enough to need its own
 # number can be given one by its caller without touching this file.
 
-# stage_health_verdicts [THRESHOLD] [IDLE_AFTER_HOURS] [NOW_EPOCH] < log.jsonl
+# The implementation pipeline's own stages — the set `stage_health_verdicts`
+# reads when its caller names none. Kept as a constant rather than inlined in
+# the jq program because a second pipeline now asks the same question about
+# its own stage over its own stream, and the two answers have to end up in one
+# file (see `stage_health_write_status`'s STAGE_NAMES parameter).
+STAGE_HEALTH_STAGE_NAMES='[
+  "coordinator", "approver", "approver-adjudicate-open-question",
+  "enabler-adjudicate", "enabler-decide", "enabler", "refiner", "implementer", "reviewer"
+]'
+
+# stage_health_verdicts [THRESHOLD] [IDLE_AFTER_HOURS] [NOW_EPOCH] [STAGE_NAMES_JSON] < log.jsonl
 # Print one JSON object keyed by stage name, each value
 # {last_success, consecutive_failures, last_detail, verdict} as described
 # above. Never fails the caller: an unreadable/malformed stream, or a jq
 # fault, prints `{}` rather than nothing, so a caller that always expects an
 # object never has to guard against an empty string too.
+#
+# STAGE_NAMES_JSON narrows which stages are computed, and — because a stage
+# absent from the stream reads as `idle` rather than being omitted — it is
+# also what keeps one pipeline's writer from filing an `idle` verdict for
+# every one of another pipeline's stages. `monitor-cycle.sh` passes
+# `["monitor"]` over its own `monitor-log.jsonl`; `agent-cycle.sh` passes
+# nothing and gets the implementation stages exactly as before.
 stage_health_verdicts() {
-  local threshold="${1:-3}" idle_after_hours="${2:-48}" now="${3:-}" out
+  local threshold="${1:-3}" idle_after_hours="${2:-48}" now="${3:-}" \
+        stage_names="${4:-}" out
   [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=3
   [[ "$idle_after_hours" =~ ^[0-9]+$ ]] || idle_after_hours=48
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  # Two tests, not one: `jq -e` over an *empty* input exits 0 having produced
+  # nothing at all, so an unset STAGE_NAMES_JSON would sail through the jq
+  # check and reach `--argjson` as the empty string it is — which jq then
+  # refuses, taking the whole verdict down to `{}` with the error swallowed.
+  if [[ -z "$stage_names" ]] \
+     || ! jq -e 'type == "array" and length > 0' <<<"$stage_names" >/dev/null 2>&1; then
+    stage_names="$STAGE_HEALTH_STAGE_NAMES"
+  fi
   out="$(jq -c -R -n --argjson threshold "$threshold" \
-    --argjson idle_secs "$(( idle_after_hours * 3600 ))" --argjson now "$now" '
-    def stage_names: [
-      "coordinator", "approver", "approver-adjudicate-open-question",
-      "enabler-adjudicate", "enabler-decide", "enabler", "refiner", "implementer", "reviewer"
-    ];
+    --argjson idle_secs "$(( idle_after_hours * 3600 ))" --argjson now "$now" \
+    --argjson stage_names "$stage_names" '
+    def stage_names: $stage_names;
     ([ inputs | select(length > 0) | (fromjson? // empty) ]) as $events
     | reduce stage_names[] as $stage (
         {};
@@ -130,27 +154,51 @@ stage_health_verdicts() {
   printf '%s\n' "$out"
 }
 
-# stage_health_write_status STATE_DIR LOG_FILE [THRESHOLD] [IDLE_AFTER_HOURS] [NOW_EPOCH]
-# Compute `stage_health_verdicts` from LOG_FILE — this node's own log.jsonl,
-# never the fleet union — and write it atomically to
+# stage_health_write_status STATE_DIR LOG_FILE [THRESHOLD] [IDLE_AFTER_HOURS] \
+#                           [NOW_EPOCH] [STAGE_NAMES_JSON]
+# Compute `stage_health_verdicts` from LOG_FILE — one pipeline's own stream on
+# this node, never the fleet union — and merge it into
 # STATE_DIR/.stage-health.json as `{computed_at, threshold, idle_after_hours,
 # stages}`, on `write_unattended_status`'s own precedent (scripts/doctor.sh,
 # #617): `mktemp` in the same directory, then `mv -f`, so a reader never sees
 # a partial file. An unwritable or missing STATE_DIR is a silent no-op, the
 # same tolerance doctor's own writer gives it — recording this status is
 # never worth failing the cycle that computed it. Always returns 0.
+#
+# Merged, not overwritten, since agent-ops#1284: two pipelines write this one
+# file, each over its own stream — `agent-cycle.sh` at the end of every cycle,
+# `monitor-cycle.sh` at the end of every monitor run — and a plain write would
+# mean each one filing the *other's* stages as `idle` (they are absent from
+# the stream it read), which on the dashboard is indistinguishable from a
+# pipeline that has genuinely had no work. Only the stages this call actually
+# computed are replaced; every other entry is carried forward untouched.
+#
+# Two writers and a read-modify-write is a lost update waiting to happen, and
+# this one is deliberately left unguarded: the losing write costs one
+# refresh of one pipeline's own verdict, the next run of either pipeline
+# restores it, and `monitor-cycle.sh` already stands down while a cycle holds
+# the node (M3.2), so the overlap is confined to the seconds after a cycle's
+# own lock releases. A lock here would be a second lock ordering to reason
+# about for a file whose whole content is recomputed from scratch every time.
 stage_health_write_status() {
-  local state_dir="$1" log_file="$2" threshold="${3:-3}" idle_after_hours="${4:-48}" now="${5:-}"
+  local state_dir="$1" log_file="$2" threshold="${3:-}" idle_after_hours="${4:-}" \
+        now="${5:-}" stage_names="${6:-}"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=3
+  [[ "$idle_after_hours" =~ ^[0-9]+$ ]] || idle_after_hours=48
   [[ -n "$state_dir" && -d "$state_dir" && -w "$state_dir" ]] || return 0
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
-  local ts stages_json tmp
+  local ts stages_json existing_stages tmp
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   stages_json="$( { [[ -n "$log_file" && -f "$log_file" ]] && cat "$log_file"; } \
-    | stage_health_verdicts "$threshold" "$idle_after_hours" "$now")"
+    | stage_health_verdicts "$threshold" "$idle_after_hours" "$now" "$stage_names")"
+  existing_stages="$(jq -c '.stages // {}' "$state_dir/.stage-health.json" 2>/dev/null)" \
+    || existing_stages='{}'
+  [[ -n "$existing_stages" ]] || existing_stages='{}'
   tmp="$(mktemp "$state_dir/.stage-health.json.XXXXXX" 2>/dev/null)" || return 0
   if jq -n --arg ts "$ts" --argjson threshold "$threshold" --argjson idle_hours "$idle_after_hours" \
-        --argjson stages "$stages_json" \
-        '{computed_at: $ts, threshold: $threshold, idle_after_hours: $idle_hours, stages: $stages}' \
+        --argjson existing "$existing_stages" --argjson stages "$stages_json" \
+        '{computed_at: $ts, threshold: $threshold, idle_after_hours: $idle_hours,
+          stages: ($existing + $stages)}' \
         > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$state_dir/.stage-health.json"
   else
