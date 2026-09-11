@@ -162,6 +162,7 @@ write_image_compose
 assert_eq "only the undefaulted \${VAR} is required — a default, a \$\$ escape and a comment's shell are not" \
   "NODE_NAME" "$(compose_reconcile_required_vars "$image_file" | paste -sd, -)"
 
+# shellcheck disable=SC2016  # the ${...} is compose's own interpolation, fed in literally
 write_image_compose '    mem_limit: ${AGENT_OPS_MEM:?a node must size this}'
 assert_eq "\${VAR:?…} is required too — it has no default, it has an error message" \
   "AGENT_OPS_MEM,NODE_NAME" "$(compose_reconcile_required_vars "$image_file" | paste -sd, -)"
@@ -235,6 +236,7 @@ assert_eq "one compose-reconcile-refused event" "1" "$(events_of compose-reconci
 # apart refuses every node for ever.
 reset_fixture
 write_env AGENT_OPS_IMAGE
+# shellcheck disable=SC2016  # likewise: this rewrites compose's interpolation, not the shell's
 sed -i 's/\${NODE_NAME}/${NODE_NAME:-unnamed}/' "$image_file"
 verdict="$(run_reconcile)"
 assert_eq "a defaulted variable is not a missing one" "reconciled" "$(jq -r '.status' <<<"$verdict")"

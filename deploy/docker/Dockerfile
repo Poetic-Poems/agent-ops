@@ -128,16 +128,17 @@ RUN grep -qaF "no required checks reported on the" "$(command -v gh)" \
 # Docker socket to point them at. The client only: this image runs no daemon
 # and wants none.
 #
-# The size is real and is the price of the feature: ~130 MB installed
-# (~30 MB of `docker-ce-cli`, ~100 MB of the statically-linked
-# `docker-compose-plugin`), against an image already measured in gigabytes
-# for Node and the Claude CLI. The alternative considered and rejected was a
-# static `docker` binary plus the compose plugin binary fetched by hand: same
-# order of size, one more pair of pinned checksums to maintain, and no apt
-# repository to deliver a security fix on the next CI rebuild. Left floating
-# on Docker's repository for the same reason the base image's own packages
-# are (see the FROM above): CI rebuilds on every merge, so a fix lands within
-# a cycle.
+# The size is real and is the price of the feature: ~78 MB installed — 46 MB
+# of `docker-ce-cli` and 32 MB of `docker-compose-plugin`, read from this
+# repository's own `Installed-Size` fields for the newest noble/stable
+# packages on 2026-09-11, and a figure that moves with them — against an
+# image already measured in gigabytes for Node and the Claude CLI. The
+# alternative considered and rejected was a static `docker` binary plus the
+# compose plugin binary fetched by hand: the same order of size, one more
+# pair of pinned checksums to maintain, and no apt repository to deliver a
+# security fix on the next CI rebuild. Left floating on Docker's repository
+# for the same reason the base image's own packages are (see the FROM
+# above): CI rebuilds on every merge, so a fix lands within a cycle.
 #
 # The `grep` first is not decoration. Docker's apt suite is the base image's
 # release codename, and this line names it literally rather than deriving it,

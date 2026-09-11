@@ -280,7 +280,7 @@ compose_reconcile_run() {
   missing="$(compose_reconcile_missing_env "$image_file" "$env_file" | paste -sd, - 2>/dev/null || true)"
   if [[ -n "$missing" ]]; then
     _compose_reconcile_settle "$state_dir" "$now" refused \
-      "the merged compose.yaml needs ${missing} and this node's .env defines neither them nor a default — add them to .env by hand; nothing was applied"
+      "the merged compose.yaml requires ${missing}, which this node's .env does not define and the file itself gives no default for — add it to .env by hand; nothing was applied"
     return 0
   fi
 
@@ -376,9 +376,11 @@ _compose_reconcile_settle() {  # <state-dir> <now> <status> <reason> [pending] [
     previous="$(cat "$marker" 2>/dev/null || true)"
     prev_status="$(jq -r '.status // ""' <<<"$previous" 2>/dev/null || true)"
     prev_reason="$(jq -r '.reason // ""' <<<"$previous" 2>/dev/null || true)"
-    printf '%s\n' "$verdict" > "$marker.tmp.$$" 2>/dev/null \
-      && mv "$marker.tmp.$$" "$marker" 2>/dev/null \
-      || rm -f "$marker.tmp.$$" 2>/dev/null
+    if printf '%s\n' "$verdict" > "$marker.tmp.$$" 2>/dev/null; then
+      mv "$marker.tmp.$$" "$marker" 2>/dev/null || rm -f "$marker.tmp.$$" 2>/dev/null
+    else
+      rm -f "$marker.tmp.$$" 2>/dev/null
+    fi
   fi
 
   printf '%s\n' "$verdict"

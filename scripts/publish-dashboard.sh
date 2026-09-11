@@ -2359,12 +2359,14 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # the node itself can read the compose.yaml on its own host, so a
        # heartbeat carrying no verdict yields null, never a local answer.
        compose: ($h.compose // null),
-       # And for what the peer's own reconciler did about that drift
-       # (lib/compose-reconcile.sh): only the peer's own container holds its
-       # project directory and its Docker socket, so a heartbeat carrying no
-       # verdict — a peer with no reconciler, or one on an image built before
-       # this existed — yields null rather than this node answering for a
-       # deployment file it cannot see.
+       # And for what that peer reconciler did about the drift
+       # (lib/compose-reconcile.sh): only the container on that host holds
+       # that host project directory and its Docker socket, so a heartbeat
+       # carrying no verdict — a peer with no reconciler, or one on an image
+       # built before this existed — yields null rather than this node
+       # answering for a deployment file it cannot see. (No apostrophes in
+       # this block: it is inside the single-quoted jq program, where one
+       # would end the string.)
        compose_reconcile: ($h.compose_reconcile // null),
        # And for the image-drift verdict (lib/image-drift.sh): only the
        # peer itself can query the registry on its own behalf, so an absent

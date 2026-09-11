@@ -176,6 +176,13 @@ printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
 # heartbeat below rather than replicated verbatim.
 printf '{"computed_at":"2026-07-20T00:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":5,"last_success":null,"last_detail":"boom"}}}\n' \
   > "$state/.stage-health.json"
+# The compose reconciler's own verdict (lib/compose-reconcile.sh, requirement
+# 2.5a): written by a *different container* into this shared volume, and
+# local to this node as a raw file for the same reason .stage-health.json
+# above is — it answers for one host's deployment file. Its content reaches
+# peers folded into the heartbeat below.
+printf '{"status":"refused","at":"2026-07-20T00:00:00Z","reason":"the merged compose.yaml requires NODE_NAME"}\n' \
+  > "$state/.compose-reconcile.json"
 # The daily revert-rate publishing pass's own text output (agent-ops#579):
 # local to this node, like doctor.log above — its structured sibling,
 # revert-rate.jsonl (set up above, beside log.jsonl), is fleet-wide data and
@@ -234,6 +241,7 @@ assert_eq "the expensive-gather cache does not replicate" "0" "$(test -e "$pushe
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
 assert_eq "the stage-health cache does not replicate as a raw file" "0" "$(test -e "$pushed/.stage-health.json" && echo 1 || echo 0)"
+assert_eq "the compose-reconcile verdict does not replicate as a raw file" "0" "$(test -e "$pushed/.compose-reconcile.json" && echo 1 || echo 0)"
 assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$pushed/revert-rate.log" && echo 1 || echo 0)"
 assert_eq "the revert-rate cumulative-state cache does not replicate" "0" \
   "$(test -e "$pushed/revert-rate-cumulative-state.json" && echo 1 || echo 0)"
@@ -344,6 +352,17 @@ assert_eq "a drifted compose.yaml is published in the heartbeat" "drifted" \
 assert_eq "with the count of differing lines" "2" \
   "$(jq -r '.compose.diff_lines' "$drift_pushed/heartbeat.json" 2>/dev/null)"
 
+# --- The heartbeat carries the reconciler's verdict beside it (2.5a) ---------
+# Verbatim, like `.stage-health.json` above and for a stronger version of the
+# same reason: the file is another *container's* finished verdict, and
+# state-sync.sh holds neither the Docker socket nor the project directory it
+# was reached through, so it could not re-derive it even if it wanted to.
+# lib/compose-reconcile.sh's own suite covers what the verdict says.
+assert_eq "the reconciler's verdict travels beside the drift verdict it acts on" "refused" \
+  "$(jq -r '.compose_reconcile.status' "$drift_pushed/heartbeat.json" 2>/dev/null)"
+assert_eq "with the reason it recorded intact" "the merged compose.yaml requires NODE_NAME" \
+  "$(jq -r '.compose_reconcile.reason' "$drift_pushed/heartbeat.json" 2>/dev/null)"
+
 # --- The heartbeat carries the updater verdict (agent-ops#603) ----------------
 # lib/updater-health.sh's own suite (test/updater-health.test.sh) covers what
 # the verdict says; what belongs here is that a ledger deploy/docker/
@@ -399,6 +418,8 @@ sb_pushed="$tmp_dir/pushed-standby"
 git clone --quiet --branch nodes/standby-node "$remote" "$sb_pushed"
 assert_eq "a node with no .stage-health.json yet publishes a null stage_health, not a guess" "null" \
   "$(jq -c '.stage_health' "$sb_pushed/heartbeat.json")"
+assert_eq "a node with no reconciler publishes a null compose_reconcile, not a guess" "null" \
+  "$(jq -c '.compose_reconcile' "$sb_pushed/heartbeat.json")"
 assert_eq "a node with no updater-ledger/ yet publishes a null updater, not a guess" "null" \
   "$(jq -c '.updater' "$sb_pushed/heartbeat.json")"
 
