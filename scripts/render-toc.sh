@@ -35,15 +35,14 @@ if (( $# > 0 )); then
 fi
 
 # GitHub's own heading-anchor slug: lower-case, strip anything that is not
-# alphanumeric/underscore/hyphen/space, spaces to hyphens, collapse consecutive hyphens.
+# alphanumeric/underscore/hyphen/space, spaces to hyphens. GitHub does not
+# collapse consecutive hyphens: a removed character leaves both its
+# neighbouring spaces behind, each becoming its own hyphen.
 gh_slug() {
   local text="$1"
   text=$(echo "$text" | tr '[:upper:]' '[:lower:]')
   text="${text//[^a-z0-9 _-]/}"
   text="${text// /-}"
-  while [[ "$text" == *--* ]]; do
-    text="${text//--/-}"
-  done
   echo "$text"
 }
 

@@ -40,7 +40,7 @@ requirements, so bring the spec in line first, then the affected prompt(s).
 
 ## Generated regions
 
-Three types of generated regions exist in this repository:
+Two types of generated regions exist in this repository:
 
 1. **Configuration tables** — `README.md`'s two configuration tables and each
    as-built spec's own (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s,

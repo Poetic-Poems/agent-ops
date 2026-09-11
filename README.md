@@ -55,7 +55,7 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
   - [Items nobody has specified](#items-nobody-has-specified)
   - [See stage transcripts](#see-stage-transcripts)
   - [Why a stage was stopped](#why-a-stage-was-stopped)
-  - [See the security & code-quality findings](#see-the-security-code-quality-findings)
+  - [See the security & code-quality findings](#see-the-security--code-quality-findings)
 - [Repository review](#repository-review)
   - [Configuration (`project_review` block in `config.json`)](#configuration-project_review-block-in-configjson)
   - [Review instructions and context](#review-instructions-and-context)
@@ -89,7 +89,7 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
   - [Running the tests](#running-the-tests)
   - [Trying a change on a real node before it merges](#trying-a-change-on-a-real-node-before-it-merges)
   - [Taking one node out while the rest keep working](#taking-one-node-out-while-the-rest-keep-working)
-  - [How a change propagates — and what survives it](#how-a-change-propagates-and-what-survives-it)
+  - [How a change propagates — and what survives it](#how-a-change-propagates--and-what-survives-it)
 <!-- toc:end -->
 
 ## What it does
