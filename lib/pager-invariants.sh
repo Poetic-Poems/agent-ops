@@ -1351,7 +1351,19 @@ _pager_ready_pr_candidates() {
   gh="${PAGER_GH:-gh}"
   cutoff="$(jq -n -r --arg h "$cutoff_hours" \
     '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
-  [[ -n "$cutoff" ]] || return 0
+  if [[ -z "$cutoff" ]]; then
+    # PAGER_REMEDY_LOG_FILE/NODE/CYCLE: the same documented-exception plain
+    # variables `_pager_evaluate_one` sets before calling EVAL_FN (lib/pager.sh's
+    # own header) — the only way this eval-path helper can reach a log file at
+    # all. Empty when sourced outside that call (e.g. by the test suite calling
+    # this directly): `pager_log_event`'s own `>> "$log_file" 2>/dev/null || true`
+    # then silently writes nothing rather than failing.
+    pager_log_event "${PAGER_REMEDY_LOG_FILE:-}" "${PAGER_REMEDY_NODE:-}" "${PAGER_REMEDY_CYCLE:-}" "warning" \
+      "$(jq -nc --arg k "cutoff_hours" --arg v "$cutoff_hours" --arg fn "_pager_ready_pr_candidates" \
+        --arg d "empty cutoff computed from cutoff_hours=$cutoff_hours in _pager_ready_pr_candidates — the pr-unreviewed pager invariant is skipped this evaluation" \
+        '{detail: $d, key: $k, value: $v, fn: $fn}')"
+    return 0
+  fi
   while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
     open="$("$gh" pr list -R "$repo" --state open --label "$pr_label" \

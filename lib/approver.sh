@@ -1534,7 +1534,14 @@ _approver_restale_sweep_repo() {
     else
       cutoff="$(jq -n -r --arg h "$approver_restale_escalate_after_hours" \
         '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
-      [[ -n "$cutoff" && "$review_at" < "$cutoff" ]] || continue
+      if [[ -z "$cutoff" ]]; then
+        log_event "warning" "$(jq -nc --arg k "approver_restale_escalate_after_hours" \
+          --arg v "$approver_restale_escalate_after_hours" --arg fn "_approver_restale_sweep_repo" \
+          --arg d "empty cutoff computed from approver_restale_escalate_after_hours=$approver_restale_escalate_after_hours in _approver_restale_sweep_repo — the stale-review escalate check for this pull request is skipped this cycle" \
+          '{detail: $d, key: $k, value: $v, fn: $fn}')"
+        continue
+      fi
+      [[ "$review_at" < "$cutoff" ]] || continue
       _approver_restale_escalate "$slug" "$pr_url" "$number" "$item_ref" "$review_at"
     fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
@@ -1543,7 +1550,13 @@ _approver_restale_sweep_repo() {
   local unreviewed engage_cutoff escalate_cutoff claimed_prs prior first_engaged_at last_result
   engage_cutoff="$(jq -n -r --arg h "$approver_unreviewed_engage_after_hours" \
     '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
-  [[ -n "$engage_cutoff" ]] || return 0
+  if [[ -z "$engage_cutoff" ]]; then
+    log_event "warning" "$(jq -nc --arg k "approver_unreviewed_engage_after_hours" \
+      --arg v "$approver_unreviewed_engage_after_hours" --arg fn "_approver_restale_sweep_repo" \
+      --arg d "empty cutoff computed from approver_unreviewed_engage_after_hours=$approver_unreviewed_engage_after_hours in _approver_restale_sweep_repo — the unreviewed-engage trigger is skipped for $slug this cycle" \
+      '{detail: $d, key: $k, value: $v, fn: $fn}')"
+    return 0
+  fi
   unreviewed="$(jq -c --arg cutoff "$engage_cutoff" '[.[] | select(.isDraft | not)
     | select((.reviewDecision // "") != "CHANGES_REQUESTED")
     | select((.createdAt // "") != "" and .createdAt < $cutoff)
@@ -1584,7 +1597,12 @@ _approver_restale_sweep_repo() {
       IFS=$'\t' read -r first_engaged_at last_result <<<"$prior"
       escalate_cutoff="$(jq -n -r --arg h "$approver_restale_escalate_after_hours" \
         '(now - ($h|tonumber)*3600) | strftime("%Y-%m-%dT%H:%M:%SZ")' 2>/dev/null || true)"
-      if [[ -n "$escalate_cutoff" && -n "$first_engaged_at" && "$first_engaged_at" < "$escalate_cutoff" ]]; then
+      if [[ -z "$escalate_cutoff" ]]; then
+        log_event "warning" "$(jq -nc --arg k "approver_restale_escalate_after_hours" \
+          --arg v "$approver_restale_escalate_after_hours" --arg fn "_approver_restale_sweep_repo" \
+          --arg d "empty cutoff computed from approver_restale_escalate_after_hours=$approver_restale_escalate_after_hours in _approver_restale_sweep_repo — the unreviewed-escalate check for this pull request is skipped this cycle" \
+          '{detail: $d, key: $k, value: $v, fn: $fn}')"
+      elif [[ -n "$first_engaged_at" && "$first_engaged_at" < "$escalate_cutoff" ]]; then
         _approver_unreviewed_escalate "$slug" "$pr_url" "$number" \
           "pr-${number}-approver-unreviewed-${head}" "$first_engaged_at"
         continue

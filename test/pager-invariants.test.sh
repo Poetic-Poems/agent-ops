@@ -926,6 +926,30 @@ assert_eq "  ... logging a fresh approver-unreviewed-engaged event for #10" "1" 
 assert_eq "  ... result unavailable, never claiming a real review was posted" "1" \
   "$(grep -c '\"result\":\"unavailable\"' "$pager_remedy_pr")"
 
+# issue #1366: an empty cutoff here disables the *entire* pr-unreviewed
+# invariant just as silently. _pager_pr_unreviewed_candidates's own upstream
+# regex (`^[0-9]+([.][0-9]+)?$`) already turns away a non-numeric value like
+# "2h" before it ever reaches this guard, so a value big enough to overflow
+# jq's own strftime is used instead — schema-legal (digits only, no
+# `maximum` in config.schema.json), but still empties the cutoff the same
+# way.
+pr_unreviewed_warn_log="$WORKDIR/pr-unreviewed-warn.jsonl"
+: > "$pr_unreviewed_warn_log"
+PAGER_REMEDY_LOG_FILE="$pr_unreviewed_warn_log"
+PAGER_REMEDY_NODE="n1"
+PAGER_REMEDY_CYCLE="c9"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="99999999999999999999"
+verdict="$(pager_eval_pr_unreviewed "[]" "$pru_log")"
+assert_eq "a cutoff so large jq's own strftime overflows still fails safe: never fires" \
+  "false" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... but logs a warning naming the cutoff_hours key" "1" \
+  "$(grep -c '\"key\":\"cutoff_hours\"' "$pr_unreviewed_warn_log")"
+assert_eq "  ... and the raw value that failed to produce a cutoff" "1" \
+  "$(grep -c '\"value\":\"99999999999999999999\"' "$pr_unreviewed_warn_log")"
+assert_eq "  ... and the function it fired from" "1" \
+  "$(grep -c '\"fn\":\"_pager_ready_pr_candidates\"' "$pr_unreviewed_warn_log")"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
+
 PAGER_EVAL_REPOS_JSON=""
 assert_eq "no PAGER_EVAL_REPOS_JSON configured: never fires" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"
