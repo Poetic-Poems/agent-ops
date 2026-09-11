@@ -259,6 +259,58 @@ assert_eq "three decide-tactical passes over three different reasons all count t
 assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
   acme/widgets TD001 "key4" "$tmp_dir/three-decides.jsonl"
 
+# --- escalation_autonomy_decide_pass_count: since the last human touch ------
+# (agent-ops#1051). `eligibility_reason` is a durable marker carried on the
+# pass event itself — the claimed entry's own eligibility `reason`
+# (`threshold`, `recheck` or `issue-closed`) — so the count only reads
+# forward from the latest pass tagged `eligibility_reason: "issue-closed"`
+# for the item, rather than the item's whole history. With no such event,
+# every pass still counts, exactly as before this field existed.
+
+decide_pass_evt() {  # decide_pass_evt TS REPO ITEM [ELIGIBILITY_REASON]
+  local ts="$1" repo="$2" item="$3" elig="${4:-}"
+  jq -nc --arg ts "$ts" --arg r "$repo" --arg i "$item" --arg er "$elig" \
+    '{ts: $ts, event: "enabler-adjudication", repo: $r, item: $i,
+      verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical"}
+     + (if $er == "" then {} else {eligibility_reason: $er} end)'
+}
+
+# (a) three passes, none tagged: every one counts, as today.
+{ decide_pass_evt "2026-09-01T00:00:00Z" acme/widgets TD010
+  decide_pass_evt "2026-09-02T00:00:00Z" acme/widgets TD010
+  decide_pass_evt "2026-09-03T00:00:00Z" acme/widgets TD010
+} > "$tmp_dir/since-touch-none.jsonl"
+assert_eq "no human touch on the log: all three passes count" "3" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD010 < "$tmp_dir/since-touch-none.jsonl")"
+
+# (b) two passes, then a pass tagged issue-closed, then one more: only the
+# touch's own pass and the one after it are within the new budget.
+{ decide_pass_evt "2026-09-01T00:00:00Z" acme/widgets TD011
+  decide_pass_evt "2026-09-02T00:00:00Z" acme/widgets TD011
+  decide_pass_evt "2026-09-03T00:00:00Z" acme/widgets TD011 "issue-closed"
+  decide_pass_evt "2026-09-04T00:00:00Z" acme/widgets TD011
+} > "$tmp_dir/since-touch-one.jsonl"
+assert_eq "a human touch resets the budget: only the touch's own pass and the one after it count" "2" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD011 < "$tmp_dir/since-touch-one.jsonl")"
+
+# (c) an event lacking eligibility_reason entirely — a pass logged before
+# agent-ops#1051 shipped, or simply an ordinary pass — still counts, whether
+# it comes before or after a touch.
+{ decide_pass_evt "2026-09-01T00:00:00Z" acme/widgets TD012 "issue-closed"
+  decide_pass_evt "2026-09-02T00:00:00Z" acme/widgets TD012
+} > "$tmp_dir/since-touch-missing-field.jsonl"
+assert_eq "an event with no eligibility_reason field at all still counts as an ordinary pass" "2" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD012 < "$tmp_dir/since-touch-missing-field.jsonl")"
+
+# (d) a touch tagged for a different item does not reset this item's own
+# budget.
+{ decide_pass_evt "2026-09-01T00:00:00Z" acme/widgets TD013
+  decide_pass_evt "2026-09-02T00:00:00Z" acme/widgets TD999 "issue-closed"
+  decide_pass_evt "2026-09-03T00:00:00Z" acme/widgets TD013
+} > "$tmp_dir/since-touch-other-item.jsonl"
+assert_eq "a touch tagged for a different item does not reset this item's own budget" "2" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD013 < "$tmp_dir/since-touch-other-item.jsonl")"
+
 # --- escalation_refile_suppressed (agent-ops#779, decided on #784) -----------
 # The per-close re-filing rate limit's own pure comparator: given a close
 # time, "now", and the configured window, is the window still active? Fails

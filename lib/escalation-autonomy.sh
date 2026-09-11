@@ -135,20 +135,29 @@ escalation_autonomy_decide_reason_seen() {
 }
 
 # escalation_autonomy_decide_pass_count REPO ITEM < union.jsonl
-# The number of decide-tactical passes already spent for REPO+ITEM, over any
-# reason — the "cap reached" half of the bound (requirement 36d,
-# `escalation_adjudication_max_passes`): counts every `enabler-adjudication`
-# event tagged `pass: "decide-tactical"` for this item, regardless of
-# `reason_key`, since the cap bounds total spend per item rather than spend
-# per reason.
+# The number of decide-tactical passes already spent for REPO+ITEM since the
+# last human touch, over any reason — the "cap reached" half of the bound
+# (requirement 36d, `escalation_adjudication_max_passes`): counts every
+# `enabler-adjudication` event tagged `pass: "decide-tactical"` for this
+# item, regardless of `reason_key`, whose `ts` is at or after the `ts` of the
+# latest such event that also carries `eligibility_reason: "issue-closed"` —
+# that touch's own pass is the first one the new budget counts, a durable
+# marker on the pass event itself rather than a live re-derivation of
+# eligibility at read time (agent-ops#1051). With no such event, every pass
+# ever logged for this item counts, exactly as before this field existed.
+# `eligibility_reason` is absent from every pass logged before agent-ops#1051
+# shipped; those count as ordinary passes, the same tolerance this file
+# already gives every other pre-field event.
 escalation_autonomy_decide_pass_count() {
   local repo="$1" item="$2" n
   n="$(jq -r -R -n --arg r "$repo" --arg i "$item" '
     [ inputs | select(length > 0) | (fromjson? // empty)
       | select(.event == "enabler-adjudication" and (.pass // "") == "decide-tactical"
                and (.item // "") == $i
-               and ((.repo // "") == "" or (.repo // "") == $r)) ]
-    | length
+               and ((.repo // "") == "" or (.repo // "") == $r)) ] as $passes
+    | ($passes | map(select((.eligibility_reason // "") == "issue-closed") | (.ts // ""))
+       | sort | last) as $since
+    | $passes | map(select($since == null or (.ts // "") >= $since)) | length
   ' 2>/dev/null || echo 0)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   printf '%s' "$n"
