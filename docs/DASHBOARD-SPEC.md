@@ -1401,6 +1401,21 @@ persisted choice the control has since disabled this way (grown stale as
 selected `<option>` and the chart it drives in agreement — and reverts to the
 persisted choice on its own once the window it names is available again.
 
+Three of the panels above — the fleet-node cards, the cycle rows and the
+void-item rows — are keyboard-reachable, not just clickable. Each is a plain
+`<div>`/`<tr>` with none of a native control's keyboard behaviour, so each
+carries `tabindex="0"`, `role="button"`, and a `keydown` handler firing on
+Enter or Space in place of a click — the same activation a `<button>` gets
+for free, and the reason the pull-request-reference card below is built on
+`<a>` rather than either of these. Each also carries an `aria-label` naming
+the action a click-derived affordance alone would not announce: "Filter
+cycles and log events to `<node>`" (or "Show every node's cycles and log
+events" once that filter is already active) for a fleet card, "Expand detail
+for cycle started `<time>`" for a cycle row, "Expand full text for `<item>`"
+for a void row. All three show the page's ordinary accent-coloured
+`:focus-visible` outline on focus, matching every other focusable control on
+the page.
+
 The **GitHub API budget** panel (issue #1090) is the first section on the
 page, deliberately: it answers the same question requirement 2.0's own gate
 asks — is the shared rate-limit bucket about to bind — before the first

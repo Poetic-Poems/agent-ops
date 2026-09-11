@@ -81,6 +81,7 @@
   .card .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
   .card .v small { font-size: 13px; font-weight: 500; color: var(--muted); }
   .card.clickable { cursor: pointer; }
+  .card.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .card.nodestale { border-color: var(--red); }
   .card.nodeselected { outline: 2px solid var(--accent); }
   .card .state { font-size: 14px; font-weight: 650; margin-top: 4px; }
@@ -106,6 +107,7 @@
   th { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 600; }
   tbody tr.clickable { cursor: pointer; }
   tbody tr.clickable:hover { background: var(--grey-bg); }
+  tbody tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--grey-bg); }
   td.wrap { white-space: normal; max-width: 420px; }
   td.wrap.roomy { max-width: none; width: 100%; }
   /* A cell capped at three lines, in a table whose rows open to their full
@@ -283,6 +285,28 @@
       e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
     });
     return e;
+  }
+  // A plain element (`<tr>`, `<div>`) has no keyboard behaviour of its own, so
+  // a click-only handler leaves a keyboard user with no way to reach it at
+  // all. This gives it the same activation a native `<button>` already has —
+  // focusable, announced as a button, and triggered by Enter or Space — for
+  // the three widgets on this page (cycle rows, void-item rows, fleet-node
+  // cards) built on such elements rather than on the anchors the
+  // pull-request-reference card uses, which get this for free from the
+  // browser. `activate` is the same handler passed to both the click and the
+  // keydown listener; a keydown is ignored unless `elm` itself is the event
+  // target, so Enter on a link nested inside (e.g. a PR reference) still just
+  // follows the link rather than also toggling the widget around it.
+  function makeActivatable(elm, activate) {
+    elm.setAttribute("tabindex", "0");
+    elm.setAttribute("role", "button");
+    elm.addEventListener("click", activate);
+    elm.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter" && ev.key !== " " && ev.key !== "Spacebar") return;
+      if (ev.target !== elm) return;
+      ev.preventDefault();
+      activate(ev);
+    });
   }
   function parseTs(s) { if (!s) return null; var d = new Date(s); return isNaN(d) ? null : d; }
   function fmtTime(s) { var d = parseTs(s); return d ? d.toLocaleString(undefined, {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "—"; }
@@ -1627,8 +1651,10 @@
     // `lock_stale_after` the liveness rule is the stronger claim and wins, and
     // before it the stage's own timeout is the only one that can fire at all.
     var doubt = livenessDoubt(n) || nodeStageOverrun(n);
+    var nodeCardLabel = nodeFilter === n.node ? "Show every node's cycles and log events" : "Filter cycles and log events to " + n.node;
     var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
-                          title: nodeFilter === n.node ? "click to show every node's cycles and log events" : "click to filter cycles and log events to " + n.node});
+                          title: nodeFilter === n.node ? "click to show every node's cycles and log events" : "click to filter cycles and log events to " + n.node,
+                          "aria-label": nodeCardLabel});
     card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role), switchBadge(n.switch) ]));
 
     var state = el("div", {class:"state"});
@@ -1726,7 +1752,7 @@
            : n.stale ? "STALE — last push >" + staleAfterMinutes() + " min ago"
            : "as of its last push, " + fmtAgo(n.heartbeat_ts)}));
 
-    card.addEventListener("click", function (ev) {
+    makeActivatable(card, function (ev) {
       // The version line put links inside a card that is itself a filter
       // toggle; following one must not also change the filter behind it.
       if (ev.target.closest && ev.target.closest("a")) return;
@@ -2311,10 +2337,11 @@
         el("td", {}, cy.pr_url ? prRefFromUrl(cy.pr_url, "cycle/" + cy.id) : document.createTextNode(""))
       ];
       if (showNode) cells.splice(1, 0, el("td", {}, nodeTag(cy.node)));
-      var tr = el("tr", {class:"clickable"}, cells);
+      var tr = el("tr", {class:"clickable",
+        "aria-label": "Expand detail for cycle started " + fmtTime(cy.started_at)}, cells);
       var detail = el("tr", {class:"detail", style: isOpen ? "" : "display:none"}, el("td", {colspan: showNode ? 8 : 7}, cycleDetail(cy)));
-      tr.addEventListener("click", function (ev) {
-        if (ev.target.tagName === "A") return;
+      makeActivatable(tr, function (ev) {
+        if (ev.target.closest && ev.target.closest("a")) return;
         var nowOpen = detail.style.display === "none";
         detail.style.display = nowOpen ? "" : "none";
         if (nowOpen) expanded[rowKey] = true; else delete expanded[rowKey];
@@ -2482,13 +2509,14 @@
         var key = (v.repo || "") + "/" + (v.item || "") + "/" + i;
         var why = el("div", {class: voidOpen[key] ? "" : "clip",
           text: (v.stage ? v.stage + ": " : "") + (v.detail || "") + (v.evidence ? " — " + v.evidence : "")});
-        var tr = el("tr", {class:"clickable"}, [
+        var tr = el("tr", {class:"clickable",
+          "aria-label": "Expand full text for " + v.item + (v.repo ? " (" + v.repo.split("/")[1] + ")" : "")}, [
           el("td", {class:"mono", text: v.item}),
           el("td", {class:"mono muted", text: v.repo ? v.repo.split("/")[1] : "—"}),
           el("td", {class:"muted", text: fmtAgo(v.ts)}),
           el("td", {class:"wrap"}, why)
         ]);
-        tr.addEventListener("click", function () {
+        makeActivatable(tr, function () {
           if (voidOpen[key]) { delete voidOpen[key]; why.className = "clip"; }
           else { voidOpen[key] = true; why.className = ""; }
         });

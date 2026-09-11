@@ -46,6 +46,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still inside its window. The product default stays `always-escalate`; the
   Poetic fleet's own `config.json` opts in.
 
+- **The dashboard's cycle rows, void-item rows and fleet-node cards are now
+  keyboard-reachable** (issue #970). These three `.clickable` widgets were
+  plain `<tr>`/`<div>` elements with no keyboard behaviour of their own — the
+  page's only other interactive widget, the pull-request-reference card, is
+  built on native `<a>` anchors and got keyboard support for free. Each now
+  carries `tabindex="0"`, `role="button"`, an `aria-label` naming what it
+  does, and a `keydown` handler firing on Enter or Space in place of a click,
+  and shows the page's ordinary accent-coloured `:focus-visible` outline on
+  focus.
+
 - **The host-facts collector** (issue #1283, requirement 36a):
   `scripts/collect-host-facts.sh` writes one record per node,
   `state_dir/host-facts/<node>.json`, of facts no container running the
