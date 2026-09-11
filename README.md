@@ -2680,8 +2680,10 @@ into groups that each finish comfortably inside that ceiling, and run
 unbounded call over the whole thing.
 
 That copies the working tree into a throwaway container built from the image
-and runs the suite there. It takes a few minutes, and it is worth them: the
-tests will *start* anywhere and only *pass* in the environment CI uses, and
+and runs the suite there. A full run takes 40-50 minutes — most of it in a
+handful of files that drive real entry-point scripts as subprocesses rather
+than calling library functions directly — and it is worth it: the tests will
+*start* anywhere and only *pass* in the environment CI uses, and
 both ways of getting that wrong produce failures on an untouched `main` that
 read as a broken branch rather than a broken invocation.
 
