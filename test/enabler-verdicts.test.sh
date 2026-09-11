@@ -164,7 +164,7 @@ escalation_autonomy_decide_pass_available_fn="$(extract_fn 'escalation_autonomy_
 # scenario before it wants the recording stub in its place, not the real
 # `gh`-writing function.
 escalation_thread_reconcile_fn="$(extract_fn 'escalation_thread_reconcile() {' "$SCRIPT_DIR/lib/enabler.sh")"
-# agent-ops#1385: requirement 36f's act gate lives inside `run_enabler_decide`
+# PR #1389: requirement 36f's act gate lives inside `run_enabler_decide`
 # itself — which act survives a pass at all, before the Script ever sees the
 # verdict. Lifted here with the rest, while `SCRIPT_DIR` still points at the
 # repository, and `eval`led only in the last section of this file: every
@@ -1237,7 +1237,7 @@ run_enabler_decide() {
 
 
 # ============================================================================
-# escalate, decide-with-veto (agent-ops#1385, requirement 36f): the fourth
+# escalate, decide-with-veto (PR #1389, requirement 36f): the fourth
 # rung. Same pass, same tier, same bound — two things differ, and both are
 # what these cases pin. First, the `mandate` the Script hands the pass:
 # `delegate` here, `tactical` at `decide-tactical`. Second, what the Script

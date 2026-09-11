@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **A fourth `escalation_autonomy` rung, `decide-with-veto`** (agent-ops#1385,
+- **A fourth `escalation_autonomy` rung, `decide-with-veto`** (PR #1389,
   requirement 36f), answering recommendation 3 of
   `docs/reviews/2026-09-11-escalation-autonomy-review.md`. The same
   decide pass, at the same tier, over the same escalations, under a wider

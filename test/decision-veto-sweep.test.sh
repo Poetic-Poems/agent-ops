@@ -192,7 +192,7 @@ assert_eq_n "logs no escalated event — there is no re-block to register it aga
 
 
 # ============================================================================
-# run_pending_decision_acts (agent-ops#1385, requirement 36f): the other half
+# run_pending_decision_acts (PR #1389, requirement 36f): the other half
 # of `decide-with-veto` — the act a decision deferred behind its veto window,
 # performed once the window has passed and nobody pulled the lever.
 #

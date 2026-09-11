@@ -757,7 +757,7 @@ run_doctor
 assert_contains "always-escalate (the default) needs no enabler_model either" \
   '[ ok ] escalation_autonomy is "always-escalate"' "$out"
 
-# agent-ops#1385: the fourth rung runs the very same pass, so it needs the
+# PR #1389: the fourth rung runs the very same pass, so it needs the
 # Enabler for exactly the same reason — a rung added without extending this
 # pairing check is one whose misconfiguration reports nothing at all.
 ea_veto_config="$tmp/ea-veto-config.json"

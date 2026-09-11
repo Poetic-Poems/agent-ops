@@ -3367,7 +3367,7 @@ fi
 # --- Decisions panel (agent-ops#937): every `decide-tactical` decision taken
 # in the last 7 days, and whether a `decision-vetoed` event followed it —
 # and, for a `decide-with-veto` decision that carries an act (requirement
-# 36f, agent-ops#1385), whether that act is still pending: `pending_act` is
+# 36f, PR #1389), whether that act is still pending: `pending_act` is
 # true while the decision names an `act` and no `decision-acted` event has
 # performed or cancelled it, which is the one state in which the owner's
 # reopen still changes what happens rather than only undoing it. A

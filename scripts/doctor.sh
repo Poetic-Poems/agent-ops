@@ -272,7 +272,7 @@ else
   ok "every source whose refinement_policy is \"required\" has a Refiner configured to refine it"
 fi
 
-# D18 (agent-ops#627, agent-ops#936, agent-ops#1385): `escalation_autonomy`'s
+# D18 (agent-ops#627, agent-ops#936, PR #1389): `escalation_autonomy`'s
 # `adjudicate-first`, `decide-tactical` and `decide-with-veto` each run one
 # extra Enabler engagement per escalation —
 # a refinement disagreement only for the first, any `escalate` verdict for the

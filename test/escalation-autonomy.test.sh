@@ -106,7 +106,7 @@ assert_eq "an explicit null repo override falls through to the top-level key, no
 assert_eq "malformed config falls back to always-escalate" "always-escalate" \
   "$(escalation_autonomy_configured_level 'not json' "acme/widgets")"
 
-# The fourth rung (requirement 36f, agent-ops#1385) resolves on exactly the
+# The fourth rung (requirement 36f, PR #1389) resolves on exactly the
 # same precedence as the three below it — this function reads whatever word
 # the schema admits and never enumerates them, so what these two assert is
 # that nothing here has to learn a new value for a new rung to work, from
