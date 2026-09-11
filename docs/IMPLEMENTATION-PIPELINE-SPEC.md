@@ -816,9 +816,10 @@ and the schema must carry every one of them.
 | `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
-| `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_autonomy` | `decide-with-veto` | The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936, agent-ops#1385), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at...[continued below](#extended-notes-escalation_autonomy) |
 | `escalation_adjudication_max_passes` | `3` | The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An...[continued below](#extended-notes-escalation_adjudication_max_passes) |
 | `standing_decisions_file` | `docs/STANDING-DECISIONS.md` | The path `enabler_decide_precedents` (`lib/escalation-autonomy.sh`) reads whole, cut at 32 KiB, into a decide-tactical pass's `precedents.standing_decisions` (requirement 36d): one dated line per owner answer the pipeline is to stay consistent with, the owner's own record or a delegate's on their behalf, changed only through the pull-request gate. Resolved against the directory holding `config.json` when relative (`agent-cycle.sh`); empty or `null` supplies none, and the pass...[continued below](#extended-notes-standing_decisions_file) |
+| `decision_veto_window_hours` | `24` | The veto window of requirement 36f, in hours: `act_after` on a `decision-taken` event is the event's own time plus this many hours, and `run_pending_decision_acts` (lib/decision-veto.sh) performs the act only once `act_after` has passed, no `decision-acted` or `decision-vetoed` has retired it, and a live re-read of the `pw::decision` log issue still reports it closed (an unreadable state refuses the act for that cycle — the act is irreversible and the window is not). `0`...[continued below](#extended-notes-decision_veto_window_hours) |
 | `escalation_refile_after_hours` | 24 h | The per-close re-filing rate limit (agent-ops#779, decided on #784 as behaviour (b)): a filing from `open_question_escalate` or `approver_escalate` is suppressed when a `closed` issue carrying `enabler_escalation_label` and this item's own reference exists (read live via `escalation_recent_close`, never from the log) and `now − closedAt` is less than this many hours (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`) — *unless* it is the first post-close...[continued below](#extended-notes-escalation_refile_after_hours) |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
@@ -992,9 +993,11 @@ GitHub login assigned to every escalation issue the Enabler raises (requirement 
 
 ### Extended notes: `escalation_autonomy`
 
-The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling back to `enabler_model`) and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log (excluding any tagged `pass: "decide-tactical"`) escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`.
+The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936, agent-ops#1385), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling back to `enabler_model`) and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log (excluding any tagged `pass: "decide-tactical"`) escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`.
 
 At `decide-tactical` (requirement 36d), the same pairing but broader: before the Script files the escalation issue for *any* `escalate` verdict, one bounded decide pass runs at `enabler_model_critical` (`prompts/enabler-decide.md`, `run_enabler_decide`), reaching `settle` (recorded exactly as `adjudicate-first`'s own `adequate`, or as an ordinary `unblocked` with the pass's own evidence as reason for a non-refinement item), `decide` (a tactical decision the pipeline may take — the human-touch equivalent: one comment on the item's own thread where it is an issue, a `decision-taken` event carrying `decision`/`rationale`/`options_considered`/`comment_url`/`model`, and an `unblocked` event; never a specification of its own — a non-issue item's decision is instead supplied to the next Refiner engagement for that item, alongside `refinements` (requirement 3h), as `decisions` (requirement 36d)), or `escalate` (as `adjudicate-first`'s own `inadequate`). Bounded per reason, not per item: a pass is available when eligibility `reason` is `issue-closed`, or when this reflag's own reason key — a fingerprint of `detail`/`unblock_condition` — has never been decided or adjudicated before *and* fewer than `escalation_adjudication_max_passes` decide-tactical passes have run for this item at all. Every decision this key can reach that touches any of requirement 36a's nine owner-only conditions is unaffected by it: those escalate at every level, and `decide-tactical` widens only which *tactical* questions the pipeline may answer, never the owner-only boundary itself.
+
+At `decide-with-veto` (requirement 36f), the same pass at the same tier over the same verdicts, with `mandate: "delegate"` in its runtime input instead of `mandate: "tactical"`: it may additionally accept a residual exposure or residual risk in a repository the installation itself owns where the filer named a `## Default` and no credential, ruleset, permission, App or account is minted, rotated, edited or granted (condition 2's acceptance clause alone), and may carry `act: {"kind": "corroborate-void"}` on a `decide` verdict to supply requirement 34d's missing human corroboration for a `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-superseded-…` item. Every other owner-only condition is unchanged at this rung. A `decide` verdict carrying an `act` is recorded as `decision-taken` with `act`/`act_after` and does *not* unblock the item: `run_pending_decision_acts` (lib/decision-veto.sh) performs the act only once `decision_veto_window_hours` have passed and the decision's own `pw::decision` log issue is still closed. At `decide-tactical` the same verdict is out of mandate and is treated as `escalate`, with evidence naming the act.
 
 The same top-level (or per-repo) level also governs a second, independent consumer: a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668). The ladder word is shared — one config key, not two — but the actor, tier and prompt are not: an open question adjudicates at the Approver's own critical tier (`approver_model_critical`, `prompts/approver-adjudicate-open-question.md`) rather than the Enabler's, is logged as `open-question-adjudication` rather than `enabler-adjudication`, and is bounded by `open_question_pass_available` rather than `escalation_autonomy_pass_available` — a distinct function reading the same "one pass per item, per human touch, with a closed-escalation-issue exemption" shape, never the same log entries. This one consumer checks the level for `adjudicate-first` exactly (`lib/landing.sh`), so `decide-tactical` gets it at `adjudicate-first`'s own behaviour rather than a further widening — deliberately out of scope for this key (a later item may extend `decide-tactical` to 8f on its own terms).
 
@@ -1005,6 +1008,10 @@ The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalat
 ### Extended notes: `standing_decisions_file`
 
 The path `enabler_decide_precedents` (`lib/escalation-autonomy.sh`) reads whole, cut at 32 KiB, into a decide-tactical pass's `precedents.standing_decisions` (requirement 36d): one dated line per owner answer the pipeline is to stay consistent with, the owner's own record or a delegate's on their behalf, changed only through the pull-request gate. Resolved against the directory holding `config.json` when relative (`agent-cycle.sh`); empty or `null` supplies none, and the pass runs on the repository's `pw::decision` records and closed escalations alone. Unreadable at run time reads as empty — best-effort like every other input the Enabler builds (requirement 37).
+
+### Extended notes: `decision_veto_window_hours`
+
+The veto window of requirement 36f, in hours: `act_after` on a `decision-taken` event is the event's own time plus this many hours, and `run_pending_decision_acts` (lib/decision-veto.sh) performs the act only once `act_after` has passed, no `decision-acted` or `decision-vetoed` has retired it, and a live re-read of the `pw::decision` log issue still reports it closed (an unreadable state refuses the act for that cycle — the act is irreversible and the window is not). `0` means the first cycle after the decision. An unreadable or negative value falls back to `24`, the default this key ships. Only a `decide` verdict at `decide-with-veto` can carry an act (requirement 36d), so nothing reads this key at any other rung.
 
 ### Extended notes: `escalation_refile_after_hours`
 
@@ -11787,14 +11794,20 @@ implements.
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
     36a's `void` row) and the Implementer (requirement 9b) all call before
     logging `item-void`; none of the three may write it directly. The rule is
-    about the three *stages*, and there is exactly one writer outside it: the
-    Script's own pre-flight (requirement 34m), which reads its evidence
-    straight off `gh`, the register file or the cycle's own pre-claim digest
-    — the ground truth the tests below check a stage's citation *against* —
-    and so has nothing for the guard to corroborate it with. Its event
-    carries `stage: preflight` all the same, so a reader auditing the log for
-    guarded voids should not mistake it for a fourth stage evading this
-    requirement. Five tests, all on the Script's side of the boundary:
+    about the three *stages*, and there are exactly two writers outside it.
+    The first is the Script's own pre-flight (requirement 34m), which reads
+    its evidence straight off `gh`, the register file or the cycle's own
+    pre-claim digest — the ground truth the tests below check a stage's
+    citation *against* — and so has nothing for the guard to corroborate it
+    with. The second is requirement 36f's `corroborate-void` act
+    (`run_pending_decision_acts`, `lib/decision-veto.sh`), which supplies for
+    the three closing pull-request shapes exactly the corroboration this
+    requirement otherwise only accepts from a human's own `obsolete` label: a
+    decision taken under the delegate mandate, filed as a closed
+    `pw::decision` issue, and left un-reopened for the whole of
+    `decision_veto_window_hours`. Each carries its own `stage` all the same —
+    `preflight` and `decision` — so a reader auditing the log for guarded
+    voids can tell either from a stage evading this requirement. Five tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
       required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
       all absence. An entry without it is not a verdict, it is an opinion.
@@ -11888,7 +11901,11 @@ implements.
         branch on an unexamined one is exactly how pull request #264 was lost
         (TD-PPagop-26080901). Such a void is escalated instead of recorded,
         to a human who can either resolve the item honestly or apply the
-        label.
+        label — or, where the installation runs at `escalation_autonomy:
+        "decide-with-veto"`, to a decide pass that may supply the same
+        judgement itself under requirement 36f's delegate mandate, with the
+        veto window standing where the human's own reading of the draft
+        otherwise stands.
       - `pr-<n>-conflict-…` — a corroborated void of this shape closes
         **nothing** (34k excludes it, for the same #264 reason: the void says
         the *conflict* resolved, not the pull request, which stays a live PR
@@ -12598,15 +12615,24 @@ implements.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
-    **Only a corroborated void — today, that is the three stage writers.**
-    `void_json` holds the unresolved `item-void` events of all three stage
-    writers (Co-Ordinator, Enabler, Implementer), and requirement 34d's guard
-    corroborates every one of them before it is logged (issue #243), so each
-    is eligible here. It also holds the Script's own pre-flight voids
-    (requirement 34m), and the `stage` gate below excludes them: a pre-flight
-    void closes no GitHub object, so a finishing-source item it voids leaves
-    its pull request open for a human, or for a later corroborated void, to
-    close. Each candidate still carries its event's `stage`, and
+    **Only a corroborated void — the three stage writers, and the delegate
+    mandate's own act.** `void_json` holds the unresolved `item-void` events
+    of all three stage writers (Co-Ordinator, Enabler, Implementer), and
+    requirement 34d's guard corroborates every one of them before it is
+    logged (issue #243), so each is eligible here. `stage: "decision"` — the
+    void requirement 36f's `corroborate-void` act writes — is eligible too,
+    on its own corroboration rather than the guard's: a decision taken under
+    the delegate mandate, filed as a closed `pw::decision` issue, and left
+    un-reopened for the whole of `decision_veto_window_hours`. That is what
+    this close was always waiting for on a `pr-<n>-abandoned-…` or
+    `pr-<n>-review-…` draft that still changes files — the judgement, not the
+    machinery — so nothing else here changes to admit it: the one-shot rule,
+    the action cap, the `-conflict-`/`-dequeued-` exclusion and a human's
+    plain re-open each apply to it exactly as to any other corroborated void.
+    `void_json` also holds the Script's own pre-flight voids (requirement
+    34m), and the `stage` gate below excludes them: a pre-flight void closes
+    no GitHub object, so a finishing-source item it voids leaves its pull
+    request open for a human, or for a later corroborated void, to close. Each candidate still carries its event's `stage`, and
     `close-void-github-items.sh` still gates on it — an uncorroborated
     `item-void` must never reach this point, but if one somehow did (a future
     writer that bypassed the guard, a malformed or stageless entry), the gate
@@ -13543,8 +13569,15 @@ implements.
     issue, a naming choice that touches no roadmap item, a choice between two
     reversible shapes. `always-escalate` and `adjudicate-first` never reach
     this list at all — every `escalate` verdict they cannot resolve some other
-    way already goes to a person — so it binds only the one rung wide enough
-    to need it.
+    way already goes to a person — so it binds only the rungs wide enough to
+    need it.
+
+    **What `decide-with-veto` adds.** Requirement 36f's delegate mandate is
+    the one thing that moves any of the nine: at that rung, and only for a
+    pass whose input carries `mandate: "delegate"`, condition 2's acceptance
+    clause and the human corroboration of a void for three pull-request
+    shapes are reachable. It is written there, in full and once, and this
+    list is unchanged by it at every other rung.
 36b. **The refinement duty.** For an item carrying `kind: "needs-refinement"`
     (requirement 34e) the Enabler reads the item and its whole context and then:
 
@@ -13824,7 +13857,10 @@ implements.
     `spec`/`comment_url`, empty for an ordinary blocked item or a
     never-refined `needs-refinement` one), the re-flag's recorded reason
     (`detail`/`unblock_condition`), this verdict's own
-    `issue.title`/`issue.body`, and `precedents` — what the installation and
+    `issue.title`/`issue.body`, `mandate` — `"tactical"` at this rung and
+    `"delegate"` at `decide-with-veto` (requirement 36f), the one field that
+    differs between the two and the only thing that tells the pass which
+    reaches are open to it — and `precedents`, what the installation and
     this repository have already decided, built by `enabler_decide_precedents`
     (`lib/escalation-autonomy.sh`) from three sources, each best-effort like
     every other read the Enabler makes (requirement 37; a failed or empty
@@ -13876,8 +13912,14 @@ implements.
     - **`decide`** — a tactical decision the pipeline may take on its own
       authority (bounded by "The owner-only boundary", requirement 36a):
       `decision` (the choice, one paragraph), `rationale`, and
-      `options_considered`. The Script records this as the **human-touch
-      equivalent** of an escalation the human answered and closed: it logs
+      `options_considered`. A `decide` verdict that also carries an `act` is
+      out of mandate here and is treated as `escalate`, with `evidence`
+      naming the act — the same reading the missing-`decision` case below
+      gets, and the whole of what `mandate: "tactical"` means: only
+      requirement 36f's delegate mandate carries an act, and only ever the
+      one act that requirement names. The Script records this as the
+      **human-touch equivalent** of an escalation the human answered and
+      closed: it logs
       `decision-taken` (`repo`, `item`, `decision`, `rationale`,
       `options_considered`, `comment_url` where one exists, `model`,
       `reason_key` — the same fingerprint the bound below computes) and logs
@@ -14031,6 +14073,16 @@ implements.
       `by` — the reopening actor GitHub's own issue-events API reports) —
       exactly once per veto, never once per cycle the log issue stays open,
       by construction of the exclusion above;
+    - where that same log issue still carries a pending act
+      (`pending_decision_acts`, `lib/cycle-state.sh` — requirement 36f's
+      `decide-with-veto` decisions whose act is owed but not yet performed),
+      logs `decision-acted` with that act and `outcome: "cancelled"`. The
+      act is already retired by the veto mechanically — the pending set
+      excludes anything a `decision-vetoed` names — so this event exists for
+      the record rather than for the effect: a pending act that merely
+      stopped appearing would leave nothing saying the reopen is what
+      stopped it, and a cancellation the owner cannot see is not the lever
+      requirement 36f promised;
     - where the original item is **not terminal** (its own GitHub issue is
       still open, or, for an item with no thread, its implementing pull
       request is still open or none can be found — a classification failure
@@ -14092,6 +14144,150 @@ implements.
     fleet log the same way every other panel is. `agent-cycle.sh --status`
     carries a `decisions:` line counting `decision-taken` events in the last
     24 h (`decisions_status_report`, `lib/manage.sh`).
+36f. **The delegate mandate (D18, agent-ops#1385).** The fourth rung of
+    `escalation_autonomy`, `decide-with-veto`, including everything
+    `decide-tactical` reaches (requirement 36d) and widening it in exactly
+    two places. Same pass (`run_enabler_decide`,
+    `prompts/enabler-decide.md`), same tier (`enabler_model_critical`,
+    falling back to `enabler_model`), same per-reason bound and cap, same
+    decision log and veto (requirement 36e). One field of the pass's runtime
+    input differs: `mandate`, `"tactical"` at `decide-tactical` and
+    `"delegate"` at `decide-with-veto`, and it is the only thing that tells
+    the pass which of the two reaches below are open to it.
+
+    **What the delegate mandate reaches, and nothing else.** Written once
+    here and referenced — never restated — by `prompts/enabler-decide.md`,
+    the same discipline requirement 36a's own boundary keeps:
+
+    - **(a) Condition 2's acceptance clause alone.** Accepting a residual
+      exposure or a residual risk in a repository the installation itself
+      owns — the private state repository's unreachable-object tail
+      (agent-ops#1310/#1298) is the case this was measured against — where
+      the item's filer already named a `## Default` (requirements 36c, 42a,
+      39d) and where nothing the decision takes mints, rotates, edits or
+      grants a credential, a secret, a GitHub App, a ruleset, a permission,
+      an organisation or account setting, or an account. Every other part of
+      condition 2 stays owner-only at this rung, exactly as at every other.
+    - **(b) Human corroboration of a void**, for the three pull-request item
+      shapes requirement 34k actually closes: `pr-<n>-abandoned-<head-sha>`,
+      `pr-<n>-review-<review-id>` and `pr-<n>-superseded-<head-sha>`. A
+      `decide` verdict may carry `act: {"kind": "corroborate-void"}`, and
+      that act says the thing requirement 34d cannot establish from any API
+      call: this draft is genuinely unwanted. `pr-<n>-conflict-<head-sha>`
+      and `pr-<n>-dequeued-<head-sha>` are never reachable — requirement 34k
+      excludes them by construction, the void on those shapes is about the
+      conflict or the dequeue rather than about the pull request, and closing
+      one discards live work of ours (TD-PPagop-26080901).
+
+    Conditions 1, 3, 4, 5, 6 and 9 of requirement 36a are owner-only at
+    every rung including this one; condition 7 stays owner-only wherever the
+    account is genuinely not held; condition 8 is already narrowed by
+    requirement 36a's "undefined thresholds are set, not asked" reading and
+    is not widened further here.
+
+    **A verdict carrying an act is out of mandate at `decide-tactical`.**
+    `run_enabler_decide` refuses it there and returns `escalate` with
+    `evidence` naming the act, on the same reading it gives a `decide`
+    verdict missing its own `decision`/`rationale` (requirement 36d): a
+    verdict this system may not act on is not a decision, whatever it called
+    itself. It refuses the same way, at either rung, an act whose `kind` is
+    not `corroborate-void`, and a `corroborate-void` act on an item whose id
+    is not one of the three shapes above. Each refusal names the act, so the
+    escalation the human then receives says what the pass proposed.
+
+    **The act waits out a veto window, and nothing else about the decision
+    waits.** A `decide` verdict that carries an act is recorded as
+    `decision-taken` (requirement 36d's own fields) with two more: `act`, the
+    verdict's own object, and `act_after`, the event's own time plus
+    `decision_veto_window_hours`. It files its `pw::decision` log issue
+    exactly as any other decision does, and the body carries the act and the
+    `Acts after:` instant so the lever a reader is offered is one *before*
+    the fact. It does **not** unblock the item, does not release
+    `needs_refinement_label`, does not re-record an existing refinement and
+    posts no comment on the item's own thread: nothing about it is final
+    until the act runs, and the `enabler-examined` event's `outcome` is
+    `decision-pending` rather than `unblocked`. A `decide` verdict carrying
+    **no** act is unchanged at this rung — a pure acceptance, reach (a)'s
+    own shape, unblocks the item immediately exactly as at `decide-tactical`,
+    because nothing irreversible happened and requirement 36e's
+    reopen-to-veto re-block is the whole of the correction it needs.
+
+    **A pending act with no log issue is abandoned, not taken.** Filing the
+    log issue is best-effort for an ordinary decision (requirement 36e): the
+    decision stands, only without a lever. Here it is not: an act nobody
+    could veto is the one thing this rung must never take, so a failed
+    filing costs the *decision* — a `warning` says so, nothing is recorded
+    on `decision-taken`, and the item escalates to a person with the pass's
+    own evidence appended the ordinary way (requirement 36d's `escalate`).
+    This is why `pending_decision_acts` (`lib/cycle-state.sh`) can key on the
+    log issue's own number without a gap: a pending act without one cannot
+    exist to be found.
+
+    **Performing the act.** `run_pending_decision_acts` (`lib/decision-veto.sh`),
+    one per-cycle fleet-wide sweep called from `agent-cycle.sh` immediately
+    *after* `run_decision_veto_sweep` — in that order, so a reopen this cycle
+    has just discovered cancels the act rather than racing it — reads
+    `pending_decision_acts` off the union log: every `decision-taken` event
+    carrying an `act`, an `act_after` and an `issue_number` that no later
+    `decision-acted` or `decision-vetoed` event has retired. For each whose
+    `act_after` has passed, in the order they were decided and capped at
+    three per cycle (the overflow reported as a `warning`, never silent, the
+    same bound every sweep beside it keeps), it re-reads the log issue's own
+    state live and:
+
+    - **still `CLOSED`** — performs the act, then logs `decision-acted`
+      (`repo`, `item`, `issue_number`, `issue_url`, `act`, `outcome:
+      "performed"`) and the ordinary `unblocked` (`by: "enabler"`, `reason`
+      naming the decision);
+    - **open** — does nothing and logs nothing. The reopen is the veto, and
+      `run_decision_veto_sweep` owns the record of one;
+    - **unreadable** — refuses the act for this cycle and logs a `warning`
+      naming the issue. The act is irreversible and the window is not, so an
+      unreadable lever fails closed here — the opposite direction from
+      requirement 36e's own unreadable-events read, which fails open toward
+      honouring a veto, and for the same reason: both protect the owner's
+      ability to stop a decision.
+
+    An `act_after` that does not parse leaves the decision pending rather
+    than acting early, and an act whose `kind` nothing performs is a
+    `warning` and no act — unreachable input, since `run_enabler_decide`
+    already refused every kind the mandate does not name, and therefore a
+    defect if it is ever seen.
+
+    **`corroborate-void` is the item's void, and nothing more.** Performing
+    it writes one `item-void` event through requirement 33's shared field
+    shape (`item_event_fields`), `stage: "decision"`, `detail` the decision
+    itself and `evidence` naming the log issue, the delegate mandate and the
+    window it stood through, plus `decision_issue_number`/`decision_issue_url`.
+    Requirement 34k's own pass then closes pull request `<n>` on the next
+    pre-extract window that reaches it, through
+    `scripts/close-void-github-items.sh`, with no change to that script
+    beyond admitting `decision` to its corroboration gate — the void record
+    and the close both already existed, and the corroboration was the only
+    thing missing. This is requirement 34d's second writer outside the shared
+    guard (the first being the Script's own pre-flight, requirement 34m): the
+    guard has nothing to corroborate it *with*, because what corroborates it
+    is the decision, the log issue nobody reopened, and the window that
+    elapsed. Requirement 34k's one-shot rule, its `stage` gate, its action
+    cap and a human's plain re-open all apply to it exactly as to any other
+    corroborated void.
+
+    **A veto cancels a pending act, and says so.** When
+    `run_decision_veto_sweep` records a `decision-vetoed` for a log issue
+    `pending_decision_acts` still names, it also logs `decision-acted` with
+    that act and `outcome: "cancelled"`. The retirement itself is already
+    mechanical — the pending set excludes anything a veto names — but a
+    pending act that merely stopped appearing would leave no record that the
+    reopen is what stopped it, and a cancellation the owner cannot see is
+    not the lever this rung promised. Everything else requirement 36e's veto
+    does is unchanged.
+
+    **Requirement 8f is untouched.** `lib/landing.sh` checks the configured
+    level for `adjudicate-first` exactly, so a Reviewer's own open question
+    behaves at `decide-with-veto` precisely as it does at `decide-tactical`:
+    at `adjudicate-first`'s own behaviour, never a further widening. That
+    exception to "each rung includes the one below it" is stated once in
+    requirement 36d's own extended note and holds unchanged for this rung.
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no
@@ -19157,7 +19353,10 @@ What exists, and the requirements each part answers to:
     `obsolete` label — re-checked live off the same fetch that reads its
     `state`, never trusted from the void's own claim — the close comment
     names it (TD-PPagop-26081308), so the close is auditable from the
-    comment alone. Capped at three actions per call, the
+    comment alone. The corroboration gate admits four stages: the three
+    requirement 34d's guard covers (`coordinator`, `enabler`, `implementer`)
+    and `decision`, requirement 36f's delegate-mandate act, whose
+    corroboration is its own unpulled veto lever. Capped at three actions per call, the
     overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
     Unit-tested (`test/close-void-github-items.test.sh`); must pass
     `shellcheck`.
@@ -22377,6 +22576,47 @@ oblige anyone to edit a test.
    twice and confirming the second call still yields the recorded set, the
    fact that stops the sweep re-closing an object a human has since reopened
    by hand rather than through `unvoid_label`.
+36f. **The delegate mandate reaches exactly two things, and its act waits out
+   the veto window (requirement 36f).**
+   `test/escalation-autonomy.test.sh` passes:
+   `escalation_autonomy_configured_level` resolves `decide-with-veto` from
+   the top-level key and from a `repos[]` override, on the same precedence
+   every other level uses. `test/enabler-verdicts.test.sh` passes, driving
+   `maybe_run_enabler` itself: at `decide-with-veto` the decide pass runs at
+   all (the rung is a superset of `decide-tactical`, not a fourth branch
+   nobody wired), and is handed `delegate` as its mandate while
+   `decide-tactical` is handed `tactical`; a `decide` verdict carrying an
+   `act` at `decide-with-veto` logs one `decision-taken` carrying that `act`
+   and an `act_after`, files the decision-log issue, and logs **no**
+   `unblocked`, the `enabler-examined` outcome reading `decision-pending`;
+   the same verdict carrying no act unblocks the item immediately, exactly
+   as at `decide-tactical`; the same verdict carrying an act at
+   `decide-tactical` is escalated instead, the escalation body's
+   `## Adjudication attempted` section naming the act; and a pending act
+   whose decision-log issue could not be filed is abandoned rather than
+   recorded — no `decision-taken` at all, a `warning` naming the missing
+   lever, and the ordinary escalation filed in its place. Both directions
+   matter for the same reason requirement 36f states them: an act nobody
+   could veto is the one thing this rung must never take, and a pure
+   acceptance that waited would be a window in front of nothing.
+   `test/decision-veto-sweep.test.sh` passes, driving
+   `run_pending_decision_acts` against a stubbed `gh` and a real
+   `pending_decision_acts`: before `act_after` nothing happens and nothing is
+   logged; after it, with the log issue still `CLOSED`, exactly one
+   `item-void` carrying `stage: "decision"` is written, followed by
+   `decision-acted` (`outcome: "performed"`) and `unblocked`; a log issue
+   read back `OPEN` performs nothing and logs nothing, and one whose state
+   cannot be read at all performs nothing and logs a `warning` — the two
+   directions of "the act is irreversible, the window is not"; a window of
+   `0` acts on the very next cycle; a `decision-acted` already on the log
+   retires the act so it is never performed twice; and a veto the sweep
+   records for a log issue still carrying a pending act logs
+   `decision-acted` with `outcome: "cancelled"`, so the cancellation is on
+   the record rather than merely absent from the pending set.
+   `test/close-void-github-items.test.sh` passes its `stage: "decision"`
+   case: such a void closes its pull request through the ordinary
+   `pr-<n>-…` branch, exactly as an `enabler` one does, while an
+   unrecognised stage is still skipped before the action cap.
 8k. **A void'd register row becomes a candidate even when `td-check.pl` finds
    nothing wrong (requirement 34l).** `test/register-hygiene.test.sh`'s void
    section passes against the shipped `scripts/gather-register-hygiene.sh`

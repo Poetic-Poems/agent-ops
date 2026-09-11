@@ -2026,7 +2026,8 @@
 
   // Decisions (agent-ops#937): every `decide-tactical` decision taken in the
   // window, and whether it was vetoed (a human reopened its own closed
-  // `pw::decision` log issue). The log-issue link is the lever — the reason
+  // `pw::decision` log issue) or is still waiting out a `decide-with-veto`
+  // act's own veto window (agent-ops#1385). The log-issue link is the lever — the reason
   // this panel exists at all rather than leaving the decision only in
   // log.jsonl — so it is rendered even when a decision's own log issue
   // failed to file (no `issue_url`), the same "still show the row, note what
@@ -2055,7 +2056,14 @@
         el("td", {}, logCell),
         el("td", {}, d.vetoed
           ? el("span", {class:"badge b-red", text:"vetoed"})
-          : el("span", {class:"badge b-green", text:"stands"}))
+          : d.pending_act
+            // The one status where the lever still changes what happens
+            // rather than only undoing it (requirement 36f): the decision
+            // carries an act nothing has performed or cancelled yet, and
+            // reopening its log issue before `act_after` cancels it outright.
+            ? el("span", {class:"badge b-amber", text:"pending act",
+                          title:"acts after " + (d.act_after || "the veto window")})
+            : el("span", {class:"badge b-green", text:"stands"}))
       ]);
     });
     return tableOf(["Taken","Repo","Item","Decision","Log issue","Status"], rows);

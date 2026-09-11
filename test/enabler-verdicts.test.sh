@@ -164,6 +164,13 @@ escalation_autonomy_decide_pass_available_fn="$(extract_fn 'escalation_autonomy_
 # scenario before it wants the recording stub in its place, not the real
 # `gh`-writing function.
 escalation_thread_reconcile_fn="$(extract_fn 'escalation_thread_reconcile() {' "$SCRIPT_DIR/lib/enabler.sh")"
+# agent-ops#1385: requirement 36f's act gate lives inside `run_enabler_decide`
+# itself — which act survives a pass at all, before the Script ever sees the
+# verdict. Lifted here with the rest, while `SCRIPT_DIR` still points at the
+# repository, and `eval`led only in the last section of this file: every
+# scenario before it wants the recording stub in its place, not a function
+# that launches a nested engagement.
+run_enabler_decide_fn="$(extract_fn 'run_enabler_decide() {' "$SCRIPT_DIR/lib/enabler.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -191,6 +198,10 @@ if [[ "$escalation_autonomy_decide_pass_available_fn" != *"escalation_autonomy_d
 fi
 if [[ "$escalation_thread_reconcile_fn" != *"Blocked-by:"* ]]; then
   printf 'FAIL - escalation_thread_reconcile could not be found in lib/enabler.sh (renamed or moved?)\n'
+  exit 1
+fi
+if [[ "$run_enabler_decide_fn" != *"corroborate-void"* ]]; then
+  printf 'FAIL - run_enabler_decide could not be found in lib/enabler.sh (renamed or moved?)\n'
   exit 1
 fi
 
@@ -1224,6 +1235,152 @@ run_enabler_decide() {
   exit 96
 }
 
+
+# ============================================================================
+# escalate, decide-with-veto (agent-ops#1385, requirement 36f): the fourth
+# rung. Same pass, same tier, same bound — two things differ, and both are
+# what these cases pin. First, the `mandate` the Script hands the pass:
+# `delegate` here, `tactical` at `decide-tactical`. Second, what the Script
+# does with a `decide` verdict that carries an `act`: it records it as a
+# *pending* decision and leaves the item blocked, because the act has not
+# happened yet and the veto window is the whole point of the rung.
+# `run_enabler_decide`'s own refusal of an act the mandate does not reach is
+# the last section of this file, against the real function.
+# ============================================================================
+
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "decide-with-veto"}'
+# shellcheck disable=SC2034
+decision_veto_window_hours=24
+
+eligible_draft='[{"repo":"acme/widgets","item":"pr-363-abandoned-aaaaaaaaaaaa","blocked_ts":"2026-09-01T00:00:00Z",
+  "kind":"","reason":"threshold",
+  "detail":"this draft has been abandoned for weeks and nobody wants it",
+  "unblock_condition":"a human corroboration that the draft is obsolete"}]'
+examined_draft='[{"repo":"acme/widgets","item":"pr-363-abandoned-aaaaaaaaaaaa","verdict":"escalate",
+  "reason":"34k reserves this close to a human",
+  "issue":{"title":"widgets: close the abandoned draft pr-363","body":"…draft escalation…"}}]'
+
+# --- decide + act: recorded as pending, the item stays blocked ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2 mandate=$7"
+  printf '{"verdict":"decide","evidence":"the draft is unwanted","decision":"close the abandoned draft",
+           "rationale":"nothing on it is wanted and its base already carries the work",
+           "options_considered":"leave it open, close it",
+           "act":{"kind":"corroborate-void"}}'
+}
+calls="$(run_case "decide-with-veto: decide carrying an act" "$eligible_draft" "$examined_draft")"
+
+assert_contains "veto/act: the pass runs at this rung at all, and is handed the delegate mandate" \
+  "run_enabler_decide acme/widgets pr-363-abandoned-aaaaaaaaaaaa mandate=delegate" "$calls"
+assert_eq "veto/act: exactly one decision-taken event" "1" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "veto/act: ...carrying the act" "corroborate-void" "$(jq -r '.act.kind' <<<"$dt_evt")"
+assert_eq "veto/act: ...and an act_after in the future, 24h out" "24" \
+  "$(( ( $(date -u -d "$(jq -r '.act_after' <<<"$dt_evt")" +%s) - $(date -u +%s) + 60 ) / 3600 ))"
+assert_contains "veto/act: the decision-log issue is still filed — it is the veto lever" \
+  "create_decision_log_issue acme/widgets pr-363-abandoned-aaaaaaaaaaaa" "$calls"
+assert_eq "veto/act: NO unblocked event — the act has not happened yet" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "veto/act: no escalation issue is filed either" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "veto/act: enabler-examined records decision-pending, not unblocked" \
+  "decision-pending" "$(jq -r '.outcome' <<<"$xmn_evt")"
+assert_eq "veto/act: no decision comment is posted while nothing is final" "0" \
+  "$(grep -cE '^enabler_decision_comment ' <<<"$calls")"
+
+# --- a zero window still defers to the sweep, it just becomes due at once ---
+# shellcheck disable=SC2034
+decision_veto_window_hours=0
+calls="$(run_case "decide-with-veto: a zero window" "$eligible_draft" "$examined_draft")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "veto/zero window: act_after is now, not absent" "0" \
+  "$(( ( $(date -u -d "$(jq -r '.act_after' <<<"$dt_evt")" +%s) - $(date -u +%s) + 60 ) / 3600 ))"
+assert_eq "veto/zero window: the item is still not unblocked here" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+# shellcheck disable=SC2034
+decision_veto_window_hours=24
+
+# --- decide without an act: a pure acceptance, unblocked at once, exactly as
+# at decide-tactical. This is the #1310 shape — accepting a residual, where
+# nothing irreversible happens and there is nothing for a window to hold. ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2 mandate=$7"
+  printf '{"verdict":"decide","evidence":"the filer named a default","decision":"accept the residual tail",
+           "rationale":"the repository is one the installation owns and no credential is touched",
+           "options_considered":"accept, rewrite history, rotate"}'
+}
+calls="$(run_case "decide-with-veto: decide carrying no act" "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_eq "veto/no act: exactly one decision-taken event" "1" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "veto/no act: it carries no act at all" "" "$(jq -r '.act.kind // ""' <<<"$dt_evt")"
+assert_eq "veto/no act: ...and no act_after" "" "$(jq -r '.act_after // ""' <<<"$dt_evt")"
+assert_eq "veto/no act: the item is unblocked immediately" "1" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "veto/no act: enabler-examined records unblocked" "unblocked" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# --- a pending act whose log issue could not be filed is abandoned, not
+# taken: without the lever there is nothing to veto, so the item goes to a
+# person instead. The contrast with "decide/log-filing-failed" above — where
+# an actless decision still stands — is the whole assertion. ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2 mandate=$7"
+  printf '{"verdict":"decide","evidence":"the draft is unwanted","decision":"close the abandoned draft",
+           "rationale":"nothing on it is wanted","options_considered":"leave it open, close it",
+           "act":{"kind":"corroborate-void"}}'
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_decision_log_issue() { record "create_decision_log_issue $1 $2 $3"; return 1; }
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { record "issue_body: $(cat "$5")"; printf '60\thttps://github.com/acme/widgets/issues/60'; return 0; }
+calls="$(run_case "decide-with-veto: a pending act with no veto lever" "$eligible_draft" "$examined_draft")"
+
+assert_eq "veto/no lever: nothing is recorded as decided" "0" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+assert_eq "veto/no lever: the item is not unblocked" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "veto/no lever: it escalates to a person instead" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "veto/no lever: a warning says the act was abandoned for want of a lever" \
+  "there is no veto lever, so the act is abandoned" "$calls"
+assert_contains "veto/no lever: the escalation body still carries the pass's own evidence" \
+  "A decide-tactical pass was attempted and returned: the draft is unwanted" "$calls"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_decision_log_issue() {
+  record "create_decision_log_issue $1 $2 $3"
+  printf '999\thttps://github.com/%s/issues/999' "$1"
+}
+
+# --- the mandate discriminates: the rung below hands the pass `tactical` ---
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "decide-tactical"}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2 mandate=$7"
+  printf '{"verdict":"settle","evidence":"ok"}'
+}
+calls="$(run_case "decide-tactical: the pass is handed the tactical mandate" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+assert_contains "mandate: decide-tactical hands the pass tactical, never delegate" \
+  "run_enabler_decide acme/widgets TD26080001 mandate=tactical" "$calls"
+
+# Back to the harness's own always-loud defaults.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  echo "FAIL - run_enabler_decide was called but no scenario stub was set" >&2
+  exit 96
+}
+
 # ============================================================================
 # agent-ops#815: escalation_thread_reconcile — the Script's own completing or
 # correcting comment on a needs-refinement item's own thread, once this
@@ -1697,6 +1854,115 @@ assert_eq "reconcile: an 'escalated' outcome with no number posts nothing at all
   "" "$(reconcile_case escalated "" "")"
 assert_eq "reconcile: an unrecognised outcome posts nothing at all" \
   "" "$(reconcile_case something-else)"
+
+
+# ============================================================================
+# run_enabler_decide's own act gate (requirement 36f). The sections above
+# stub this function outright — they are about what the *Script* does with a
+# verdict. This one is about the verdict itself: which acts survive the pass
+# at all. The function is lifted verbatim, like `maybe_run_enabler` above, so
+# these cannot pass against a copy that has moved on; only the nested Claude
+# engagement and the `gh`-reading precedents builder are stood in for.
+#
+# Three ways an act is refused, and one way it survives. Each refusal must
+# read as `escalate` *naming the act*, because the escalation issue a person
+# then receives is the only place the proposal is visible — a silent drop
+# would leave the owner an escalation whose pass, as far as any record goes,
+# simply had nothing to say.
+# ============================================================================
+
+eval "$run_enabler_decide_fn"
+
+: > "$fake_root/prompts/enabler-decide.md"
+# The precedents builder reads GitHub (test/escalation-autonomy.test.sh
+# covers it); the empty shape is a valid input and is all these cases need.
+# shellcheck disable=SC2317  # invoked only by the lifted run_enabler_decide
+enabler_decide_precedents() { printf '{"standing_decisions":"","decision_log":[],"closed_escalations":[]}'; }
+# shellcheck disable=SC2317
+rework_stage_rerun_maybe() { :; }
+# shellcheck disable=SC2317
+log_node_state_transition() { :; }
+
+DECIDE_STUB_VERDICT=''
+DECIDE_PROMPT_FILE="$tmp_dir/decide-prompt.txt"
+# shellcheck disable=SC2317  # invoked only by the lifted run_enabler_decide
+run_claude_stage() {
+  printf '%s' "$4" > "$DECIDE_PROMPT_FILE"
+  jq -nc --arg r "$DECIDE_STUB_VERDICT" '{result: $r, session_id: "stub-session"}' > "$5"
+  # shellcheck disable=SC2034
+  stage_gaps_json="null"
+  # shellcheck disable=SC2034
+  stage_kill_reason=""
+  return 0
+}
+
+decide_pass() {  # decide_pass ITEM MANDATE VERDICT_JSON -> the function's own stdout
+  DECIDE_STUB_VERDICT="$3"
+  cycle_dir="$(mktemp -d)"
+  calls_log="$cycle_dir/calls.log"
+  : > "$calls_log"
+  run_enabler_decide "acme/widgets" "$1" '{"kind":"","detail":"d","unblock_condition":"u"}' \
+    '{"issue":{"title":"t","body":"b"}}' "$cycle_dir" 0 "$2"
+}
+
+act_verdict='{"verdict":"decide","evidence":"the draft is unwanted","decision":"close it",
+              "rationale":"nothing on it is wanted","options_considered":"leave, close",
+              "act":{"kind":"corroborate-void"}}'
+
+# --- the one act that survives: the delegate mandate, the right kind, one of
+# the three closing pull-request shapes ---
+out="$(decide_pass "pr-363-abandoned-aaaaaaaaaaaa" delegate "$act_verdict")"
+assert_eq "decide gate: the delegate mandate keeps a corroborate-void act" "decide" \
+  "$(jq -r '.verdict' <<<"$out")"
+assert_eq "decide gate: ...and passes the act through" "corroborate-void" "$(jq -r '.act.kind' <<<"$out")"
+assert_contains "decide gate: the pass is told its mandate in the runtime input" \
+  '"mandate": "delegate"' "$(cat "$DECIDE_PROMPT_FILE")"
+out="$(decide_pass "pr-9-review-77" delegate "$act_verdict")"
+assert_eq "decide gate: the -review- shape is reached too" "decide" "$(jq -r '.verdict' <<<"$out")"
+out="$(decide_pass "pr-9-superseded-bbbbbbbbbbbb" delegate "$act_verdict")"
+assert_eq "decide gate: ...and the -superseded- shape" "decide" "$(jq -r '.verdict' <<<"$out")"
+
+# --- refusal 1: the wrong rung. This is the one that keeps a prompt drifting
+# ahead of its config from quietly acting (requirement 36f). ---
+out="$(decide_pass "pr-363-abandoned-aaaaaaaaaaaa" tactical "$act_verdict")"
+assert_eq "decide gate: an act at decide-tactical is out of mandate" "escalate" \
+  "$(jq -r '.verdict' <<<"$out")"
+assert_contains "decide gate: ...and the evidence names the act" \
+  'corroborate-void' "$(jq -r '.evidence' <<<"$out")"
+assert_contains "decide gate: ...saying plainly it was out of mandate" \
+  'out of mandate at this rung' "$(jq -r '.evidence' <<<"$out")"
+assert_contains "decide gate: ...keeping the pass's own evidence with it" \
+  'the draft is unwanted' "$(jq -r '.evidence' <<<"$out")"
+assert_eq "decide gate: ...and carries no act onward" "" "$(jq -r '.act.kind // ""' <<<"$out")"
+assert_contains "decide gate: the tactical mandate is what the input said" \
+  '"mandate": "tactical"' "$(cat "$DECIDE_PROMPT_FILE")"
+
+# --- refusal 2: an act the mandate does not name at all ---
+out="$(decide_pass "pr-363-abandoned-aaaaaaaaaaaa" delegate \
+  '{"verdict":"decide","evidence":"e","decision":"d","rationale":"r","act":{"kind":"close-pull-request"}}')"
+assert_eq "decide gate: an unnamed act kind is refused even under the mandate" "escalate" \
+  "$(jq -r '.verdict' <<<"$out")"
+assert_contains "decide gate: ...the evidence names the kind that was proposed" \
+  'close-pull-request' "$(jq -r '.evidence' <<<"$out")"
+
+# --- refusal 3: the right act on a shape requirement 34k never closes. The
+# `-conflict-` and `-dequeued-` voids say the conflict or the dequeue
+# resolved, not the pull request — closing one is how PR #264 was lost. ---
+for shape in pr-363-conflict-aaaaaaaaaaaa pr-363-dequeued-aaaaaaaaaaaa 221 TD26080001; do
+  out="$(decide_pass "$shape" delegate "$act_verdict")"
+  assert_eq "decide gate: corroborate-void is refused for the item shape $shape" "escalate" \
+    "$(jq -r '.verdict' <<<"$out")"
+  assert_contains "decide gate: ...naming the shape it was proposed for ($shape)" \
+    "$shape" "$(jq -r '.evidence' <<<"$out")"
+done
+
+# --- and the ordinary shape is untouched: a decide with no act, under either
+# mandate, is the same verdict it always was ---
+out="$(decide_pass "TD26080001" delegate \
+  '{"verdict":"decide","evidence":"e","decision":"accept the residual","rationale":"r","options_considered":"o"}')"
+assert_eq "decide gate: an actless decide under the delegate mandate still decides" "decide" \
+  "$(jq -r '.verdict' <<<"$out")"
+assert_eq "decide gate: ...carrying no act" "" "$(jq -r '.act.kind // ""' <<<"$out")"
 
 printf '\n'
 if (( failures > 0 )); then

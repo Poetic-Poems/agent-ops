@@ -272,10 +272,11 @@ else
   ok "every source whose refinement_policy is \"required\" has a Refiner configured to refine it"
 fi
 
-# D18 (agent-ops#627, agent-ops#936): `escalation_autonomy`'s `adjudicate-first`
-# and `decide-tactical` each run one extra Enabler engagement per escalation —
-# a refinement disagreement only for the former, any `escalate` verdict for the
-# latter — so either is a configuration nobody can act on with the Enabler
+# D18 (agent-ops#627, agent-ops#936, agent-ops#1385): `escalation_autonomy`'s
+# `adjudicate-first`, `decide-tactical` and `decide-with-veto` each run one
+# extra Enabler engagement per escalation —
+# a refinement disagreement only for the first, any `escalate` verdict for the
+# other two — so each is a configuration nobody can act on with the Enabler
 # itself disabled, the same pairing check merge_autonomy's own block runs
 # against approver_app_id above. Checked against every configured *source* of
 # a level, on the same terms as merge_autonomy_sources below: the top-level key
@@ -289,7 +290,8 @@ escalation_autonomy_sources="$(jq -r '
 if [[ -n "$escalation_autonomy_sources" ]]; then
   while IFS=$'\t' read -r ea_label ea_level; do
     [[ -n "$ea_label" ]] || continue
-    if [[ ( "$ea_level" == "adjudicate-first" || "$ea_level" == "decide-tactical" ) && -z "$enabler_model" ]]; then
+    if [[ ( "$ea_level" == "adjudicate-first" || "$ea_level" == "decide-tactical" \
+            || "$ea_level" == "decide-with-veto" ) && -z "$enabler_model" ]]; then
       warn "$ea_label is \"$ea_level\" but enabler_model is empty — the Enabler is disabled, so no escalation is ever raised for that pass to run before"
     else
       ok "$ea_label is \"$ea_level\""

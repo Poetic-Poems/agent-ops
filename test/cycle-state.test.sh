@@ -333,6 +333,69 @@ cat > "$log" <<'EOF'
 EOF
 assert_eq "a repoless closure record is dropped" "0" "$(void_object_closed_items "$log" | jq 'length')"
 
+# --- pending_decision_acts (requirement 36f) ---
+# The set `run_pending_decision_acts` sweeps: `decide-with-veto` decisions
+# whose act is owed but not yet performed. Keyed on the log issue's own
+# number, exactly as `decision_vetoes_processed_items` above is, and for the
+# same reason — one item can carry more than one decision over time.
+
+assert_eq "missing log yields no pending acts" "[]" \
+  "$(pending_decision_acts "$tmp_dir/nonexistent.jsonl")"
+
+: > "$log"
+assert_eq "empty log yields no pending acts" "[]" "$(pending_decision_acts "$log")"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"close it","rationale":"unwanted","issue_number":601,"issue_url":"https://github.com/o/r/issues/601","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+EOF
+assert_eq "a decision carrying an act is pending" "1" "$(pending_decision_acts "$log" | jq 'length')"
+assert_eq "...carrying everything the act needs, off the event alone" \
+  '{"repo":"o/r","item":"pr-9-abandoned-aaa","issue_number":601,"act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z","decision":"close it"}' \
+  "$(pending_decision_acts "$log" \
+     | jq -c '.[0] | {repo, item, issue_number, act, act_after, decision}')"
+
+# The three shapes that are not a pending act, each for its own reason: no
+# act at all (the ordinary decision, every rung), no window to wait out, and
+# no log issue — which `lib/enabler.sh` refuses to record in the first place,
+# since an act nobody could veto is the one thing the rung must never take.
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"TD1","decision":"accept","rationale":"r","issue_number":602,"issue_url":"u"}
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-8-review-1","decision":"d","rationale":"r","issue_number":603,"issue_url":"u","act":{"kind":"corroborate-void"}}
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-7-abandoned-bbb","decision":"d","rationale":"r","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+EOF
+assert_eq "an actless decision, an act with no window and an act with no log issue are all excluded" \
+  "0" "$(pending_decision_acts "$log" | jq 'length')"
+
+# Retirement: either outcome of `decision-acted`, or a veto, and the act is
+# gone from the set — keyed on the log issue, never on the item.
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"d","rationale":"r","issue_number":604,"issue_url":"u","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+{"ts":"2026-09-03T09:00:00Z","event":"decision-acted","repo":"o/r","item":"pr-9-abandoned-aaa","issue_number":604,"outcome":"performed"}
+EOF
+assert_eq "an act already performed is retired" "0" "$(pending_decision_acts "$log" | jq 'length')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"d","rationale":"r","issue_number":605,"issue_url":"u","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+{"ts":"2026-09-03T09:00:00Z","event":"decision-acted","repo":"o/r","item":"pr-9-abandoned-aaa","issue_number":605,"outcome":"cancelled"}
+EOF
+assert_eq "a cancelled act is retired the same way" "0" "$(pending_decision_acts "$log" | jq 'length')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"d","rationale":"r","issue_number":606,"issue_url":"u","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+{"ts":"2026-09-03T09:00:00Z","event":"decision-vetoed","repo":"o/r","item":"pr-9-abandoned-aaa","issue_number":606,"by":"warwickallen"}
+EOF
+assert_eq "a vetoed decision's act is retired" "0" "$(pending_decision_acts "$log" | jq 'length')"
+
+# A second decision on the same item, under its own log issue, is its own
+# pending act — the retirement of the first must not silence it.
+cat > "$log" <<'EOF'
+{"ts":"2026-09-01T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"first","rationale":"r","issue_number":607,"issue_url":"u","act":{"kind":"corroborate-void"},"act_after":"2026-09-02T09:00:00Z"}
+{"ts":"2026-09-03T09:00:00Z","event":"decision-acted","repo":"o/r","item":"pr-9-abandoned-aaa","issue_number":607,"outcome":"performed"}
+{"ts":"2026-09-04T09:00:00Z","event":"decision-taken","repo":"o/r","item":"pr-9-abandoned-aaa","decision":"second","rationale":"r","issue_number":608,"issue_url":"u","act":{"kind":"corroborate-void"},"act_after":"2026-09-05T09:00:00Z"}
+EOF
+assert_eq "a later decision under a fresh log issue is its own pending act" "second" \
+  "$(pending_decision_acts "$log" | jq -r '.[0].decision // ""')"
+
 # --- retire_void_items (requirement 34n) ---
 # A fixed NOW_EPOCH throughout, never `date +%s`: the test must not depend on
 # when it happens to run. 2026-08-13T00:00:00Z; the boundary case sits exactly

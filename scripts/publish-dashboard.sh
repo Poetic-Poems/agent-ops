@@ -3365,7 +3365,12 @@ if ! jq -e 'type == "object"' <<<"$landings_json" >/dev/null 2>&1; then
 fi
 
 # --- Decisions panel (agent-ops#937): every `decide-tactical` decision taken
-# in the last 7 days, and whether a `decision-vetoed` event followed it. A
+# in the last 7 days, and whether a `decision-vetoed` event followed it —
+# and, for a `decide-with-veto` decision that carries an act (requirement
+# 36f, agent-ops#1385), whether that act is still pending: `pending_act` is
+# true while the decision names an `act` and no `decision-acted` event has
+# performed or cancelled it, which is the one state in which the owner's
+# reopen still changes what happens rather than only undoing it. A
 # `decision-taken` event's own `issue_number` (the closed `pw::decision` log
 # issue `lib/enabler.sh`'s `create_decision_log_issue` files) is what a veto
 # is joined against when one exists, since one item can in principle carry
@@ -3384,6 +3389,7 @@ decisions_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
   ([ .[] | select(.event == "decision-taken") | select(in_window) ]
     | sort_by(.ts // "") | reverse) as $taken
   | ([ .[] | select(.event == "decision-vetoed") ]) as $vetoes
+  | ([ .[] | select(.event == "decision-acted") ]) as $acted
   | {
       window_days: $days,
       generated_at: $now,
@@ -3393,10 +3399,14 @@ decisions_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
             (if $has_issue then (.issue_number // null) == $d.issue_number
              else (.repo // "") == ($d.repo // "") and (.item // "") == ($d.item // "")
                   and (.ts // "") > ($d.ts // "") end))) as $v
+        | ((($d.act // null) != null)
+           and (($acted | any((.issue_number // null) == $d.issue_number)) | not)) as $p
         | { ts: ($d.ts // ""), repo: ($d.repo // ""), item: ($d.item // ""),
             decision: ($d.decision // ""),
             issue_number: ($d.issue_number // null),
             issue_url: ($d.issue_url // ""),
+            act_after: ($d.act_after // ""),
+            pending_act: $p,
             vetoed: $v } ]
     }' 2>/dev/null)"
 if ! jq -e 'type == "object"' <<<"$decisions_json" >/dev/null 2>&1; then
