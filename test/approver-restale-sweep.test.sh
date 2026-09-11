@@ -563,6 +563,53 @@ assert_contains "  ... it is reported as unavailable, for the dismissal fallback
   "result=unavailable" "$(cat "$tmp_dir/review-stdout")"
 assert_eq "  ... and the stage is never engaged" "" "$(cat "$tmp_dir/stage-calls")"
 
+# --- issue #1366: a schema-illegal cutoff-hours value (reaching jq's `tonumber`
+#     and erroring, e.g. "2h") still fails safe at each of the three sweep
+#     sites that guard on it, but now logs a warning naming the config key and
+#     its raw value instead of vanishing indistinguishably from "nothing to
+#     do" ------------------------------------------------------------------
+
+# Site 1: the stale-review escalate check (~line 1535).
+rc="$(run_case PR_LIST_JSON="$rebase_only_list" \
+  STANDING_STATE_8="CHANGES_REQUESTED" STANDING_AT_8="$old_at" STANDING_COMMIT_8="oldsha8" \
+  REVIEWS_8="[$(review_row 556 "pullwright-approver[bot]" "$old_at")]" \
+  NEWEST_8="$older_at" APPROVER_RESTALE_ESCALATE_AFTER_HOURS="2h")"
+assert_eq "a schema-illegal escalate threshold (\"2h\") still fails safe: no escalation" \
+  "0" "$(count "$tmp_dir/escalate-calls")"
+assert_contains "  ... but now logs a warning naming the config key" \
+  '"key":"approver_restale_escalate_after_hours"' "$(events)"
+assert_contains "  ... and the raw value that failed to produce a cutoff" \
+  '"value":"2h"' "$(events)"
+assert_contains "  ... and the function it fired from" \
+  '"fn":"_approver_restale_sweep_repo"' "$(events)"
+
+# Site 2: the whole-repo unreviewed-engage cutoff (~line 1544) — an empty
+# cutoff here disables the entire second half of the sweep for this repo.
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" REVIEW_ACTION_30="posted" \
+  APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="2h")"
+assert_eq "a schema-illegal engage threshold (\"2h\") still fails safe: no engagement" \
+  "0" "$(count "$tmp_dir/review-calls")"
+assert_contains "  ... but now logs a warning naming the config key" \
+  '"key":"approver_unreviewed_engage_after_hours"' "$(events)"
+assert_contains "  ... and the raw value that failed to produce a cutoff" \
+  '"value":"2h"' "$(events)"
+
+# Site 3: the per-candidate unreviewed-escalate cutoff (~line 1598), reached
+# only once a prior engagement exists — reusing the same fixture the "still no
+# standing review once the first engagement is past the bound escalates" case
+# above already exercises, with a healthy engage cutoff so the sweep reaches
+# this second check at all.
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" UNION_JSON="$prior_stuck" \
+  APPROVER_RESTALE_ESCALATE_AFTER_HOURS="2h")"
+assert_eq "the same illegal value also fails the unreviewed-escalate check safe: no escalation" \
+  "0" "$(count "$tmp_dir/unreviewed-escalate-calls")"
+assert_eq "  ... and never falls through to a fresh engagement either" \
+  "0" "$(count "$tmp_dir/review-calls")"
+assert_contains "  ... and logs its own warning naming the config key" \
+  '"key":"approver_restale_escalate_after_hours"' "$(events)"
+assert_contains "  ... and the raw value that failed to produce a cutoff" \
+  '"value":"2h"' "$(events)"
+
 # --- Result -------------------------------------------------------------------
 
 if (( failures )); then

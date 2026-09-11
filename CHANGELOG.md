@@ -849,6 +849,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identical `%Y-%m-%dT%H:%M:%SZ` UTC string every downstream comparison
   already expects.
 
+- **The same four cutoff guards now log a warning when the computed cutoff
+  comes out empty, instead of failing silently** (issue #1366, following on
+  from #1353/#1365 above). Narrowing the trigger to schema-illegal values
+  did not remove "no warning logged anywhere": a jq failure for any other
+  reason — a non-numeric value reaching `tonumber`, or a schema-legal but
+  extreme one overflowing `strftime` — still emptied the cutoff and
+  disabled requirement 46's sweep and the `pr-unreviewed` pager invariant
+  the same way, with nothing in the cycle log to distinguish it from
+  "nothing to do". `lib/approver.sh`'s three sites now call `log_event`
+  (its own established `warning` channel) and `lib/pager-invariants.sh`'s
+  `_pager_ready_pr_candidates` calls `pager_log_event`, each naming the
+  config key, the raw value that failed to produce a cutoff, and the
+  function it fired from, before falling back to the unchanged
+  continue/return behaviour.
+
 - **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
   timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
   --paginate --jq` re-runs its filter once per page and prints each page's

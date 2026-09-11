@@ -17587,7 +17587,14 @@ with the Reviewer's own.
       no `approver-verdict`, no warning naming it and no
       `approver-unreviewed-engaged` event *at all* — never merely stale, the
       total silence of requirement 46's own unreviewed trigger (#890) never
-      having run for this pull request even once. Caught: PR #1059, stranded
+      having run for this pull request even once. A cutoff that computes
+      empty — a schema-illegal `approver_unreviewed_engage_after_hours`
+      reaching jq's `tonumber` and erroring, or a schema-legal but extreme
+      one overflowing `strftime` — logs its own `warning` (naming
+      `approver_unreviewed_engage_after_hours`, the raw value and
+      `_pager_ready_pr_candidates`) and
+      never fires, rather than being silently indistinguishable from an
+      empty backlog. Caught: PR #1059, stranded
       when the kill-switch read failed closed with no log line (#1081) —
       exactly the silent skip this invariant is built to notice from outside
       the sweep that skipped. The pipeline-act remedy logs the identical
@@ -25101,10 +25108,15 @@ oblige anyone to edit a test.
     `submitted_at` is older than the threshold `_approver_restale_escalate`
     is called instead, naming a review-round-scoped item ref
     (`pr-<n>-approver-restale-<review-id>`) and the review's own
-    `submitted_at`, never `updatedAt`; a longer configured threshold holds
-    the identical review back from escalation; a review whose commit still
-    matches the pull request's current head, a draft pull request, a
-    currently-`APPROVED` pull request and one with no readable head SHA are
+    `submitted_at`, never `updatedAt`; a schema-illegal
+    `approver_restale_escalate_after_hours` (reaching jq's `tonumber` and
+    erroring) computes an empty cutoff instead, which fails the same way —
+    no escalation — but first logs a `warning` naming the config key, the
+    raw value and `_approver_restale_sweep_repo`; a longer configured
+    threshold holds the identical review back from escalation; a review
+    whose commit still matches the pull request's current head, a draft
+    pull request, a currently-`APPROVED` pull request and one with no
+    readable head SHA are
     all excluded before any staleness read at all; an unreadable standing-
     review read is skipped silently (ordinary in-flight work, never a
     stall to report); a reviews-list entry for a different login or a
@@ -25132,7 +25144,13 @@ oblige anyone to edit a test.
     standing review reaches `_approver_unreviewed_escalate` — naming the
     head-scoped item ref and that first engagement's own timestamp, never a
     fresh engagement — and an engagement recorded at a different head
-    neither blocks nor escalates the current one.
+    neither blocks nor escalates the current one. A schema-illegal
+    `approver_restale_escalate_after_hours` at this second check logs the
+    identical `warning` and never escalates, falling through to the same
+    `last_result` check as before; and a schema-illegal
+    `approver_unreviewed_engage_after_hours` logs its own `warning` naming
+    the key and value and returns before the trigger's own candidate loop
+    ever runs, rather than being indistinguishable from an empty backlog.
 
     A second harness in the same file lifts `_approver_restale_review` itself
     verbatim, run under `set -euo pipefail` with none of the five globals it
