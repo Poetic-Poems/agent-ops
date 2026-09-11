@@ -156,6 +156,18 @@ assert_contains "and a missing node keeps its own cell rather than shifting the 
   '<td class="mono muted"> — <td class="mono muted"> agent-ops <td class="mono muted"> —' \
   "$logflat"
 
+# makeActivatable() (issue #970): a cycle row, a void-item row and a
+# fleet-node card are all built on plain elements with a click-only handler,
+# so each also gets tabindex="0", role="button" and an aria-label — the same
+# keyboard equivalent a native <button> gets for free. Checked here, on the
+# cycle row, against the same running.json output already asserted on above,
+# so a regression that dropped the attributes from el()/makeActivatable()
+# would fail alongside the existing class="clickable" markup it sits next to.
+assert_contains "a cycle row carries its aria-label right after the clickable class" \
+  'class="clickable" aria-label="Expand detail for cycle started ' "$out"
+assert_contains "  ... and the keyboard-activation attributes right after that" \
+  '" tabindex="0" role="button">' "$out"
+
 # --- disabled/enabled events carry their scope on the badge (issue #426) ----
 # The bare event name cannot say whether a stop was one node or the whole
 # fleet; `scope` is folded into the badge text itself rather than a new
@@ -696,6 +708,12 @@ assert_contains "each void row is capped in height" \
   'class="clip"' "$out"
 assert_contains "and is clickable, to open it to its full text" \
   'class="clickable"' "$out"
+# makeActivatable() (issue #970): the void row's aria-label, tabindex and
+# role — the third of the three widgets it applies to, alongside the
+# cycle-row assertions in the running.json section and the fleet-node-card
+# ones in the node-stale-self.json section above.
+assert_contains "a void row carries its keyboard-activation attributes together with its aria-label" \
+  'aria-label="Expand full text for TD-PPagop-26071802 (agent-ops)" tabindex="0" role="button">' "$out"
 
 # --- work-sources.json: the per-repo `nice` badge --------------------------------
 # The rendering half of the pipeline spec's requirement 3. What makes this
@@ -1269,6 +1287,15 @@ assert_contains "  ... with no last success to report, rather than a blank cell"
 out="$(render node-stale-self.json)" || { printf 'FAIL - node-stale-self.json did not render:\n%s\n' "$out"; exit 1; }
 assert_contains "a stale self row gets the same red-bordered card a stale peer would" \
   'class="card clickable nodestale' "$out"
+# makeActivatable() (issue #970): the fleet-node card's aria-label, tabindex
+# and role — see the running.json assertions above for the other two widgets
+# it applies to. Neither node is under the (click-only, so unreachable in
+# this static render) selected-filter state, so both read the "Filter to…"
+# label rather than the "Show every node's…" one.
+assert_contains "a fleet-node card carries its keyboard-activation attributes together with its aria-label" \
+  'aria-label="Filter cycles and log events to poetic-1" tabindex="0" role="button">' "$out"
+assert_contains "  ... and so does an unselected peer's card" \
+  'aria-label="Filter cycles and log events to poetic-2" tabindex="0" role="button">' "$out"
 assert_contains "the configured threshold reaches the stale-node banner text, not a hardcoded 30" \
   "within the last 30 minute(s)" "$out"
 assert_contains "  ... naming this node rather than a peer's own name" \
