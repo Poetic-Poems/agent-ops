@@ -1561,11 +1561,10 @@ record — a body that merely calls a choice "one for a human" does not, a
 threshold nobody has set is set by the pass rather than asked, and an option
 the pipeline may take is taken even when its siblings would need you.
 
-### One rung further: `decide-with-veto`
-
-Set `escalation_autonomy` to `decide-with-veto` and the same pass runs, at
-the same model, over the same escalations — with two things added to what it
-may reach, and one change to when a decision takes effect.
+**One rung further: `decide-with-veto`.** Set `escalation_autonomy` to
+`decide-with-veto` and the same pass runs, at the same model, over the same
+escalations — with two things added to what it may reach, and one change to
+when a decision takes effect.
 
 The two additions, and nothing else. It may **accept a residual** — an
 exposure or a risk left over in a repository you own, where the issue's own

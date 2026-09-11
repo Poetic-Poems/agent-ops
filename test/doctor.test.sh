@@ -757,6 +757,15 @@ run_doctor
 assert_contains "always-escalate (the default) needs no enabler_model either" \
   '[ ok ] escalation_autonomy is "always-escalate"' "$out"
 
+# agent-ops#1385: the fourth rung runs the very same pass, so it needs the
+# Enabler for exactly the same reason — a rung added without extending this
+# pairing check is one whose misconfiguration reports nothing at all.
+ea_veto_config="$tmp/ea-veto-config.json"
+jq '.escalation_autonomy = "decide-with-veto"' "$base_config" > "$ea_veto_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_veto_config" 2>&1)"
+assert_contains "decide-with-veto with the Enabler disabled warns, naming the key" \
+  '[warn] escalation_autonomy is "decide-with-veto" but enabler_model is empty' "$out"
+
 # --- agent-ops#532 (D18 WI-7 follow-up): merge_autonomy at
 #     agent-merges-routine+ with no merge queue must pair with *both*
 #     allow_auto_merge and allow_squash_merge, since landing_arm's no-queue
