@@ -48,6 +48,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/notify.sh"
 # shellcheck source=lib/enabler.sh
 . "$SCRIPT_DIR/lib/enabler.sh"
+# shellcheck source=lib/stage-budget.sh
+. "$SCRIPT_DIR/lib/stage-budget.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 failures=0
 assert_eq() {
@@ -335,7 +339,23 @@ sep05_run1_fails="$(fail_at 2026-09-04T23:54:53Z ockham-2 "$sep05_detail"
 sep05_escalated_1164="$(jq -nc --arg d "$sep05_detail" \
   '{ts: "2026-09-05T00:03:12Z", node: "poetic-2", event: "crash-loop-escalated", stage: "coordinator", detail: $d, first_ts: "2026-09-04T23:54:53Z", issue_number: 1164, issue_url: "https://github.com/o/r/issues/1164"}')"
 
-crash_loop_min_clear_minutes=30
+# The product default itself (config.schema.json), not a hand-typed literal
+# that could silently drift from it: config_defaults is the same function
+# agent-cycle.sh's own `cfg` resolves through, so this is the value a real
+# installation that never sets this key actually runs with.
+printf '{}' > "$WORKDIR/empty-config.json"
+crash_loop_min_clear_minutes="$(config_defaults "$WORKDIR/empty-config.json" "$SCRIPT_DIR/config.schema.json" 2>/dev/null | jq -r '.crash_loop_min_clear_minutes')"
+if [[ "$crash_loop_min_clear_minutes" =~ ^[0-9]+$ ]]; then
+  printf 'ok   - crash_loop_min_clear_minutes has a numeric schema default to test against\n'
+else
+  printf 'FAIL - could not resolve crash_loop_min_clear_minutes'\''s own schema default (got %s)\n' "$crash_loop_min_clear_minutes"
+  failures=$(( failures + 1 ))
+  crash_loop_min_clear_minutes=30
+fi
+success_epoch_2026_09_05="$(date -u -d 2026-09-05T00:13:00Z +%s)"
+horizon_within_window="$(date -u -d "@$(( success_epoch_2026_09_05 + 120 ))" +%FT%TZ)"
+horizon_past_window="$(date -u -d "@$(( success_epoch_2026_09_05 + crash_loop_min_clear_minutes * 60 + 60 ))" +%FT%TZ)"
+horizon_far_past_window="$(date -u -d "@$(( success_epoch_2026_09_05 + crash_loop_min_clear_minutes * 600 + 60 ))" +%FT%TZ)"
 
 # Barely two minutes past the clearing success — well inside the window, and
 # (as the real incident shows) plenty of time for the same detail to resume
@@ -347,7 +367,7 @@ union_log="$WORKDIR/union-flap-freshly-cleared.jsonl"
   success_at 2026-09-05T00:13:00Z poetic-2
 } > "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved 2026-09-05T00:15:00Z
+crash_loop_retire_resolved "$horizon_within_window"
 assert_eq "a clearing success not yet crash_loop_min_clear_minutes old is never retired" \
   "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
@@ -365,7 +385,7 @@ union_log="$WORKDIR/union-flap-recurred.jsonl"
   fail_at 2026-09-05T00:16:50Z poetic-1 "$sep05_detail"
 } > "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved 2026-09-05T04:00:00Z
+crash_loop_retire_resolved "$horizon_far_past_window"
 assert_eq "a same-detail failure since the clearing success blocks retirement outright" \
   "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and no retirement is logged for it either" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
@@ -380,7 +400,7 @@ union_log="$WORKDIR/union-flap-genuinely-clear.jsonl"
   success_at 2026-09-05T00:13:00Z poetic-2
 } > "$union_log"
 STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
-crash_loop_retire_resolved 2026-09-05T00:43:00Z
+crash_loop_retire_resolved "$horizon_past_window"
 assert_eq "a clearing success that has held crash_loop_min_clear_minutes, with no recurrence, is retired" \
   "1" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and the retirement is logged" "1" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
@@ -398,7 +418,6 @@ STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
 crash_loop_retire_resolved 2026-09-05T00:13:05Z
 assert_eq "crash_loop_min_clear_minutes 0 retires on the first nameable success, as before this key existed" \
   "1" "$STUB_GH_CLOSE_CALLS"
-crash_loop_min_clear_minutes=30
 
 printf '\n'
 if (( failures )); then

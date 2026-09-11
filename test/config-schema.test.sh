@@ -366,6 +366,8 @@ assert_defaults "an explicit null is treated the same as absent" \
   '.state_repo = null' '.state_repo == ""'
 assert_defaults "a key the config already sets is left exactly as written" \
   '.crash_loop_after = 4' '.crash_loop_after == 4'
+assert_defaults "crash_loop_min_clear_minutes absent resolves to its 30-minute product default" \
+  'del(.crash_loop_min_clear_minutes)' '.crash_loop_min_clear_minutes == 30'
 assert_defaults "a nested object absent as a whole is synthesised from its own leaves' defaults" \
   'del(.schedule)' \
   '.schedule == {cycle_hours: "*", cycle_interval_minutes: 15, excluded_minutes: [], review_hour: 3, review_offset_minutes: 29, heartbeat_minutes: 5, state_sync_push_minutes: 5, state_sync_fetch_minutes: 7, log_rotation_minute: 19, doctor_offset_minutes: 44, revert_rate_hour: 2, revert_rate_offset_minutes: 51, tech_debt_archive_hour: 4, tech_debt_archive_offset_minutes: 37}'

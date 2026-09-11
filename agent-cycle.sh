@@ -600,8 +600,12 @@ crash_loop_repo="$(cfg '.crash_loop_repo')"
 # clearing success must hold, with the same detail never resuming in the
 # meantime, before `crash_loop_retire_resolved` actually closes the issue
 # (the 2026-09-05 fleet flap — six escalations in four hours, each retired
-# within minutes of a lone success before the same detail resumed). `0`
-# restores instant retirement on the first nameable success.
+# within minutes of a lone success before the same detail resumed, with
+# gaps as short as two minutes between a retirement and the next same-
+# detail failure). The default, 30, is two of `schedule.cycle_interval_
+# minutes`'s own default 15-minute firings — long enough for a recurrence
+# to reach this node's own peer-synced union before the success is
+# trusted. `0` restores instant retirement on the first nameable success.
 crash_loop_min_clear_minutes="$(cfg '.crash_loop_min_clear_minutes')"
 [[ "$crash_loop_min_clear_minutes" =~ ^[0-9]+$ ]] || crash_loop_min_clear_minutes=0
 # Deferred crash-loop escalations this cycle's step-1b block could not file

@@ -852,7 +852,7 @@ and the schema must carry every one of them.
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy. |
-| `crash_loop_min_clear_minutes` | 30 min | Requirement 2.7's own retirement hysteresis: a Co-Ordinator-class escalation's clearing success must be at least this many minutes old, with the same detail never having resumed since, before `crash_loop_retire_resolved` closes the issue. `0` disables it, retiring on the first nameable success exactly as before this key existed. |
+| `crash_loop_min_clear_minutes` | 30 min | Requirement 2.7's own retirement hysteresis: a Co-Ordinator-class escalation's clearing success must be at least this many minutes old, with the same detail never having resumed since, before `crash_loop_retire_resolved` closes the issue. `30` is two `schedule.cycle_interval_minutes`-default cycles, long enough for a same-detail recurrence to reach this node's own peer-synced union before the success is trusted. `0` disables the hysteresis outright, retiring on the first...[continued below](#extended-notes-crash_loop_min_clear_minutes) |
 | `escalation_webhook_url` | *(unset)* | An alias for `notify_webhook_url` (requirement 2m), accepted for one release when `notify_webhook_url` is itself empty. `scripts/doctor.sh` warns whenever this key is set. Empty contributes nothing. |
 | `notify_webhook_url` | *(unset)* | The URL every `notify_post` (`lib/notify.sh`) POST goes to (requirement 2m). `escalation_webhook_url` is accepted as an alias for one release when this is empty; `doctor.sh` warns on the old name. Empty (both) disables the channel: no POST is attempted, so an installation with none configured is unaffected. Must be `https://` when set. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — `doctor.sh`'s own...[continued below](#extended-notes-notify_webhook_url) |
 | `notify_events` | `["escalation", "pager", "fleet-standdown"]` | Which of the three notify classes (requirement 2m) `notify_post` sends: `escalation`, `pager`, `fleet-standdown`. Default is all three. An event whose class is absent here is dropped before `notify_webhook_url` is read — never sent, never logged as suppressed. |
@@ -1104,6 +1104,10 @@ D18 Stage 3 (requirement 8d, `lib/landing.sh`'s `landing_eligible`, agent-ops#72
 ### Extended notes: `landing_cool_off_hours`
 
 D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — the compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
+
+### Extended notes: `crash_loop_min_clear_minutes`
+
+Requirement 2.7's own retirement hysteresis: a Co-Ordinator-class escalation's clearing success must be at least this many minutes old, with the same detail never having resumed since, before `crash_loop_retire_resolved` closes the issue. `30` is two `schedule.cycle_interval_minutes`-default cycles, long enough for a same-detail recurrence to reach this node's own peer-synced union before the success is trusted. `0` disables the hysteresis outright, retiring on the first nameable success exactly as before this key existed.
 
 ### Extended notes: `notify_webhook_url`
 
@@ -4257,9 +4261,15 @@ implements.
      trusted — a deterministic stand-in for "now" that never reads the wall
      clock, giving a same-detail recurrence that has not yet reached this
      node's own peer-synced union time to arrive and trip the guard above
-     instead. `0` (config key `crash_loop_min_clear_minutes`, default 30
-     minutes) restores instant retirement on the first nameable success, the
-     behaviour before this key existed.
+     instead. The default, 30, is two of `schedule.cycle_interval_minutes`'s
+     own default 15-minute firings: long enough that a same-detail
+     recurrence gets at least two more fleet-wide chances to reach this
+     node's own union before the clearing success is trusted — the
+     2026-09-05 flap's own gaps between a retirement and the next same-
+     detail failure were as short as two minutes, nowhere near enough
+     without this. `0` restores instant retirement on the first nameable
+     success, the behaviour before this key existed, for an installation
+     that would rather see every flap than wait out a window.
 
    Together the two guards turn a flapping incident into one issue that
    stays open and gets rebound — with a fresh `crash-loop-escalated` event
