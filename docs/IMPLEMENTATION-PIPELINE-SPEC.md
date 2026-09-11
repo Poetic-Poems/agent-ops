@@ -169,7 +169,14 @@ a node updates by pulling a new image rather than by pulling a branch.
   the config (`os.Executable()`, read inside the process the shim execs
   through to) and so bypass the shim, and therefore the seam, on every future
   credential fill; the unqualified `gh` re-resolves through `PATH` — the
-  shim, ahead of the real binary — on every call — creates `state_dir` and
+  shim, ahead of the real binary — on every call — and, beside it,
+  `credential.https://github.com.useHttpPath true`, without which git tells
+  the helper only the protocol and the host, leaving component 22c's
+  `gh_shim_target_owner` nothing in the request that names the repository, so
+  every push and fetch would mint against the scalar default installation
+  whatever organisation it was for; neither `git config` call is fatal — a
+  node that could not write either still authenticates, just always as the
+  default identity — creates `state_dir` and
   `workspace_root`, and then execs the service it was given. It refuses to
   start if `state_dir` is not writable, rather than
   letting a mis-owned volume become a silent failure to record anything. It
@@ -18735,13 +18742,18 @@ What exists, and the requirements each part answers to:
     environment is a `warn`, the wrapper failing closed either way —
     then the forge authoring App's own presence (D25/agent-ops#607,
     component 14g): `ok` naming which credential this node authors with
-    either way — the App's, when all three of its environment values are
-    set and the key is readable, or `GH_TOKEN`'s degrade path when none are
-    — and a `warn`, never a `fail`, for a partial set (some but not all
-    three), since that is the one shape that is not simply "not configured
-    yet" but is likely an operator mistake worth a second look; unlike the
-    Approver there is no `config.json` declaration to reconcile this
-    identity against (component 14g's own header explains why) —
+    either way — the App's, when its App id, a readable key and an
+    installation id (the scalar `PULLWRIGHT_AUTHOR_INSTALLATION_ID`, or
+    `PULLWRIGHT_AUTHOR_INSTALLATION_IDS` naming at least one owner) are all
+    set, or `GH_TOKEN`'s degrade path when none are — and a `warn`, never a
+    `fail`, for a partial set, since that is the one shape that is not
+    simply "not configured yet" but is likely an operator mistake worth a
+    second look; then, with a credential present, a `fail` for each owner
+    across `repos[]`, `state_repo`, `crash_loop_repo` and `pager_repo` that
+    neither the map nor the scalar names, and one `ok` naming them all when
+    every owner resolves; unlike the Approver there is no `config.json`
+    declaration to reconcile this identity against (component 14g's own
+    header explains why) —
     then the reserved label
     names — `blocked` on an issue-side label key, `obsolete` on any label key
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
@@ -18954,19 +18966,55 @@ What exists, and the requirements each part answers to:
     and every malformed map value resolving as they do above — against the
     same stubbed `curl` and real-JWT-signing seam its sibling functions use.
 
-    **The forge authoring App's own mint path, exercised once** (D25,
-    agent-ops#607, component 14g): independent of `gh_ready` above, since
-    this identity's whole point is to work on a node carrying no `GH_TOKEN`
-    or `gh auth login` at all — gating it on `gh` being authenticated would
-    refuse to check the one case most worth checking. Skipped under
-    `--offline`. When `author_token_credential_present` is true, one call to
-    `author_token_get` is attempted: success is `ok`, naming the identity
-    login (`author_token_identity_login`) this node now authors as; failure
-    is a `fail`, never a `warn` — a credential that is present and still
-    cannot mint (a wrong installation id, a key that no longer matches the
-    App) is worth surfacing loudly, since silence here would let it degrade
-    to `GH_TOKEN` with no operator ever told why. Absence is never a
-    `fail`/`warn` here — already covered by the presence check above.
+    **The forge authoring App's own mint path, exercised once per distinct
+    installation** (D25, agent-ops#607, component 14g): independent of
+    `gh_ready` above, since this identity's whole point is to work on a node
+    carrying no `GH_TOKEN` or `gh auth login` at all — gating it on `gh`
+    being authenticated would refuse to check the one case most worth
+    checking. Skipped under `--offline`. When
+    `author_token_credential_present` is true, one `author_token_get` is
+    attempted per distinct installation id across the owners this node
+    authors into, and the verdict is reported per owner: success is `ok`,
+    naming the owner, its installation id and the identity login
+    (`author_token_identity_login`) this node authors as there; failure is a
+    `fail`, never a `warn` — a credential that is present and still cannot
+    mint (a wrong installation id, a key that no longer matches the App) is
+    worth surfacing loudly, since silence here would let it degrade to
+    `GH_TOKEN` with no operator ever told why. Two owners sharing one
+    installation therefore cost one mint, not two, and two owners on two
+    installations are two separate facts. A node with no repository owner
+    configured at all exercises the default installation once, naming no
+    owner. An owner that resolves to no installation is skipped here, having
+    already been failed below. Absence is never a `fail`/`warn` here —
+    already covered by the presence check above.
+
+    **Every owner this node authors into resolves to an installation**
+    (component 14g's map; the same check agent-ops#913/#1064 gives the
+    Approver). A GitHub App installation is per account, so an owner named by
+    neither `PULLWRIGHT_AUTHOR_INSTALLATION_IDS` nor the scalar
+    `PULLWRIGHT_AUTHOR_INSTALLATION_ID` resolves nowhere, and every authoring
+    call into it silently degrades to `GH_TOKEN` at write time. That is a
+    `fail` naming the owner and both variables, never a silent skip; every
+    owner resolving is one `ok` naming them all. The owner set is
+    deliberately wider than `repos[]`: `state_repo`, `crash_loop_repo` and
+    `pager_repo` (when set) are counted too, because `scripts/state-sync.sh`
+    pushes into `state_repo` under this same identity and no `repos[]`-only
+    check would have caught an unresolved one — which is exactly the shape
+    this fleet has carried since its 2026-09-07 re-homing. Unlike the
+    Approver's own per-owner loop there is no rank gate: this identity
+    authors into every configured repository whatever its `merge_autonomy`.
+    The check reads only the environment and `config.json`, so it costs
+    nothing and still reports under `--offline`; it runs only when a
+    credential is configured at all, absence being the expected steady state
+    until an owner provisions the App.
+    `test/doctor.test.sh` covers both: two owners on two installations, each
+    minting against its own and reported separately (the second owner
+    arriving through `state_repo`, not `repos[]`); an owner named by neither
+    the map nor a scalar default failing by name and naming both variables,
+    while the owner that does resolve still mints and the unresolved one is
+    never minted for; the same configuration with a scalar default closing
+    the gap; and the unresolved owner still named under `--offline`, where no
+    mint is spent at all.
 
     A third flag, `--unattended` (requirement 2.6a), is what
     `deploy/docker/crontab.tmpl`'s own hourly line runs unprompted: the whole
@@ -19346,15 +19394,43 @@ What exists, and the requirements each part answers to:
     collide when pointed at the same directory). Must pass `shellcheck`.
 14g. `lib/author-token.sh` — the forge authoring App's own installation-token
     minting wrapper (D25, agent-ops#607), the same thin-wrapper shape
-    component 14b now has: `author_token_credential_present`,
-    `author_token_get [NOW_EPOCH]` and `author_token_identity_login
-    [NOW_EPOCH]` each delegate straight to component 14f, supplying this
-    identity's own three environment variables — `PULLWRIGHT_AUTHOR_APP_ID`,
-    `PULLWRIGHT_AUTHOR_INSTALLATION_ID`, `PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH`
+    component 14b now has: `author_token_credential_present [OWNER]`,
+    `author_token_get [NOW_EPOCH] [OWNER]` and `author_token_identity_login
+    [NOW_EPOCH] [OWNER]` each delegate straight to component 14f, supplying
+    this identity's own four environment variables — `PULLWRIGHT_AUTHOR_APP_ID`,
+    `PULLWRIGHT_AUTHOR_INSTALLATION_ID`,
+    `PULLWRIGHT_AUTHOR_INSTALLATION_IDS`, `PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH`
     — its own cache-file prefix (`pullwright-author-token`, keyed by
-    installation id the same way component 14b's is) and its own override
+    installation id the same way component 14b's is, so two owners' tokens
+    share neither a cache file nor each other) and its own override
     variables (`AUTHOR_TOKEN_CURL`, `AUTHOR_TOKEN_OPENSSL`,
-    `AUTHOR_TOKEN_CACHE_DIR`), never the Approver's. This is the identity
+    `AUTHOR_TOKEN_CACHE_DIR`), never the Approver's.
+    **One App, several installations.** A GitHub App installation is per
+    account, and this fleet's repositories span two of them
+    (`Poetic-Poems`, `Pullwright`), so one installation id cannot back every
+    authoring call. `PULLWRIGHT_AUTHOR_INSTALLATION_IDS` is a JSON object
+    mapping owner to installation id (`{"Pullwright": 12345678,
+    "Poetic-Poems": 87654321}`) and `author_token_installation_for_owner
+    OWNER` resolves it by the owner half of a slug, case-insensitively,
+    falling back to the scalar `PULLWRIGHT_AUTHOR_INSTALLATION_ID` for an
+    owner the map does not name — the identical shape, and identical
+    malformed-map and malformed-value fall-throughs, component 14b already
+    carries for the Approver (agent-ops#913). It differs from component 14b
+    in exactly one place: an **empty owner** resolves to the scalar default
+    rather than to nothing, because this identity's busiest caller
+    (component 22c's `gh_shim_resolve_token`, which runs on every `gh` call
+    and every `git` credential fill) legitimately cannot name an owner for
+    some invocations, and the scalar is the operator's own declared answer
+    to that. `author_token_credential_present` with no owner, and
+    `author_token_identity_login` with none, resolve through
+    `author_token_any_installation_id` instead — the scalar if set, else the
+    first usable map entry by key — so a fleet carrying only the map still
+    reads as configured and can still be asked which login it authors as
+    (`GET /app` is identical across every installation of one App). A mint
+    never resolves that way: a token minted against an arbitrary
+    installation is the silent wrong answer the map exists to retire, so
+    `author_token_get` with an owner nothing names returns the same gate
+    unreadable (exit 2) every other absent piece of this identity produces. This is the identity
     every authoring act — cloning a target repository, pushing a branch,
     opening or commenting on a pull request or issue — runs under once
     configured (component 14h decides when), in place of the owner's own
@@ -19383,7 +19459,12 @@ What exists, and the requirements each part answers to:
     success path, the cache and its expiry/ownership/tmpfs guarantees, every
     missing-credential shape, a mint refused or unreachable — plus the
     cross-identity cache-isolation case component 14b's own tests do not
-    need. Must pass `shellcheck`.
+    need, and the per-owner resolution itself: which installation each owner
+    resolves to (map, case-insensitively; scalar fallback; nothing at all),
+    every malformed-map and malformed-value fall-through, the no-owner
+    contract of each of the five functions, and that two owners' minted
+    tokens land in two cache files and are never served for each other.
+    Must pass `shellcheck`.
 14h. `lib/forge-auth.sh` — which identity a cycle authors as (D25,
     agent-ops#607), and the name of the on-demand credential seam's
     degrade-path variable (D25 as amended, agent-ops#1021, component 22c). No
@@ -19426,7 +19507,13 @@ What exists, and the requirements each part answers to:
     `TOKEN` to whatever `PW_GH_DEGRADE_TOKEN`, or (absent that) the node's own
     ambient `GH_TOKEN`, already held, which may itself be empty (the
     pre-existing "no credential" case this file does not change). **Never
-    fails.**
+    fails.** It names no repository owner, so the mint it reports on is
+    against the *scalar default* installation — the same one component 22c
+    uses for any call it cannot attribute — which means a fleet carrying only
+    component 14g's per-owner map and no scalar default reads
+    `gh-token-degraded` here, correctly: an owner-less call on such a node
+    does take the fallback, and the log line says which of the two causes it
+    was.
     `lib/standdown.sh` logs the `forge-auth` event naming `SOURCE`, and a
     `warning` once per cycle for a `gh-token-degraded` resolution, so
     `scripts/publish-dashboard.sh` and any operator reading the log can see
@@ -20121,6 +20208,45 @@ What exists, and the requirements each part answers to:
     too, and `gh auth git-credential`'s own protocol answer
     (`username=x-access-token`, `password=<token>`) reflects whatever this
     file just resolved.
+    **Which installation** that mint goes against is `gh_shim_target_owner
+    ARGS…`'s answer for the invocation in hand, resolved through component
+    14g's per-owner map: a named owner mints for that owner's installation;
+    a named owner neither the map nor the scalar default covers falls back
+    to `PW_GH_DEGRADE_TOKEN`, because a token minted on the wrong account is
+    a 404 at write time rather than a credential; and an invocation naming
+    no owner takes the scalar default installation, or `PW_GH_DEGRADE_TOKEN`
+    when there is none. `gh_shim_target_owner` is pure — argv, the buffered
+    credential request, and the current work tree's own `origin` — and tries,
+    in order: a buffered `gh auth git-credential` request's `path=`
+    attribute; `-R`/`--repo` in either spelling; for `gh api`, the endpoint
+    path (`repos/OWNER/…`, `orgs/OWNER…`, `users/OWNER…`, leading slash and
+    query string both tolerated) or, for the literal `graphql` endpoint, an
+    `owner=OWNER` field (`-f`/`-F`/`--field`/`--raw-field`) and then a
+    `repository(owner: "OWNER"` literal in the query text; for everything
+    else the first *positional* argument that is a **github.com URL**, and —
+    **only under `gh repo <subcommand>`** — a bare `OWNER/REPO` or
+    `HOST/OWNER/REPO` as well; and finally `git remote get-url origin`,
+    github.com only, which is how the large remainder (`gh pr list`, `gh pr
+    checks`, `gh issue comment 12`) resolves, exactly as `gh` itself resolves
+    them. Naming no owner is an ordinary outcome, not a failure: the scalar
+    default answers it, and a wrong guess would be worse than none.
+    The `gh repo` restriction is load-bearing, not tidiness: a bare `a/b` is
+    exactly as much a *branch name* as a repository, and every branch this
+    fleet creates carries a slash (`agent/1051`, `feat/x`, `docs/x`), with
+    the stages running `gh pr checkout`/`view`/`diff` against one, bare,
+    inside a cloned workspace. `gh repo` is the one command family whose
+    positional is never a branch, and a URL is never one under any command.
+    A flag's value is never read as a repository either (`gh repo clone
+    --branch feat/x acme/widgets` names `acme`), and the `HOST/OWNER/REPO`
+    form requires its first segment to contain a `.`, so a three-segment
+    path (`docs/foo/bar.md`) cannot have its middle segment read as an
+    owner. `gh auth git-credential` is also
+    the one invocation whose **stdin** `gh_shim_main` reads: git's request
+    (`protocol=`, `host=`, `path=`) is buffered to a temporary file which
+    then replaces the process's own stdin, so the real binary receives the
+    caller's bytes unchanged while the shim gets the `path=` line it needs.
+    Nothing else's stdin is ever read, which is what keeps `gh api --input -`
+    working.
     `gh_shim_classify` (built on `gh_shim_parse`) is the one place
     a call is sorted into `read` (a plain `gh api` GET — the only class ever
     conditioned), `paginate` (a `gh api` GET carrying `--paginate`/`--slurp`
@@ -20161,7 +20287,10 @@ What exists, and the requirements each part answers to:
     against a stub "real gh" binary answering from a per-call JSON plan
     (`test/gh-shim.test.sh`) and, for the credential seam specifically —
     stubbed `curl`/`openssl` and `PW_GH_NOW_EPOCH` advanced past a minted
-    token's `expires_at` — `test/gh-shim-auth.test.sh` (acceptance check 2q);
+    token's `expires_at` — `test/gh-shim-auth.test.sh` (acceptance check 2q),
+    which also covers `gh_shim_target_owner` rule by rule, including that a
+    flag's value is never read as an owner and that an invocation naming
+    none prints nothing;
     must pass `shellcheck`.
 
 23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
@@ -21363,6 +21492,36 @@ oblige anyone to edit a test.
    back to `GH_TOKEN` exactly as before — and `test/forge-auth.test.sh`,
    `test/gh-shim.test.sh` and `test/gh-shim-auth.test.sh` all pass
    `shellcheck`.
+2r. **The seam mints against the installation covering the repository the
+   call targets, and reaches for the PAT when none does.**
+   `test/gh-shim-auth.test.sh` passes: with
+   `PULLWRIGHT_AUTHOR_INSTALLATION_IDS` naming two owners and no scalar
+   default, a call naming the first owner presents that installation's own
+   token, a call naming the second presents the other's, a call naming a
+   third presents `PW_GH_DEGRADE_TOKEN` — never another owner's token — and
+   a call naming no owner presents `PW_GH_DEGRADE_TOKEN` too; adding a
+   scalar default turns those last two into the default installation's own
+   token while a mapped owner still wins over it; and a non-empty `GH_TOKEN`
+   passes through whatever the owner. The same three outcomes hold through
+   `gh auth git-credential`, driven by the `path=` attribute of a buffered
+   request, whose bytes the stub "real gh" receives unchanged. Every
+   `gh_shim_target_owner` rule is pinned on its own — `-R`/`--repo` in both
+   spellings and outranking a positional, `HOST/OWNER/REPO` and github.com
+   URLs, `gh api` `repos`/`orgs`/`users` paths with and without a leading
+   slash or query string, a graphql `owner` field and a
+   `repository(owner: "…")` literal including across a line break, the
+   `origin` remote fallback for a bare call inside a work tree (HTTPS and
+   SSH), and the cases that must name *nobody* — another forge's URL or
+   remote, a path naming no owner, a request without `path=` or for another
+   host, a three-segment path whose first segment is no hostname, and a flag's
+   value that merely looks like a slug (`gh repo clone --branch feat/x
+   acme/widgets` names `acme`). One group is asserted against a work tree
+   whose `origin` is `Poetic-Poems/poetic`: `gh pr checkout agent/1051`,
+   `gh pr view feat/x` and `gh pr diff docs/x` each resolve to
+   `Poetic-Poems` and never to the branch's first segment — the failure this
+   change would otherwise introduce, since an owner named `agent` resolves to
+   no installation and would hand a `Poetic-Poems` clone the scalar
+   default's token.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`

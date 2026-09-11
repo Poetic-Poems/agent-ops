@@ -10,6 +10,13 @@
 # through `PATH` to this same shim, so both front doors mint through the one
 # resolver. See `gh_shim_resolve_token`'s own header for the mechanics.
 #
+# Which of that App's installations a given call mints against is
+# `gh_shim_target_owner`'s answer for that call (agent-ops#913's per-owner
+# map, applied to the authoring identity): a GitHub App installation is per
+# account, and this fleet's repositories span two of them, so one token
+# cannot back every call. See `gh_shim_target_owner`'s own header for how an
+# owner is recovered from an invocation whose argv this file does not write.
+#
 # ## Why a `PATH` shim, not another library wrapper
 #
 # `lib/github-limit.sh` already shadows `gh` for every script that sources
@@ -180,7 +187,292 @@
 # shellcheck source=lib/author-token.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/author-token.sh"
 
-# gh_shim_resolve_token
+# GH_SHIM_STDIN_FILE
+# Set by gh_shim_main, and only for `gh auth git-credential`: the path of the
+# file this invocation's stdin was buffered into before anything read it, so
+# gh_shim_target_owner can name the repository `git` is asking a credential
+# for. Empty for every other call shape — nothing else here ever reads the
+# caller's stdin, which would break `gh api --input -`.
+GH_SHIM_STDIN_FILE=""
+
+# _gh_shim_owner_valid NAME
+# True (exit 0) iff NAME is shaped like a GitHub account name. Everything
+# below routes its answer through here, so a parse that went wrong on some
+# argv shape this file has never seen yields *no owner* — which resolves to
+# the scalar default installation, the pre-agent-ops#913 behaviour — rather
+# than a nonsense owner that would resolve nowhere and degrade a perfectly
+# well-configured node to its PAT.
+_gh_shim_owner_valid() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+# gh_shim_owner_from_url SPEC
+# The owner named by a **github.com URL**, or nothing at all. Pure. Accepts
+# the web form (`https://github.com/OWNER/REPO`, with or without a `.git`
+# suffix or a trailing `/pull/5`) and the two SSH remote forms
+# `git remote get-url origin` can print. A URL on any other host prints
+# nothing: this identity is a github.com App, and minting for a GitLab
+# remote's "owner" would be meaningless.
+#
+# Kept apart from gh_shim_owner_from_spec below because a URL is *always* a
+# repository — nothing else in a `gh` argv is shaped like one — whereas a
+# bare `owner/repo` is ambiguous with a branch name, and so is only read as a
+# repository where `gh` itself would read it as one.
+gh_shim_owner_from_url() {
+  local spec="${1:-}" rest owner
+  [[ -n "$spec" ]] || return 0
+  spec="${spec%/}"
+  case "$spec" in
+    https://github.com/*)     rest="${spec#https://github.com/}" ;;
+    http://github.com/*)      rest="${spec#http://github.com/}" ;;
+    https://www.github.com/*) rest="${spec#https://www.github.com/}" ;;
+    http://www.github.com/*)  rest="${spec#http://www.github.com/}" ;;
+    git@github.com:*)         rest="${spec#git@github.com:}" ;;
+    ssh://git@github.com/*)   rest="${spec#ssh://git@github.com/}" ;;
+    *)                        return 0 ;;
+  esac
+  owner="${rest%%/*}"
+  _gh_shim_owner_valid "$owner" || return 0
+  printf '%s' "$owner"
+}
+
+# gh_shim_owner_from_spec SPEC
+# The owner named by a repository specifier, or nothing at all. Pure.
+# Accepts every shape `gh` itself does for `-R`/`--repo` and for `gh repo`'s
+# own positional argument: a github.com URL (as above), `OWNER/REPO`, or
+# `HOST/OWNER/REPO`.
+#
+# The three-segment form requires its first segment to look like a hostname —
+# to contain a `.` — because without that check any three-segment path
+# (`docs/foo/bar.md`, `a/b/c`) would read its *second* segment as an owner.
+# No GitHub account name contains a dot in a position that matters here: the
+# host half is what dots belong to.
+gh_shim_owner_from_spec() {
+  local spec="${1:-}" rest owner
+  [[ -n "$spec" ]] || return 0
+  owner="$(gh_shim_owner_from_url "$spec")"
+  [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+  spec="${spec%/}"
+  case "$spec" in
+    *://*|*@*:*) return 0 ;;
+    */*/*)
+      case "${spec%%/*}" in *.*) ;; *) return 0 ;; esac
+      rest="${spec#*/}" ;;
+    */*) rest="$spec" ;;
+    *)   return 0 ;;
+  esac
+  owner="${rest%%/*}"
+  _gh_shim_owner_valid "$owner" || return 0
+  printf '%s' "$owner"
+}
+
+# gh_shim_owner_from_api_path PATH
+# The owner named by a `gh api` endpoint path — `repos/OWNER/…`,
+# `orgs/OWNER…` or `users/OWNER…`, with or without a leading slash and with
+# any query string ignored — or nothing for a path that names none
+# (`rate_limit`, `user`, `meta`, `/installation/repositories`). Pure.
+gh_shim_owner_from_api_path() {
+  local p owner=""
+  p="$(gh_shim_strip_query "${1:-}")"
+  p="${p#/}"
+  case "$p" in
+    repos/*) owner="${p#repos/}" ;;
+    orgs/*)  owner="${p#orgs/}" ;;
+    users/*) owner="${p#users/}" ;;
+    *) return 0 ;;
+  esac
+  owner="${owner%%/*}"
+  _gh_shim_owner_valid "$owner" || return 0
+  printf '%s' "$owner"
+}
+
+# gh_shim_credential_owner FILE
+# The owner named by a buffered `gh auth git-credential` request — git's own
+# credential protocol, one `key=value` line per attribute — or nothing. Pure
+# (given the file).
+#
+# `path=OWNER/REPO(.git)` is the attribute that carries it, and git sends it
+# only when `credential.https://github.com.useHttpPath` is true, which
+# deploy/docker/entrypoint.sh sets beside the helper itself (component 7). A
+# request without one simply names no owner here and falls through to the
+# rules below, ending at the `origin` remote of whatever work tree git
+# invoked the helper from — so an older node whose entrypoint predates that
+# setting degrades to the scalar default rather than to nothing.
+#
+# A `host=` naming anything but github.com prints nothing: the helper is
+# wired per host, but a node whose git config gained another one must never
+# have a github.com App token offered to it.
+gh_shim_credential_owner() {
+  local file="${1:-}" line host="" path="" owner
+  [[ -n "$file" && -r "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      host=*) host="${line#host=}" ;;
+      path=*) path="${line#path=}" ;;
+    esac
+  done < "$file"
+  case "${host%%:*}" in ""|github.com|www.github.com) ;; *) return 0 ;; esac
+  path="${path#/}"
+  [[ "$path" == */* ]] || return 0
+  owner="${path%%/*}"
+  _gh_shim_owner_valid "$owner" || return 0
+  printf '%s' "$owner"
+}
+
+# gh_shim_target_owner ARGS...
+# The GitHub account one `gh` invocation acts against, or nothing at all when
+# no rule below names one. Pure: it reads argv, GH_SHIM_STDIN_FILE (already
+# buffered by gh_shim_main) and — last of all, only when nothing in argv
+# named an owner — the current directory's own `origin` remote. It sets no
+# globals and makes no network call.
+#
+# Why this exists: agent-ops#913's answer for the Approver could take the
+# repository slug as a function argument, because every Approver call site
+# holds one. This identity's call site is `gh` itself — a `PATH` shim in
+# front of a binary whose argv is written by five model-driven stages and
+# every script in this repository — so the slug has to be *recovered* from
+# the invocation. The rules, in the order they are tried:
+#
+#   1. `gh auth git-credential` — git's own protocol on stdin, whose
+#      `path=` attribute names the repository being pushed to or fetched
+#      from. First, because it is the only shape whose argv says nothing at
+#      all and whose stdin says everything.
+#   2. `-R`/`--repo`, in either the space- or `=`-separated form, anywhere
+#      in argv — gh's own explicit override, so it outranks everything else.
+#   3. For `gh api`: the endpoint path (`repos/OWNER/…`, `orgs/OWNER…`,
+#      `users/OWNER…`), or, for the literal `graphql` endpoint, an
+#      `owner=OWNER` field (`-f`/`-F`/`--field`/`--raw-field`) and then a
+#      `repository(owner: "OWNER"` literal in the query text.
+#   4. For everything else: the first positional argument that is a
+#      **github.com URL** (`gh pr view <url>`, `gh issue view <url>`,
+#      `gh repo clone <url>`) — and, **only under `gh repo <subcommand>`**
+#      (`clone`, `view`, `fork`, `edit`, `sync`, `rename`, …), a bare
+#      `OWNER/REPO` or `HOST/OWNER/REPO` as well.
+#
+#      The `gh repo` restriction is the whole of rule 4's correctness, not a
+#      tidiness: a bare `a/b` is exactly as much a *branch name* as a
+#      repository, and on this fleet every branch carries a slash
+#      (`agent/1051`, `feat/x`, `fix/x`, `docs/x`). The model-driven stages
+#      run `gh pr checkout agent/1051`, `gh pr view feat/x` and `gh pr diff
+#      docs/x` bare inside a cloned workspace constantly; reading `agent` or
+#      `feat` as an owner would resolve to no installation, fall through to
+#      the scalar default, and present the wrong organisation's token — a 404
+#      at write time, which is the exact failure this whole change exists to
+#      prevent. `gh repo` is the one command family whose positional is a
+#      repository and never a branch, and a URL can never be a branch under
+#      any command, so those two are what rule 4 reads. Everything else falls
+#      to rule 5, the `origin` remote — which is what `gh` itself resolves
+#      those commands against anyway.
+#
+#      A flag's *value* is never read as one either: `gh repo clone --branch
+#      feat/x acme/widgets` names `acme`, not `feat`.
+#   5. The `origin` remote of the work tree the call was made from, github.com
+#      only. This is what covers the large remainder — `gh pr list`, `gh pr
+#      checks`, `gh issue comment 12`, every stage's bare `gh` call inside a
+#      cloned workspace — none of which names a repository at all, because
+#      `gh` itself resolves them exactly this way.
+#
+# Nothing here is required to succeed: an invocation no rule names an owner
+# for is the ordinary case (`gh auth status`, `gh api rate_limit`, `gh
+# --version`), and gh_shim_resolve_token answers it with the scalar default
+# installation.
+gh_shim_target_owner() {
+  local owner=""
+
+  if [[ "${1:-}" == "auth" && "${2:-}" == "git-credential" ]]; then
+    owner="$(gh_shim_credential_owner "${GH_SHIM_STDIN_FILE:-}")"
+    [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+  fi
+
+  local -a args=("$@")
+  local -a positionals=()
+  local i j a skip_next=0
+
+  for (( i = 0; i < ${#args[@]}; i++ )); do
+    a="${args[i]}"
+    case "$a" in
+      -R=*|--repo=*) owner="$(gh_shim_owner_from_spec "${a#*=}")" ;;
+      -R|--repo)     owner="$(gh_shim_owner_from_spec "${args[i + 1]:-}")" ;;
+      *) continue ;;
+    esac
+    [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+  done
+
+  # Which arguments are positional. A flag's value is skipped rather than
+  # read (see rule 4 above): the list is every `gh` flag whose value can
+  # legitimately contain a `/`, which is the only shape rule 4 looks at.
+  # A flag this list does not know is treated as a boolean, so its value
+  # reaches the positional scan — failing towards "an owner we may not have
+  # wanted", which _gh_shim_owner_valid and the map/scalar fallback both
+  # absorb, rather than towards a crash.
+  for (( i = 0; i < ${#args[@]}; i++ )); do
+    a="${args[i]}"
+    if (( skip_next )); then skip_next=0; continue; fi
+    case "$a" in
+      --)
+        for (( j = i + 1; j < ${#args[@]}; j++ )); do positionals+=("${args[j]}"); done
+        break ;;
+      -R|--repo|-B|--base|-H|--head|-b|--body|-F|--body-file|-f|--field|--raw-field \
+      |--header|-t|--template|-q|--jq|-T|--title|--json|--search|-l|--label \
+      |-a|--assignee|-m|--message|-c|--comment|-d|--directory|-L|--limit \
+      |-A|--author|--milestone|--project|--reviewer|--add-label|--remove-label \
+      |--add-assignee|--remove-assignee|--add-reviewer|--remove-reviewer \
+      |--branch|--filename|--file|--input|--hostname|--cache|--method|-X)
+        skip_next=1 ;;
+      -*) ;;
+      *) positionals+=("$a") ;;
+    esac
+  done
+
+  if [[ "${positionals[0]:-}" == "api" ]]; then
+    local endpoint="${positionals[1]:-}"
+    if [[ "$endpoint" == "graphql" ]]; then
+      local field=""
+      for (( i = 0; i < ${#args[@]}; i++ )); do
+        case "${args[i]}" in
+          -f|-F|--field|--raw-field) field="${args[i + 1]:-}" ;;
+          -f=*|-F=*|--field=*|--raw-field=*) field="${args[i]#*=}" ;;
+          *) continue ;;
+        esac
+        case "$field" in owner=*) owner="${field#owner=}" ;; *) continue ;; esac
+        _gh_shim_owner_valid "$owner" && { printf '%s' "$owner"; return 0; }
+        owner=""
+      done
+      owner="$(printf '%s' "$*" | tr '\n' ' ' \
+        | grep -oE 'repository[[:space:]]*\([[:space:]]*owner[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+      if [[ -n "$owner" ]] && _gh_shim_owner_valid "$owner"; then
+        printf '%s' "$owner"; return 0
+      fi
+    else
+      owner="$(gh_shim_owner_from_api_path "$endpoint")"
+      [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+    fi
+  elif (( ${#positionals[@]} > 0 )); then
+    # A github.com URL is a repository under any command …
+    for a in "${positionals[@]}"; do
+      owner="$(gh_shim_owner_from_url "$a")"
+      [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+    done
+    # … a *bare* slug only under `gh repo <subcommand>` (see rule 4 above).
+    if [[ "${positionals[0]}" == "repo" ]] && (( ${#positionals[@]} > 1 )); then
+      for a in "${positionals[@]:1}"; do
+        owner="$(gh_shim_owner_from_spec "$a")"
+        [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+      done
+    fi
+  fi
+
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    owner="$(gh_shim_owner_from_url "$(git remote get-url origin 2>/dev/null)")"
+    [[ -z "$owner" ]] || { printf '%s' "$owner"; return 0; }
+  fi
+
+  return 0
+}
+
+# gh_shim_resolve_token ARGS...
 # "Explicit wins; empty resolves" (D18 decision 1 as amended, agent-ops#1021):
 # mints a forge authoring App installation token into GH_TOKEN when — and
 # only when — the caller's own environment leaves it empty. A non-empty
@@ -188,6 +480,19 @@
 # `GH_TOKEN="$(approver_token_get)" gh …`) is never touched, which is what
 # keeps the Approver's calls posting under its own identity rather than
 # being re-minted as the author.
+#
+# *Which* installation it mints against is gh_shim_target_owner's answer for
+# this invocation (agent-ops#913's map, applied to this identity): a named
+# owner mints for that owner's installation; a named owner the map and the
+# scalar default are both silent about falls back to PW_GH_DEGRADE_TOKEN,
+# because an App token minted for the wrong account is a 404 at write time
+# rather than a credential; and an invocation naming no owner at all resolves
+# to the scalar default installation, or to PW_GH_DEGRADE_TOKEN when there is
+# none. This is what makes provisioning the App (agent-ops#1083) safe on a
+# fleet whose repositories sit in two organisations — before it, one minted
+# token went into GH_TOKEN for every call whatever repository it targeted,
+# and the PAT was reached for only when a mint *failed*, never when a
+# perfectly good token simply did not cover the target.
 #
 # A cache hit (lib/github-app-token.sh's own refresh_buffer=300) costs
 # nothing, so this runs unconditionally, ahead of classification, on every
@@ -200,17 +505,23 @@
 # configured" case. Never fails its caller.
 gh_shim_resolve_token() {
   [[ -z "${GH_TOKEN:-}" ]] || return 0
-  local now token
-  now="${PW_GH_NOW_EPOCH:-$(date +%s)}"
-  if author_token_credential_present \
-      && token="$(author_token_get "$now" 2>/dev/null)" && [[ -n "$token" ]]; then
-    export GH_TOKEN="$token"
-    return 0
+  local now owner token
+  # The cheap, owner-less gate first, and deliberately: with no App
+  # configured at all there is no installation to choose between, and
+  # gh_shim_target_owner's own last rule forks `git` twice. A node that has
+  # never been given this identity must not pay for it on every call.
+  # shellcheck disable=SC2119 # "is this identity configured at all", not a per-owner question
+  if author_token_credential_present; then
+    now="${PW_GH_NOW_EPOCH:-$(date +%s)}"
+    owner="$(gh_shim_target_owner "$@")"
+    if token="$(author_token_get "$now" "$owner" 2>/dev/null)" && [[ -n "$token" ]]; then
+      export GH_TOKEN="$token"
+      return 0
+    fi
   fi
   [[ -n "${PW_GH_DEGRADE_TOKEN:-}" ]] && export GH_TOKEN="$PW_GH_DEGRADE_TOKEN"
   return 0
 }
-
 # gh_shim_real_bin
 # The real `gh` binary this shim calls through to. Never resolved via `gh` or
 # `command gh` — either would search `PATH` again and could recurse back into
@@ -234,7 +545,11 @@ gh_shim_state_dir() {
 # gh_shim_identity
 # A stable, short tag for whichever credential this process authenticates
 # with — the App and the PAT can legitimately see different data for the same
-# path, so their cache entries and budget readings must never collide.
+# path, and so can two installations of the same App, so their cache entries
+# and budget readings must never collide. Hashing the token itself is what
+# gives that for free: a per-owner mint (gh_shim_target_owner) yields a
+# different token and therefore a different tag, with nothing here needing to
+# know an installation id.
 # Read after gh_shim_resolve_token has already run, so a token that function
 # just minted is the one hashed here, not the empty value it was handed.
 # "no-token" when neither GH_TOKEN nor GITHUB_TOKEN is set (gh's own
@@ -780,8 +1095,33 @@ gh_shim_run_bypass() {
 # The shim's entry point (`scripts/gh-shim.sh` calls this and nothing else).
 # PW_GH_NO_CACHE=1 forces every call through gh_shim_run_bypass regardless of
 # classification — still ledgered, never cached or conditioned.
+#
+# `gh auth git-credential` is the one invocation whose *stdin* has to be read
+# before the token is resolved: git writes its request there (`protocol=`,
+# `host=`, `path=`) and closes the pipe, and the `path=` line is the only
+# thing in the whole call that names the repository being pushed to or
+# fetched from. So that one shape — and only that one, because buffering
+# anything else would break `gh api --input -` — is read whole into a
+# temporary file, which then *replaces* this process's own stdin (`exec <`)
+# before anything else runs. The real binary therefore receives the caller's
+# bytes unchanged, in order, exactly as it would have straight off the pipe;
+# the file is unlinked as soon as gh_shim_resolve_token has read it, the open
+# descriptor keeping it alive for the exec that follows. A `mktemp` that
+# fails costs only the owner (the call still works, resolving to the scalar
+# default installation), never the call.
 gh_shim_main() {
-  gh_shim_resolve_token
+  local cred_stdin=""
+  if [[ "${1:-}" == "auth" && "${2:-}" == "git-credential" ]]; then
+    if cred_stdin="$(mktemp "${TMPDIR:-/tmp}/gh-shim-credential.XXXXXX" 2>/dev/null)"; then
+      cat > "$cred_stdin"
+      GH_SHIM_STDIN_FILE="$cred_stdin"
+      exec < "$cred_stdin"
+    else
+      cred_stdin=""
+    fi
+  fi
+  gh_shim_resolve_token "$@"
+  [[ -z "$cred_stdin" ]] || rm -f "$cred_stdin"
   local state_dir identity
   state_dir="$(gh_shim_state_dir)"
   identity="$(gh_shim_identity)"

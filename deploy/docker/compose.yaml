@@ -98,6 +98,16 @@ x-agent-ops-env: &agent-ops-env
   # sets in .env that is not named here is silently invisible to every cycle.
   PULLWRIGHT_AUTHOR_APP_ID: ${PULLWRIGHT_AUTHOR_APP_ID:-}
   PULLWRIGHT_AUTHOR_INSTALLATION_ID: ${PULLWRIGHT_AUTHOR_INSTALLATION_ID:-}
+  # The same per-owner map the Approver's own has above, for the same reason
+  # and in the same shape: a JSON object of owner to installation id
+  # ('{"Pullwright": 12345678, "Poetic-Poems": 87654321}'), resolved by the
+  # owner half of whatever repository each call targets
+  # (lib/author-token.sh's author_token_installation_for_owner, from
+  # lib/gh-shim.sh's gh_shim_target_owner); an owner it does not name, and a
+  # call naming no owner at all, fall back to the scalar
+  # PULLWRIGHT_AUTHOR_INSTALLATION_ID above. A single-owner fleet leaves this
+  # unset and needs no change.
+  PULLWRIGHT_AUTHOR_INSTALLATION_IDS: ${PULLWRIGHT_AUTHOR_INSTALLATION_IDS:-}
   PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH: ${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-}
   TZ: ${TZ:-Pacific/Auckland}
 

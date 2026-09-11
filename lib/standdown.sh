@@ -36,7 +36,7 @@ IFS=$'\t' read -r forge_auth_source _ < <(forge_auth_effective_gh_token)
 log_event "forge-auth" "$(jq -nc --arg s "$forge_auth_source" '{source: $s}')"
 if [[ "$forge_auth_source" == "gh-token-degraded" ]]; then
   log_event "warning" "$(jq -nc \
-    --arg d "the forge authoring App credential (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) is configured but no token could be minted this cycle — degraded to the seam's fallback (PW_GH_DEGRADE_TOKEN, or GH_TOKEN), exactly as a node with none of the three configured" \
+    --arg d "the forge authoring App credential (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID(S)/_PRIVATE_KEY_PATH) is configured but no token could be minted against this node's *default* installation — so every call the seam cannot attribute to a repository owner degrades to its fallback (PW_GH_DEGRADE_TOKEN, or GH_TOKEN), exactly as a node with none of them configured. Either the mint failed, or PULLWRIGHT_AUTHOR_INSTALLATION_ID is unset and only the per-owner map is configured" \
     '{detail: $d}')"
 fi
 

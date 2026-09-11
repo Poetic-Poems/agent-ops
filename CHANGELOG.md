@@ -8,6 +8,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A per-owner installation map for the forge authoring App**
+  (`PULLWRIGHT_AUTHOR_INSTALLATION_IDS`), the shape agent-ops#913/#921 already
+  gave the Pullwright Approver. A GitHub App installation is per account, and
+  since the 2026-09-07 re-homing this fleet's repositories sit in two of them
+  — `repos[]` on `Poetic-Poems` and `Pullwright`, `state_repo` on
+  `Poetic-Poems`, `crash_loop_repo` on `Pullwright` — so the single scalar
+  `PULLWRIGHT_AUTHOR_INSTALLATION_ID` D25 shipped with could not have covered
+  them: provisioning the App (#1083) would have put one organisation's token
+  into `GH_TOKEN` for *every* call, and the PAT was reached for only when a
+  mint **failed**, never when a perfectly good token simply did not cover the
+  target. `lib/author-token.sh` gains
+  `author_token_installation_for_owner`/`author_token_any_installation_id`
+  and an optional owner on `author_token_get`/`_credential_present`/
+  `_identity_login`, resolving map → scalar → nothing, case-insensitively,
+  with one cache file per installation.
+
+  **`lib/gh-shim.sh` recovers the owner from the invocation itself**
+  (`gh_shim_target_owner`), because this identity's call site is `gh` — a
+  `PATH` shim in front of a binary whose argv five model-driven stages write.
+  In order: a buffered `gh auth git-credential` request's `path=` attribute,
+  `-R`/`--repo`, a `gh api` `repos`/`orgs`/`users` path (or a graphql
+  `owner=` field, or a `repository(owner: "…")` literal), a positional
+  github.com URL — plus, **only under `gh repo <subcommand>`**, a bare
+  `OWNER/REPO` — and finally the work tree's own `origin` remote. The
+  `gh repo` restriction is what keeps a *branch* from being read as a
+  repository: every branch this fleet creates carries a slash, and
+  `gh pr checkout agent/1051` inside a `Poetic-Poems` clone must resolve to
+  `Poetic-Poems`, never to `agent`. A flag's value is never read as an owner
+  either. `gh_shim_resolve_token` then mints for that owner's
+  installation; an owner neither the map nor the scalar names degrades to
+  `PW_GH_DEGRADE_TOKEN` (the PAT) rather than presenting a token GitHub would
+  404; an invocation naming no owner takes the scalar default. "Explicit
+  wins; empty resolves" is unchanged — a non-empty `GH_TOKEN` is never
+  touched.
+
+  For `git` to say which repository it is pushing to,
+  `deploy/docker/entrypoint.sh` now also sets
+  `credential.https://github.com.useHttpPath true` beside the helper wiring,
+  and the shim buffers that one invocation's stdin before feeding it to the
+  real binary unchanged. `scripts/doctor.sh` fails, by name and naming both
+  variables, for any owner across `repos[]`, `state_repo`, `crash_loop_repo`
+  and `pager_repo` that resolves to no installation, and mints once per
+  distinct installation, reporting the App's login per owner.
+
 - **A fourth `escalation_autonomy` rung, `decide-with-veto`** (PR #1389,
   requirement 36f), answering recommendation 3 of
   `docs/reviews/2026-09-11-escalation-autonomy-review.md`. The same

@@ -47,7 +47,11 @@ README](../../README.md) and `docs/*-SPEC.md`.
   **Pullwright Approver App**'s identity (D18 §5.3) — see the `.env.example`
   section it lives in for the three variables it needs, and
   `PULLWRIGHT_APPROVER_INSTALLATION_IDS` in that same section if the fleet's
-  `repos[]` spans more than one GitHub owner (agent-ops#913).
+  `repos[]` spans more than one GitHub owner (agent-ops#913). The **forge
+  authoring App** below takes the same per-owner map
+  (`PULLWRIGHT_AUTHOR_INSTALLATION_IDS`) on the same terms, counting
+  `state_repo`, `crash_loop_repo` and `pager_repo` as well as `repos[]`,
+  since it authors into all of them.
 - **Model credentials**, either of (see step 4):
   - An **Anthropic API key** — the primary, first-class path (D4). Set
     `ANTHROPIC_API_KEY` in `.env`; no interactive step, and any number of
@@ -122,7 +126,11 @@ App (D18 decision 1, the `.env.example` section right after the Pullwright
 Approver App's own) is the same shape, entirely optional, and upgrades this
 node from the `GH_TOKEN` PAT above to short-lived App-minted tokens once an
 owner has provisioned it; leaving it unset costs nothing; the node keeps
-authenticating with `GH_TOKEN` exactly as it always has.
+authenticating with `GH_TOKEN` exactly as it always has. Like the Approver's,
+its installation id is per GitHub account, so a fleet whose repositories span
+more than one owner sets `PULLWRIGHT_AUTHOR_INSTALLATION_IDS` in that section
+too — `scripts/doctor.sh` fails, by name, for any owner neither it nor the
+scalar default covers.
 
 `.env` holds this node's secrets. It is git-ignored, and if a token ever lands
 in a commit the answer is to rotate it, not to rewrite history.

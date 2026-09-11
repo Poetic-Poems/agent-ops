@@ -64,6 +64,16 @@
 # the node has neither — the pre-existing "no credential" failure mode this
 # file does not change; lib/standdown.sh's own credential probe still
 # catches that).
+#
+# It names no owner, so the mint it reports on is against the *default*
+# installation (PULLWRIGHT_AUTHOR_INSTALLATION_ID) — the same one
+# lib/gh-shim.sh's `gh_shim_resolve_token` uses for any call it cannot
+# attribute to a repository owner, which is exactly the path this line
+# exists to report. A fleet that configures only the per-owner map
+# (PULLWRIGHT_AUTHOR_INSTALLATION_IDS) and no scalar default therefore reads
+# `gh-token-degraded` here — correctly: an owner-less call on such a node
+# really does take the fallback. Setting the scalar as well is what makes it
+# report `forge-app`, and deploy/docker/.env.example says so.
 forge_auth_effective_gh_token() {
   local now="${1:-}"
   if author_token_credential_present; then
