@@ -131,6 +131,13 @@ assert_eq "the same token always hashes the same way" \
   "$(GH_TOKEN=ghp_a gh_shim_identity)" "$(GH_TOKEN=ghp_a gh_shim_identity)"
 assert_eq "two different tokens hash differently" \
   "no" "$([[ "$(GH_TOKEN=ghp_a gh_shim_identity)" == "$(GH_TOKEN=ghp_b gh_shim_identity)" ]] && echo yes || echo no)"
+assert_eq "a tag gh_shim_resolve_token set for a token it minted is the identity, verbatim" \
+  "app-1-2" "$(GH_SHIM_IDENTITY_TAG=app-1-2 GH_TOKEN=ghs_rotates_hourly gh_shim_identity)"
+assert_eq "…and a rotated token under the same tag keeps the same identity" \
+  "$(GH_SHIM_IDENTITY_TAG=app-1-2 GH_TOKEN=ghs_first gh_shim_identity)" \
+  "$(GH_SHIM_IDENTITY_TAG=app-1-2 GH_TOKEN=ghs_second gh_shim_identity)"
+assert_eq "…while an empty tag falls back to the token's own hash" \
+  "$(GH_TOKEN=ghp_a gh_shim_identity)" "$(GH_SHIM_IDENTITY_TAG='' GH_TOKEN=ghp_a gh_shim_identity)"
 
 # --- gh_shim_header_value ---
 
@@ -211,13 +218,24 @@ cache_state="$tmp_dir/cache-state"; mkdir -p "$cache_state/http-cache"
 body_file="$tmp_dir/body-with-newlines"
 printf 'line one\nline two\n{"nested":"json\\nvalue"}' > "$body_file"
 gh_shim_cache_write "$cache_state" thekey theident repos/o/r etag-1 "$body_file" 1000
-roundtrip="$(gh_shim_cache_read "$cache_state" thekey)"
+roundtrip="$(gh_shim_cache_read "$cache_state" theident repos/o/r thekey)"
 assert_eq "the round-tripped identity matches" "theident" "$(jq -r '.identity' <<<"$roundtrip")"
 assert_eq "the round-tripped path matches" "repos/o/r" "$(jq -r '.path' <<<"$roundtrip")"
 assert_eq "the round-tripped etag matches" "etag-1" "$(jq -r '.etag' <<<"$roundtrip")"
 assert_eq "the round-tripped body preserves embedded newlines and quoting exactly" \
   "$(cat "$body_file")" "$(jq -j '.body' <<<"$roundtrip")"
-assert_eq "a missing key reads as nothing" "" "$(gh_shim_cache_read "$cache_state" no-such-key)"
+assert_eq "a missing key reads as nothing" "" "$(gh_shim_cache_read "$cache_state" theident repos/o/r no-such-key)"
+assert_eq "the entry lives under its identity and its path's hash, never at the cache root" \
+  "yes" "$([[ -f "$(gh_shim_cache_dir "$cache_state" theident repos/o/r)/thekey.json" \
+             && ! -e "$cache_state/http-cache/thekey.json" ]] && echo yes || echo no)"
+assert_eq "gh_shim_cache_dir is pure and stable for the same (identity, path)" \
+  "$(gh_shim_cache_dir "$cache_state" theident repos/o/r)" "$(gh_shim_cache_dir "$cache_state" theident repos/o/r)"
+assert_eq "…and differs by path" \
+  "no" "$([[ "$(gh_shim_cache_dir "$cache_state" theident repos/o/r)" == "$(gh_shim_cache_dir "$cache_state" theident repos/o/r2)" ]] && echo yes || echo no)"
+assert_eq "…and by identity" \
+  "no" "$([[ "$(gh_shim_cache_dir "$cache_state" theident repos/o/r)" == "$(gh_shim_cache_dir "$cache_state" other repos/o/r)" ]] && echo yes || echo no)"
+assert_eq "a key stored under one path is not found under another" \
+  "" "$(gh_shim_cache_read "$cache_state" theident repos/o/r2 thekey)"
 
 # --- gh_shim_cache_invalidate ---
 
@@ -227,15 +245,80 @@ gh_shim_cache_write "$inv_state" keyA idX "repos/o/r/pulls/5/reviews" e "$tmp_di
 gh_shim_cache_write "$inv_state" keyB idX "repos/o/r/pulls/5" e "$tmp_dir/inv-body" 1
 gh_shim_cache_write "$inv_state" keyC idX "repos/o/r/issues/9" e "$tmp_dir/inv-body" 1
 gh_shim_cache_write "$inv_state" keyD idY "repos/o/r/pulls/5/reviews" e "$tmp_dir/inv-body" 1
+gh_shim_cache_write "$inv_state" keyE idX "repos/o/r/pulls/5/reviews" e "$tmp_dir/inv-body" 1
+# A stray file that is not an entry, in the write's own directory: the
+# invalidation is a directory removal, so it must go too — nothing is left
+# behind for a later read to find or a later prune to have to reason about.
+echo x > "$(gh_shim_cache_dir "$inv_state" idX "repos/o/r/pulls/5/reviews")/.tmp.stray"
 gh_shim_cache_invalidate "$inv_state" idX "repos/o/r/pulls/5/reviews"
 assert_eq "invalidation drops the write's own path" \
-  "no" "$([[ -f "$inv_state/http-cache/keyA.json" ]] && echo yes || echo no)"
+  "" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/pulls/5/reviews" keyA)"
+assert_eq "…every entry cached for it, whatever its argv" \
+  "" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/pulls/5/reviews" keyE)"
 assert_eq "…and drops the parent resource" \
-  "no" "$([[ -f "$inv_state/http-cache/keyB.json" ]] && echo yes || echo no)"
+  "" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/pulls/5" keyB)"
 assert_eq "…but leaves an unrelated path alone" \
-  "yes" "$([[ -f "$inv_state/http-cache/keyC.json" ]] && echo yes || echo no)"
+  "repos/o/r/issues/9" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/issues/9" keyC | jq -r '.path')"
 assert_eq "…and leaves a different identity's cache of the very same path alone" \
-  "yes" "$([[ -f "$inv_state/http-cache/keyD.json" ]] && echo yes || echo no)"
+  "idY" "$(gh_shim_cache_read "$inv_state" idY "repos/o/r/pulls/5/reviews" keyD | jq -r '.identity')"
+assert_eq "…and removes the path's whole directory, not just the entries in it" \
+  "no" "$([[ -e "$(gh_shim_cache_dir "$inv_state" idX "repos/o/r/pulls/5/reviews")" ]] && echo yes || echo no)"
+assert_eq "invalidating a path nothing cached is a no-op, not an error" \
+  "0" "$(gh_shim_cache_invalidate "$inv_state" idX "repos/o/r/never/read" >/dev/null 2>&1; echo $?)"
+assert_eq "…as is invalidating with an empty identity or path" \
+  "0" "$(gh_shim_cache_invalidate "$inv_state" "" "repos/o/r/issues/9"; gh_shim_cache_invalidate "$inv_state" idX ""; echo $?)"
+assert_eq "…which touches nothing" \
+  "repos/o/r/issues/9" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/issues/9" keyC | jq -r '.path')"
+# An identity is one path segment by construction; the rm -rf behind this
+# refuses anything else rather than resolving it under http-cache/.
+mkdir -p "$inv_state/sibling"; echo keep > "$inv_state/sibling/file"
+gh_shim_cache_invalidate "$inv_state" "../sibling" "repos/o/r/issues/9"
+gh_shim_cache_invalidate "$inv_state" "idX/.." "repos/o/r/issues/9"
+assert_eq "an identity carrying a separator or a dot-dot is refused, and removes nothing" \
+  "keep" "$(cat "$inv_state/sibling/file")"
+# The invalidation must never open an entry: a cache holding many unrelated
+# entries costs a write nothing. Every entry here is unparseable JSON, so a
+# scan that read one to find its path would have to fail or skip it — and
+# the assertion below is that the write's own directory still went, at the
+# same cost as if the others were not there.
+many_state="$tmp_dir/many-state"; mkdir -p "$many_state/http-cache"
+for i in $(seq 1 300); do
+  d="$(gh_shim_cache_dir "$many_state" idX "repos/o/r/things/$i")"
+  mkdir -p "$d"; printf 'not json' > "$d/key$i.json"
+done
+gh_shim_cache_write "$many_state" keyT idX "repos/o/r/things/7/comments" e "$tmp_dir/inv-body" 1
+before_count="$(find "$many_state/http-cache" -name '*.json' | wc -l | tr -d ' ')"
+inv_start="$(date +%s%N)"
+gh_shim_cache_invalidate "$many_state" idX "repos/o/r/things/7/comments"
+inv_ms=$(( ($(date +%s%N) - inv_start) / 1000000 ))
+assert_eq "invalidation over a 300-entry cache drops exactly the two directories it names" \
+  "$(( before_count - 2 ))" "$(find "$many_state/http-cache" -name '*.json' | wc -l | tr -d ' ')"
+assert_eq "…without opening any entry (well under a second, where a per-entry jq would take several)" \
+  "yes" "$( (( inv_ms < 1000 )) && echo yes || echo no)"
+
+# --- gh_shim_prune_cache ---
+
+prune_state="$tmp_dir/prune-state"; mkdir -p "$prune_state/http-cache"
+echo x > "$tmp_dir/prune-body"
+gh_shim_cache_write "$prune_state" fresh idX "repos/o/r/fresh" e "$tmp_dir/prune-body" 1
+gh_shim_cache_write "$prune_state" aged idX "repos/o/r/aged" e "$tmp_dir/prune-body" 1
+touch -d '9 days ago' "$(gh_shim_cache_dir "$prune_state" idX "repos/o/r/aged")/aged.json"
+# An entry in the flat layout this file used before agent-ops#1422, as an
+# upgraded node still carries: never read, and retired by the same prune.
+printf '{"identity":"idX","path":"repos/o/r/legacy","etag":"e","fetched_at":1,"body":""}' \
+  > "$prune_state/http-cache/legacyflat.json"
+touch -d '9 days ago' "$prune_state/http-cache/legacyflat.json"
+gh_shim_prune_cache "$prune_state" 3600
+assert_eq "the prune keeps an entry younger than the ceiling's horizon" \
+  "repos/o/r/fresh" "$(gh_shim_cache_read "$prune_state" idX "repos/o/r/fresh" fresh | jq -r '.path')"
+assert_eq "…drops one older than it, at any depth" \
+  "" "$(gh_shim_cache_read "$prune_state" idX "repos/o/r/aged" aged)"
+assert_eq "…and the directory that emptied with it" \
+  "no" "$([[ -e "$(gh_shim_cache_dir "$prune_state" idX "repos/o/r/aged")" ]] && echo yes || echo no)"
+assert_eq "…and a flat-layout entry left by the layout before this one" \
+  "no" "$([[ -e "$prune_state/http-cache/legacyflat.json" ]] && echo yes || echo no)"
+assert_eq "…while http-cache/ itself and the live identity's directory stay" \
+  "yes" "$([[ -d "$prune_state/http-cache/idX" ]] && echo yes || echo no)"
 
 # --- gh_shim_ledger_line ---
 
@@ -361,8 +444,9 @@ assert_eq "the ledger records the refusal as 'stale'" \
 # The ceiling: backdate the cache entry past it, and the same refusal must
 # fall through to the real (failing) answer instead.
 cache_key_b="$(gh_shim_cache_key "$(GH_TOKEN=tokB gh_shim_identity)" api repos/o/r2)"
-jq '.fetched_at = 1' "$stB/gh-shim/http-cache/$cache_key_b.json" > "$tmp_dir/backdated.json"
-mv "$tmp_dir/backdated.json" "$stB/gh-shim/http-cache/$cache_key_b.json"
+cache_file_b="$(gh_shim_cache_dir "$stB/gh-shim" "$(GH_TOKEN=tokB gh_shim_identity)" repos/o/r2)/$cache_key_b.json"
+jq '.fetched_at = 1' "$cache_file_b" > "$tmp_dir/backdated.json"
+mv "$tmp_dir/backdated.json" "$cache_file_b"
 plan "$pdB" 3 403 '{"message":"API rate limit exceeded for user ID 9"}' '' null 1
 outB3="$(PW_GH_STALE_CEILING_SECONDS=10 run_shim "$stB" "$pdB" tokB api repos/o/r2)"; rcB3=$?
 assert_eq "a cache entry older than the ceiling is not served" \

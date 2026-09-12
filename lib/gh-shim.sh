@@ -89,6 +89,11 @@
 # listing and `.../pulls/5` itself), is dropped. This is a heuristic, not a
 # semantic model of the API: it matches the one example agent-ops#1084 gives
 # and nothing more specific than "the write's own resource, and its parent".
+# The drop is two directory removals, never a scan (see the layout below):
+# a write's cost must not grow with the number of reads this node has ever
+# cached. It did once — the first shape walked every entry with a `jq` per
+# file, and at the ~19,000 entries a node accumulates in two days one
+# registry PUT cost three and a half minutes of CPU (agent-ops#1422).
 #
 # ## Known scope limit: `--paginate`/`--slurp` (agent-ops#1114)
 #
@@ -123,10 +128,20 @@
 #
 # ## Files under `state_dir/gh-shim/`
 #
-#   http-cache/<key>.json   {identity, path, etag, fetched_at, body} — one
+#   http-cache/<identity>/<path-hash>/<key>.json
+#                           {identity, path, etag, fetched_at, body} — one
 #                           file per (identity, full argv) cache key, written
 #                           via a temp file and `mv -f` so a reader never sees
-#                           a partial write.
+#                           a partial write. The two directory levels are the
+#                           index a write's invalidation uses: everything
+#                           cached for one (identity, endpoint path) lives in
+#                           one directory, so dropping a path is `rm -rf` of
+#                           that directory and its parent path's, with no
+#                           entry ever opened. `<path-hash>` is the first 24
+#                           hex characters of sha256 over the query-stripped
+#                           endpoint path. An entry written before this
+#                           layout (a flat `http-cache/<key>.json`) is never
+#                           read again and ages out under the prune.
 #   ledger.ndjson           the per-call ledger, appended under `flock`.
 #                           Rotated by `scripts/rotate-logs.sh` like the
 #                           node's other diagnostic logs — unlike
@@ -503,9 +518,22 @@ gh_shim_target_owner() {
 # name) when no App is configured, or a mint attempt fails; leaves GH_TOKEN
 # empty when neither is available, exactly the pre-existing "nothing
 # configured" case. Never fails its caller.
+#
+# A token minted here is also *named* here, for gh_shim_identity below:
+# GH_SHIM_IDENTITY_TAG is set to `app-<app id>-<installation id>` on a
+# successful mint and left empty on every other outcome. An installation
+# token lives an hour, so hashing it (what the identity does for every
+# credential it did not mint itself) would give this identity a fresh cache
+# and a fresh budget reading every hour — which is what happened once the
+# App went live: one node held 484 identities' worth of entries, 453 of them
+# one mint's, and no conditional read ever hit across a rotation
+# (agent-ops#1422). The installation is the thing whose view of GitHub, and
+# whose rate limit, the cache and budget file are actually keyed by.
+GH_SHIM_IDENTITY_TAG=""
 gh_shim_resolve_token() {
+  GH_SHIM_IDENTITY_TAG=""
   [[ -z "${GH_TOKEN:-}" ]] || return 0
-  local now owner token
+  local now owner token installation_id
   # The cheap, owner-less gate first, and deliberately: with no App
   # configured at all there is no installation to choose between, and
   # gh_shim_target_owner's own last rule forks `git` twice. A node that has
@@ -516,6 +544,15 @@ gh_shim_resolve_token() {
     owner="$(gh_shim_target_owner "$@")"
     if token="$(author_token_get "$now" "$owner" 2>/dev/null)" && [[ -n "$token" ]]; then
       export GH_TOKEN="$token"
+      # The same resolution author_token_get just made, repeated rather than
+      # threaded back out of it: that function's contract is "a token on
+      # stdout", and an installation id it printed alongside would reach
+      # every other caller too. Both halves are validated as digits before
+      # they become a directory name under http-cache/.
+      installation_id="$(author_token_installation_for_owner "$owner" 2>/dev/null)" || installation_id=""
+      if [[ "${PULLWRIGHT_AUTHOR_APP_ID:-}" =~ ^[0-9]+$ && "$installation_id" =~ ^[0-9]+$ ]]; then
+        GH_SHIM_IDENTITY_TAG="app-${PULLWRIGHT_AUTHOR_APP_ID}-${installation_id}"
+      fi
       return 0
     fi
   fi
@@ -546,18 +583,27 @@ gh_shim_state_dir() {
 # A stable, short tag for whichever credential this process authenticates
 # with — the App and the PAT can legitimately see different data for the same
 # path, and so can two installations of the same App, so their cache entries
-# and budget readings must never collide. Hashing the token itself is what
-# gives that for free: a per-owner mint (gh_shim_target_owner) yields a
-# different token and therefore a different tag, with nothing here needing to
-# know an installation id.
+# and budget readings must never collide. A token gh_shim_resolve_token
+# minted itself is tagged by its installation (GH_SHIM_IDENTITY_TAG, set
+# there), so the hourly rotation of an installation token never changes the
+# tag; any other credential — the owner's own PAT, PW_GH_DEGRADE_TOKEN, a
+# caller's own `GH_TOKEN=… gh …` such as lib/approver.sh's — is tagged by a
+# hash of the token itself, which is what keeps two of them apart with
+# nothing here needing to know what they are.
 # Read after gh_shim_resolve_token has already run, so a token that function
-# just minted is the one hashed here, not the empty value it was handed.
+# just minted is the one named here, not the empty value it was handed.
 # "no-token" when neither GH_TOKEN nor GITHUB_TOKEN is set (gh's own
 # keyring/`gh auth login` session, or no credential at all) — rare in this
 # fleet, since gh_shim_resolve_token above leaves GH_TOKEN empty only when
 # neither an App nor PW_GH_DEGRADE_TOKEN is configured — and safe to lump
 # together since there is exactly one such identity per process either way.
+# Every tag is a directory name under http-cache/: hex, `no-token`, or
+# `app-<digits>-<digits>`, nothing else.
 gh_shim_identity() {
+  if [[ -n "${GH_SHIM_IDENTITY_TAG:-}" ]]; then
+    printf '%s' "$GH_SHIM_IDENTITY_TAG"
+    return 0
+  fi
   local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   if [[ -z "$token" ]]; then
     printf 'no-token'
@@ -749,11 +795,25 @@ gh_shim_classify() {
   GH_SHIM_CLASS="read"
 }
 
-# gh_shim_cache_read STATE_DIR KEY
+# gh_shim_cache_dir STATE_DIR IDENTITY PATH
+# The directory every entry for (IDENTITY, PATH) lives in —
+# `http-cache/<identity>/<path-hash>` (see this file's header). Pure: nothing
+# is created. PATH is the query-stripped endpoint path, the same string a
+# write's invalidation names, so the two can never disagree about where an
+# entry is; hashing it keeps `/` and anything else an endpoint may carry out
+# of the directory name.
+gh_shim_cache_dir() {
+  local state_dir="$1" identity="$2" path="$3" path_hash
+  path_hash="$(printf '%s' "$path" | sha256sum | cut -c1-24)"
+  printf '%s/http-cache/%s/%s' "$state_dir" "$identity" "$path_hash"
+}
+
+# gh_shim_cache_read STATE_DIR IDENTITY PATH KEY
 # The cache entry for KEY as compact JSON, or nothing when absent or
 # unreadable.
 gh_shim_cache_read() {
-  local f="$1/http-cache/$2.json"
+  local f
+  f="$(gh_shim_cache_dir "$1" "$2" "$3")/$4.json"
   [[ -f "$f" ]] || return 0
   jq -c '.' "$f" 2>/dev/null || true
 }
@@ -762,17 +822,20 @@ gh_shim_cache_read() {
 # Writes the cache entry for KEY via a temp file plus `mv -f`, so a
 # concurrent reader never observes a partial write. BODY_FILE is read
 # directly (`--rawfile`), never through a shell variable, so an arbitrarily
-# large response body is never copied through bash.
+# large response body is never copied through bash. A write that loses a
+# race with an invalidation removing its directory (the `mv` finds no
+# target) is simply dropped — the next read stores it again.
 gh_shim_cache_write() {
   local state_dir="$1" key="$2" identity="$3" path="$4" etag="$5" bodyfile="$6" fetched_at="$7"
-  local dir="$state_dir/http-cache" tmp
+  local dir tmp
+  dir="$(gh_shim_cache_dir "$state_dir" "$identity" "$path")"
   mkdir -p "$dir" 2>/dev/null || true
   tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" || return 0
   if jq -n --arg identity "$identity" --arg path "$path" --arg etag "$etag" \
         --argjson fetched_at "$fetched_at" --rawfile body "$bodyfile" \
       '{identity: $identity, path: $path, etag: $etag, fetched_at: $fetched_at, body: $body}' \
       > "$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$dir/$key.json"
+    mv -f "$tmp" "$dir/$key.json" 2>/dev/null || rm -f "$tmp"
   else
     rm -f "$tmp"
   fi
@@ -780,25 +843,22 @@ gh_shim_cache_write() {
 
 # gh_shim_cache_invalidate STATE_DIR IDENTITY PATH
 # Drops every cache entry for IDENTITY whose stored path is PATH itself or
-# PATH's parent (see this file's header). Scans http-cache/ rather than
-# keeping a reverse index — cheap at the handful-to-low-hundreds of distinct
-# calls one node caches, and simplicity here means an invalidation bug shows
-# up as "read the wrong page's own path", not as an index silently drifting
-# from the entries it is supposed to describe.
+# PATH's parent (see this file's header): two `rm -rf`s of the directories
+# gh_shim_cache_dir names, and nothing else. No entry is opened and no
+# listing is walked, so a write costs the same whether this node has cached
+# ten reads or twenty thousand — the scan this replaced is agent-ops#1422.
 gh_shim_cache_invalidate() {
-  local state_dir="$1" identity="$2" path="$3"
-  local dir="$state_dir/http-cache" parent f p ident
-  [[ -d "$dir" ]] || return 0
+  local state_dir="$1" identity="$2" path="$3" parent
+  [[ -d "$state_dir/http-cache" ]] || return 0
+  [[ -n "$identity" && -n "$path" ]] || return 0
+  # Every identity gh_shim_identity produces is one path segment (hex,
+  # `no-token`, or `app-<digits>-<digits>`), so the directories named below
+  # can only ever sit under http-cache/. An `rm -rf` still earns a check
+  # that nothing else was handed in, before it runs rather than after.
+  [[ "$identity" == */* || "$identity" == *..* ]] && return 0
+  rm -rf "$(gh_shim_cache_dir "$state_dir" "$identity" "$path")"
   parent="$(gh_shim_parent_path "$path")"
-  for f in "$dir"/*.json; do
-    [[ -f "$f" ]] || continue
-    ident="$(jq -r '.identity // empty' "$f" 2>/dev/null)"
-    [[ "$ident" == "$identity" ]] || continue
-    p="$(jq -r '.path // empty' "$f" 2>/dev/null)"
-    if [[ "$p" == "$path" ]] || { [[ -n "$parent" ]] && [[ "$p" == "$parent" ]]; }; then
-      rm -f "$f"
-    fi
-  done
+  [[ -z "$parent" ]] || rm -rf "$(gh_shim_cache_dir "$state_dir" "$identity" "$parent")"
 }
 
 # gh_shim_ledger_line STATE_DIR METHOD PATH STATUS CACHE RESOURCE USED
@@ -847,15 +907,18 @@ gh_shim_budget_update() {
 
 # gh_shim_prune_cache STATE_DIR CEILING_SECONDS
 # Best-effort removal of cache entries so old the staleness ceiling could
-# never serve them anyway (older than 7x CEILING_SECONDS). Called from
+# never serve them anyway (older than 7x CEILING_SECONDS), at any depth —
+# which also retires an entry left in the flat layout this file used before
+# agent-ops#1422 — followed by the directories that emptied. Called from
 # gh_shim_main at low probability rather than every invocation, so a busy
-# node is not `find`-ing the whole cache directory on every single call.
+# node is not `find`-ing the whole cache tree on every single call.
 gh_shim_prune_cache() {
   local state_dir="$1" ceiling="${2:-3600}"
   local dir="$state_dir/http-cache" max_days
   [[ -d "$dir" ]] || return 0
   max_days=$(( (ceiling * 7 / 86400) + 1 ))
-  find "$dir" -maxdepth 1 -name '*.json' -mtime "+$max_days" -delete 2>/dev/null || true
+  find "$dir" -name '*.json' -type f -mtime "+$max_days" -delete 2>/dev/null || true
+  find "$dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 }
 
 # gh_shim_should_use_lkg STATUS TEXT
@@ -908,7 +971,7 @@ gh_shim_handle_read() {
   real="$(gh_shim_real_bin)"
   path="$(gh_shim_strip_query "$GH_SHIM_ENDPOINT")"
   key="$(gh_shim_cache_key "$identity" "$@")"
-  cache_json="$(gh_shim_cache_read "$state_dir" "$key")"
+  cache_json="$(gh_shim_cache_read "$state_dir" "$identity" "$path" "$key")"
   [[ -n "$cache_json" ]] && etag="$(jq -r '.etag // empty' <<<"$cache_json" 2>/dev/null)"
 
   local -a call_args=("$@")
@@ -1026,7 +1089,7 @@ gh_shim_handle_paginate() {
   real="$(gh_shim_real_bin)"
   path="$(gh_shim_strip_query "$GH_SHIM_ENDPOINT")"
   key="$(gh_shim_cache_key "$identity" "$@")"
-  cache_json="$(gh_shim_cache_read "$state_dir" "$key")"
+  cache_json="$(gh_shim_cache_read "$state_dir" "$identity" "$path" "$key")"
 
   local work out err
   work="$(mktemp -d 2>/dev/null)" || { "$real" "$@"; return $?; }

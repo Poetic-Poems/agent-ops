@@ -2260,15 +2260,24 @@ implements.
       distinguishable code). A successful write drops the cache entries for
       its own path and that path's parent resource (a review `POST` to
       `.../pulls/5/reviews` invalidates both that listing and `.../pulls/5`
-      itself) — a heuristic, not a semantic model of the API. `PW_GH_NO_CACHE=1`
+      itself) — a heuristic, not a semantic model of the API — and does so
+      at a cost that does not depend on how many reads the node has cached:
+      the cache is laid out as
+      `http-cache/<identity>/<sha256(path)[0:24]>/<key>.json`, so a drop is
+      the removal of the two directories the write names and never a scan
+      that opens entries (agent-ops#1422). `PW_GH_NO_CACHE=1`
       opts one call out of all of this, still ledgered as a bypass.
 
       Every call is logged to `state_dir/gh-shim/ledger.ndjson` —
       `{ts, method, path, status, cache: hit|miss|stale|bypass, resource,
       used}` — under `flock`, and a cacheable GET that yielded ratelimit
-      headers updates `state_dir/gh-shim/budget.json`, keyed by identity (a
-      hash of `GH_TOKEN`/`GITHUB_TOKEN`, since the forge authoring App and the
-      owner's own PAT can legitimately see different data). `PW_GH_STATE_DIR`
+      headers updates `state_dir/gh-shim/budget.json`, keyed by identity —
+      `app-<app id>-<installation id>` for a token the seam minted itself
+      (requirement 2.0e's own `gh_shim_resolve_token`, below), so the hourly
+      rotation of an installation token keeps its cache and its budget
+      reading, and a hash of `GH_TOKEN`/`GITHUB_TOKEN` for every other
+      credential, since the forge authoring App and the owner's own PAT can
+      legitimately see different data. `PW_GH_STATE_DIR`
       carries the resolved `state_dir` to wherever the shim runs — both
       `agent-cycle.sh` and `review-cycle.sh` export it once they compute
       `state_dir`, so every subprocess they fork, model-driven stages
@@ -20377,16 +20386,26 @@ What exists, and the requirements each part answers to:
     response block from that capture; `gh_shim_should_use_lkg` and
     `gh_shim_serve_lkg` decide and perform a last-known-good serve, reusing
     `lib/github-limit.sh`'s own `github_limit_kind` so a refusal can never be
-    recognised two different ways in this repository; `gh_shim_cache_read`/
-    `_write`/`_invalidate` manage `state_dir/gh-shim/http-cache/*.json`
-    (identity, path, etag, fetched_at, body — written via a temp file plus
-    `mv -f`, `--rawfile`-read so an arbitrarily large body never passes
-    through a shell variable); `gh_shim_ledger_line` and `gh_shim_budget_update`
+    recognised two different ways in this repository; `gh_shim_cache_dir`
+    names the one directory every entry for an (identity, query-stripped
+    endpoint path) pair lives in —
+    `state_dir/gh-shim/http-cache/<identity>/<sha256(path)[0:24]>` — and
+    `gh_shim_cache_read`/`_write`/`_invalidate` manage the `<key>.json`
+    entries under it (identity, path, etag, fetched_at, body — written via a
+    temp file plus `mv -f`, `--rawfile`-read so an arbitrarily large body
+    never passes through a shell variable; a write's invalidation is `rm -rf`
+    of the path's directory and its parent path's, never a walk of the
+    cache, agent-ops#1422); `gh_shim_prune_cache` retires entries older than
+    seven ceilings at any depth, a flat pre-#1422 entry included, and the
+    directories that emptied; `gh_shim_ledger_line` and `gh_shim_budget_update`
     write `state_dir/gh-shim/ledger.ndjson` and `budget.json` under `flock`.
-    `gh_shim_identity` hashes `GH_TOKEN`/`GITHUB_TOKEN` (or the fixed
-    `no-token` tag) — read after `gh_shim_resolve_token` has already run, so
-    a minted App token and the PAT it may have replaced never share a cache
-    entry or a budget reading either. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`,
+    `gh_shim_identity` prints `GH_SHIM_IDENTITY_TAG` when
+    `gh_shim_resolve_token` set it — `app-<app id>-<installation id>`, for a
+    token that function minted — and otherwise hashes `GH_TOKEN`/`GITHUB_TOKEN`
+    (or prints the fixed `no-token` tag) — read after `gh_shim_resolve_token`
+    has already run, so a minted App token and the PAT it may have replaced
+    never share a cache entry or a budget reading either, while a minted
+    token's hourly successor does share its predecessor's. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`,
     `PW_GH_NO_CACHE`, `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE`
     are its transport test seams and operator knobs; `PW_GH_DEGRADE_TOKEN`
     (component 14h owns the name) and `PW_GH_NOW_EPOCH` (a test seam only,
@@ -21582,10 +21601,21 @@ oblige anyone to edit a test.
    output with no header terminator at all; `gh_shim_should_use_lkg` accepts a
    primary rate-limit refusal and a bare `5xx` but never a secondary limit or
    an ordinary error status; a cache entry's body and metadata round-trip
-   exactly, embedded newlines included; and `gh_shim_cache_invalidate` drops
-   a write's own path and its parent resource for the write's own identity
+   exactly, embedded newlines included, and lives under its identity's and
+   its path's directory, never at the cache root; `gh_shim_cache_dir` is
+   stable for one (identity, path) and differs by either; and
+   `gh_shim_cache_invalidate` drops
+   a write's own path — every entry cached for it, whatever its argv, and
+   the directory itself — and its parent resource for the write's own identity
    only, leaving an unrelated path and another identity's cache of the very
-   same path untouched. End to end: a repeated GET sends `If-None-Match` and
+   same path untouched, is a no-op for a path nothing cached or an empty
+   identity or path, and removes exactly its two directories from a
+   300-entry cache of unparseable entries in well under a second — the
+   assertion that it never opens an entry (agent-ops#1422);
+   `gh_shim_prune_cache` keeps an entry younger than its horizon, drops one
+   older at any depth together with the directory that emptied and a
+   flat-layout entry left by the layout before this one, and leaves
+   `http-cache/` and a live identity's directory in place. End to end: a repeated GET sends `If-None-Match` and
    a `304` is served from the cache with exit 0; a primary-limit `403` with a
    stored body is served last-known-good with a `PW_GH_CACHE=stale age=<s>`
    marker and exit 0, and the same refusal falls through to the real
@@ -21660,6 +21690,14 @@ oblige anyone to edit a test.
    change would otherwise introduce, since an owner named `agent` resolves to
    no installation and would hand a `Poetic-Poems` clone the scalar
    default's token.
+   After `gh_shim_resolve_token`, `gh_shim_identity` names a token the seam
+   minted by its installation — `app-<app id>-<installation id>` — and a
+   fresh mint for the same installation, the previous token gone from the
+   mint cache and the clock past its expiry, keeps that identity; the other
+   mapped installation and the scalar default are each their own; and the
+   PAT the seam degrades to, as well as a caller's own non-empty `GH_TOKEN`
+   even for a mapped owner, are each a hash of the token, never an App tag
+   (agent-ops#1422).
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`
@@ -27266,3 +27304,4 @@ confident, recurring no-op.
 | A cleanup path that only ever runs during the very failure it exists to clean up after | `_techdebt_unfile` undid a half-finished tech-debt filing's writes on the one path that reaches it: `techdebt_file_debt`'s own failure handler, calling straight back into the GitHub API whose failure just put it there. The correlation is near-total — a transient window that fails a branch-create or contents-write call is the same window that fails the `DELETE` meant to undo it — so the cleanup was likeliest to fail exactly when it was needed and silently fine the rest of the time, which is why nothing noticed. On 2026-08-23, fourteen consecutive `td/<id>` reservations (TD-PPagop-26082407 through -26082420) orphaned in a seventy-second window, and nothing short of a human running `git push origin --delete` by hand would ever have released them: `scripts/sweep-orphan-branches.sh` deliberately leaves a bare reservation branch alone (issue #545, since it cannot tell whether the id was filed elsewhere), and the push-triggered release workflow only ever fires for an id that actually reached `main` — one that never did stays invisible to both, forever, exactly as `lib/tech-debt-file.sh`'s own header conceded before TD-PPagop-26082427 (`_techdebt_release_ref`, `scripts/release-pending-reservations.sh`) closed it. | A failure-path cleanup that calls back into the same dependency whose failure triggered it is not a backstop, because the two share a failure mode by construction — one retry, run once, in the same breath as the fault. Ask, of any "undo what I just wrote" step: what happens if the *undo* fails too, and is anything left that will ever try it again? Where the answer is "no", make the failure durable — a marker outside the failed call's own blast radius (here, a different repository's contents API) that a later, independent, periodically-retried pass can act on — rather than one best-effort attempt logged and swallowed. |
 | A promise measured from the wrong event lets a later one silently outrun it | Requirement 35a's `issue-closed` reason compared the item's latest escalation against its latest block *B* (`$escalation.ts > $b.ts`) — the raise time, not the human's act. That held only as long as nothing re-blocked the item between the raise and the next Enabler pass; a Co-Ordinator `needs-refinement` re-flag is cheap and frequent (agent-ops#683, TD-PPagop-26082816) and moved *B* past the escalation on three items in one run on 2026-08-27 (#706, #779, #810). Each stranded close then satisfied neither `issue-closed` (keyed on the raise) nor `threshold` (requirement 36b's thrash guard refuses a second refinement without a human touch), so the only exit was a second escalation asking the human to say again what they had already said (#849→#905, #784→#906, #813→#910) plus an Opus engagement to establish that nothing had changed — the exact cost agent-ops#627 exists to remove (TD-PPagop-26082901). | When a rule promises to react to a human act (closing an issue, approving a review), key it on evidence of the act and what it answered, not on a timestamp from *before* the act that something else can silently move past. Where the something-else is itself cheap and frequent, assume it will race the human, and give the exemption a second, narrower path keyed on "this later event still refers to what the act already settled" (here: a `needs-refinement` re-flag with no `item-refined` since the escalation) rather than widening the original comparison until it drifts from what it was measuring. |
 | A bash default that only the empty case ever exercises | The fit-exemption gate read `${coordinator_fit_report_json:-{}}`. `${parameter:-word}` closes on the *first* unquoted `}`, so the default word was `{` and a literal `}` was appended straight after it — harmless on the one path nobody was watching (the variable unset or empty, composing exactly `{}`), and silently corrupting it into invalid JSON on every path that mattered (a real, non-empty fit report). `jq` failed to parse it, the guard read the failure as "fit did not run", and requirement 34e's fourth refusal, requirement 3x's trimmed exemption and requirement 17g's fabrication check were dead code on every fitted cycle from the day the guard shipped — the fleet fitted at rung 15 on 47 cycles in one day (2026-08-28) with none of the three ever firing (TD-PPagop-26082816, agent-ops#933). Every test that exercised the gate had only ever driven the empty case, which is precisely the one the bug leaves working. | A `${var:-word}` default containing an unescaped `{`/`[` is a trap in bash, not a style choice — the closing brace/bracket it needs is the *first* one bash finds, not the one the author meant. Prefer initialising the variable to a real value ahead of the guard (the `set -u`-driven convention this file already uses for `coordinator_fit_allowance`) over threading a brace-shaped default through a parameter expansion at all. And when a guard's fixture only ever sets its input to empty or unset, that fixture cannot tell "the gate is off" from "the gate is broken" — assert the non-empty case too, the one place this shape of bug hides. |
+| A per-entry scan that was "cheap at a handful-to-low-hundreds" | `gh_shim_cache_invalidate` found the entries a write invalidates by opening every file in `http-cache/` with a `jq` — two per entry. Nothing bounded the count, the prune ran at two days, and once the authoring App went live each hourly token was a new identity re-caching every path: 13,000–19,000 entries a node, 484 identities on one. Every registry `PUT`/`DELETE` — the pager's per-window claims, `claim.sh gc`'s ~90 deletes a cycle — then cost two to three and a half minutes of CPU, the pre-Co-Ordinator phase grew from 45 to 150 minutes on every node inside a day, and the fleet landed 8 PRs in 24 h with a healthy budget and a fast GitHub (agent-ops#1422). | Never let a write's cost be a function of the cache's size: lay the cache out so the thing a write invalidates is one directory it can name (`http-cache/<identity>/<path-hash>/`), and key identity on what the data is actually scoped by (the installation), not on a credential that rotates. When a comment sizes a loop by an assumed count, test the assumption at a hundred times that count. |
