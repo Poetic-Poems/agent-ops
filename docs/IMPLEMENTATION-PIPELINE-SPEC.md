@@ -4881,14 +4881,19 @@ implements.
      re-request a bot. Bot findings are addressed; bots are never pinged.
      `lib/preflight.sh`'s `preflight_review_feedback_reason` (3s, requirement
      34m) calls the same function, the same way, when it re-checks this
-     source's own candidate rule at claim time — one jq definition, three
-     callers (this script, that preflight check, and `_handoff_blocking_
-     reviewers`/`_handoff_pr_approved` below), keyed on whichever
-     reviewer-identifying field its own review shape carries (`who` here and
-     in preflight, `login` over `_handoff_pr_query`'s GraphQL shape), each
+     source's own candidate rule at claim time, and
+     `scripts/sweep-human-visibility.sh`'s `_sweep_round_answered` (requirement
+     38c) calls it a third way for the blocking timestamp its own round
+     judgement needs — one jq definition, four callers (this script, that
+     preflight check, that sweep, and `_handoff_blocking_reviewers`/
+     `_handoff_pr_approved` below), keyed on whichever reviewer-identifying
+     field its own review shape carries (`who` in the three REST-shaped
+     callers, `login` over `_handoff_pr_query`'s GraphQL shape), each
      filtering (or not) for bots before calling it rather than the function
      doing so itself — issue #1373, since two copies of a rule cross-referenced
-     only by comment drift exactly as easily as no comment at all.
+     only by comment drift exactly as easily as no comment at all, and the
+     sweep's copy — cross-referenced by no comment whatsoever — is how this
+     rule reached four copies before anyone counted three.
    - **Gather every review in the round, not just the blocking one.** The
      substance and the formal signal routinely live in different reviews by
      different accounts, precisely *because* an author cannot request changes on

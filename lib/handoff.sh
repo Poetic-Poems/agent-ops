@@ -465,27 +465,39 @@ _handoff_pr_query() {
 # needing `.at`/`.submitted_at`/`.id`/anything else never has to re-derive it.
 #
 # This is the one "standing-position-per-reviewer" computation issue #1373
-# names (requirement 34a): three call sites used to each embed their own copy
-# of `group_by(...) | map(last)`, cross-referenced only by comments, with
-# nothing mechanically tying them together. KEY exists because they disagree
-# on the reviewer-identifying field's name — `who` for the REST review shape
-# `scripts/gather-review-feedback.sh` and `lib/preflight.sh`'s
-# `preflight_review_feedback_reason` both read, `login` for `_handoff_pr_
+# names (requirement 34a): four call sites used to each embed their own copy
+# of `group_by(...) | map(last)`, cross-referenced only by comments — and one
+# of them, `scripts/sweep-human-visibility.sh`'s `_sweep_round_answered`, not
+# even that — with nothing mechanically tying them together. KEY exists
+# because they disagree on the reviewer-identifying field's name — `who` for
+# the REST review shape `scripts/gather-review-feedback.sh`,
+# `_sweep_round_answered` and `lib/preflight.sh`'s
+# `preflight_review_feedback_reason` all read, `login` for `_handoff_pr_
 # query`'s GraphQL shape below — not because the rule itself differs.
 #
 # Bot filtering is deliberately not a parameter here: it is a property of
 # REVIEWS_JSON, applied (or not) by the caller before this ever runs.
 # `_handoff_latest_reviews` below filters bots out first, because a
 # Bot-authored review is not a human's standing position for either of its
-# own callers. `scripts/gather-review-feedback.sh` and `preflight_review_
-# feedback_reason` deliberately do not: `reviewDecision` — the selection
-# filter both key off — counts bot reviews, and the marked reply they gather
-# is the only event that can ever answer a bot's own CHANGES_REQUESTED, since
-# the pipeline can neither dismiss a review on its own PR nor re-request a
-# bot. Bot findings are addressed there; bots are just never pinged over them.
+# own callers. The three REST-shaped callers deliberately do not:
+# `reviewDecision` — the selection filter they key off — counts bot reviews,
+# and the marked reply they gather is the only event that can ever answer a
+# bot's own CHANGES_REQUESTED, since the pipeline can neither dismiss a review
+# on its own PR nor re-request a bot. Bot findings are addressed there; bots
+# are just never pinged over them.
 #
-# Prints `[]`, never fails, on an empty or absent REVIEWS_JSON — the same
-# "nothing to decide" a caller already treats an empty result as.
+# Fails — printing nothing, jq's own non-zero status, jq's own diagnostics
+# suppressed — on anything jq cannot iterate: malformed JSON, `null`, a
+# scalar. That is the contract the call sites are written against, every one
+# of them guarding the call with `|| return` and treating the failure as "the
+# reviews list could not be read" rather than as "nothing blocks this pull
+# request"; do not soften it into an empty-array default, which would turn an
+# unreadable list into a confident negative. An *empty* REVIEWS_JSON is the
+# one input that neither succeeds usefully nor fails: jq runs the filter zero
+# times, so the function prints nothing and exits 0. No live caller can reach
+# it — each validates its input as a JSON array first — and REVIEWS_JSON
+# absent entirely is not a case at all, since every caller runs under
+# `set -u`, where the unset `$2` aborts before jq is reached.
 handoff_latest_positions() {
   local reviews="$1" key="$2"
   jq -c --arg key "$key" '
