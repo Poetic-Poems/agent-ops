@@ -269,6 +269,13 @@ assert_eq "…as is invalidating with an empty identity or path" \
   "0" "$(gh_shim_cache_invalidate "$inv_state" "" "repos/o/r/issues/9"; gh_shim_cache_invalidate "$inv_state" idX ""; echo $?)"
 assert_eq "…which touches nothing" \
   "repos/o/r/issues/9" "$(gh_shim_cache_read "$inv_state" idX "repos/o/r/issues/9" keyC | jq -r '.path')"
+# An identity is one path segment by construction; the rm -rf behind this
+# refuses anything else rather than resolving it under http-cache/.
+mkdir -p "$inv_state/sibling"; echo keep > "$inv_state/sibling/file"
+gh_shim_cache_invalidate "$inv_state" "../sibling" "repos/o/r/issues/9"
+gh_shim_cache_invalidate "$inv_state" "idX/.." "repos/o/r/issues/9"
+assert_eq "an identity carrying a separator or a dot-dot is refused, and removes nothing" \
+  "keep" "$(cat "$inv_state/sibling/file")"
 # The invalidation must never open an entry: a cache holding many unrelated
 # entries costs a write nothing. Every entry here is unparseable JSON, so a
 # scan that read one to find its path would have to fail or skip it — and

@@ -851,6 +851,11 @@ gh_shim_cache_invalidate() {
   local state_dir="$1" identity="$2" path="$3" parent
   [[ -d "$state_dir/http-cache" ]] || return 0
   [[ -n "$identity" && -n "$path" ]] || return 0
+  # Every identity gh_shim_identity produces is one path segment (hex,
+  # `no-token`, or `app-<digits>-<digits>`), so the directories named below
+  # can only ever sit under http-cache/. An `rm -rf` still earns a check
+  # that nothing else was handed in, before it runs rather than after.
+  [[ "$identity" == */* || "$identity" == *..* ]] && return 0
   rm -rf "$(gh_shim_cache_dir "$state_dir" "$identity" "$path")"
   parent="$(gh_shim_parent_path "$path")"
   [[ -z "$parent" ]] || rm -rf "$(gh_shim_cache_dir "$state_dir" "$identity" "$parent")"
