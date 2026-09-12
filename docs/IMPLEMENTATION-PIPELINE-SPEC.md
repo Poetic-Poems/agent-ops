@@ -10728,6 +10728,31 @@ implements.
     setting is verified, it being the one piece of requirement 25a no file
     in this repository carries.
 
+    **A second, independent gap the same check closes (issue #1363): the
+    tech-debt record-file flip requirement 25 asks for.** Where the closing
+    keyword's own issue is `pw::type:tech-debt`-labelled and its body's last
+    non-blank line names a permanent register file (a "Filed as
+    `tech-debt/<id>.md`, <date>." line — `scripts/migrate-tech-debt-
+    register.sh` or an earlier direct filing), `check-closing-keyword.sh`
+    also reads this pull request's own changed-files listing (`gh api
+    …/pulls/<n>/files`) and fails, naming the issue and the file, unless its
+    diff adds a `status: resolved` line for it. PR #1355's first round is
+    the concrete miss this closes: the issue closed, the file left at
+    `status: open` on `main` until a later round caught it by hand — nothing
+    before this checked the flip mechanically, only the prose
+    (`CLAUDE.md`, `TECH-DEBT.md`, `prompts/implementer.md`,
+    `prompts/reviewer.md`) agreeing. Either `gh` call that fails outright
+    (the token, a transient outage) warns rather than failing the check —
+    the issue read and the changed-files read alike — the same
+    "could not ask" reasoning as `unknown` below, applied inline rather than
+    as a separate verdict, since the marker/keyword half never depended on
+    the network and this half must not fail a pull request over GitHub's own
+    availability. This half runs only through the workflow, where the repo
+    slug and pull request number are available to pass — `lib/closing-
+    keyword-gate.sh` (below) re-derives only the body and head branch from
+    `gh pr view`, so `poetic` and `poetic-fiddle`, neither of which carries a
+    `tech-debt/` register of their own, get the marker/keyword half alone.
+
     That workflow file guards only agent-ops, the repository that carries
     it — a workflow guards the repository it ships in, not every repository
     the pipeline raises pull requests in. `poetic` and `poetic-fiddle` carry
@@ -19799,8 +19824,42 @@ What exists, and the requirements each part answers to:
     with no marker passes trivially. The workflow runs on every
     `pull_request` event, passing the body through `env:` rather than
     interpolating it into the step directly, so an attacker-controlled title
-    or body from a fork PR cannot inject shell. Unit-tested
-    (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
+    or body from a fork PR cannot inject shell.
+
+    Given a repo slug and this pull request's own number as two further,
+    optional arguments (a caller that omits either — every caller that
+    predates issue #1363 — gets exactly the behaviour above and nothing
+    more), the same script also enforces requirement 25's tech-debt
+    record-file flip: for each issue number the marker/keyword resolution
+    above yields, it fetches that issue (`gh issue view … --json
+    body,labels`) and, where it is `pw::type:tech-debt`-labelled and its
+    body's last non-blank line reads "Filed as `tech-debt/<id>.md`,
+    <date>." (left by `scripts/migrate-tech-debt-register.sh` or an
+    earlier direct filing), reads this pull request's own changed-files
+    listing (`gh api repos/<slug>/pulls/<n>/files`) and exits non-zero,
+    naming the issue and the record file, unless that file's diff adds a
+    `status: resolved` line. This is the CI-side check for the miss PR
+    #1355's first round made by hand — issue closed, `tech-debt/TD-PPagop-
+    26082412.md` left at `status: open` until a later round. Either `gh`
+    call that fails outright (the token, a transient outage) warns rather
+    than failing the check, the issue read and the changed-files read alike:
+    the marker/keyword half above never depended on the network, and this
+    half must not fail a pull request over GitHub's own availability — a
+    changed-files listing that could not be fetched is indistinguishable
+    from an empty one, so the failed call is read as "could not ask" rather
+    than as a pull request that touched nothing. The workflow passes
+    `github.repository` and
+    `github.event.pull_request.number` alongside the body and head branch,
+    and carries `issues: read` and `pull-requests: read` (`GH_TOKEN:
+    ${{ github.token }}` for `gh` itself) besides the `contents: read` the
+    checkout already needed — safe on a fork PR under the same guarantee as
+    every other permission here, since GitHub forces a `pull_request` run
+    from a fork to a read-only token regardless of what is requested.
+    `lib/closing-keyword-gate.sh` (17a below) does not pass these two
+    further arguments, so `poetic` and `poetic-fiddle` — which carry no
+    `tech-debt/` register of their own — get the marker/keyword half only,
+    unchanged. Unit-tested (`test/check-closing-keyword.test.sh`); must pass
+    `shellcheck`.
 17a. `lib/closing-keyword-gate.sh` implementing requirement 25a's other
     layer: given a pull request URL, `closing_keyword_gate` reads its
     current body and head branch with `gh pr view --json body,headRefName`
@@ -23418,7 +23477,18 @@ oblige anyone to edit a test.
    case-insensitive, Markdown emphasis around it) passes; a word merely
    ending in a keyword ("unclosed #198", "discloses #77") does not; and
    multiple markers on one body are checked independently — one satisfied
-   marker never excuses another. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   marker never excuses another. Given a repo slug and pull request number
+   (a stubbed `gh`, issue #1363), the same suite passes for the tech-debt
+   record-flip half: an issue with no "Filed as" line, or one carrying it
+   but not `pw::type:tech-debt`-labelled, passes exactly as without the two
+   extra arguments; a "Filed as"-line issue whose named record file's diff
+   adds `status: resolved` passes; the same issue whose diff never touches
+   that file fails naming that, and one whose diff touches it without adding
+   that line fails naming *that* — each asserted on its own message, never on
+   the record path both carry; and neither a failed `gh issue view` nor a
+   failed changed-files read (an unreadable issue, a token without access, a
+   transient outage) ever fails the check itself.
+   `test/sweep-closed-issues.test.sh` passes against a stubbed
    `gh`: a merged, marker-carrying pull request whose issue is still open is
    closed with the merge cited as evidence; a merged, markerless pull
    request whose head branch is `agent/<N>` closes issue `N` the same way,

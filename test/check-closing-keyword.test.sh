@@ -165,6 +165,145 @@ assert_pass "a human's branch demands nothing" \
 assert_pass "no branch argument at all keeps the marker-only behaviour" \
   "No marker here."
 
+# --- The tech-debt record-flip check (issue #1363) ---------------------------------
+# Only exercised when a repo slug and PR number are both given — every
+# assertion above omits them, and passing regardless is what proves this half
+# adds no burden to a caller that predates it.
+#
+# `gh` is stubbed through GH, matching the technique
+# test/tech-debt-close-guard.test.sh's stub uses for its own `gh api` calls.
+# $fixtures/issue-<n>.json  — `gh issue view <n> --json body,labels` reply
+# $fixtures/files.json      — `gh api …/pulls/<n>/files` reply (a JSON array
+#                             of pages, the `--slurp` shape)
+# A missing fixture makes the stub exit non-zero, standing in for a `gh` call
+# that could not be made at all.
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+cat > "$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+fixtures="${GH_STUB_FIXTURES:?}"
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  f="$fixtures/issue-$3.json"
+  [[ -f "$f" ]] && cat "$f" || exit 1
+  exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == repos/*/pulls/*/files ]]; then
+      f="$fixtures/files.json"
+      [[ -f "$f" ]] || exit 1
+      cat "$f"
+      exit 0
+    fi
+  done
+fi
+exit 1
+STUB
+chmod +x "$tmp_dir/gh"
+
+assert_pass_tdr() {  # assert_pass_tdr DESC BODY BRANCH REPO PR_NUMBER FIXTURES_SUBDIR
+  local desc="$1" body="$2" branch="$3" repo="$4" pr="$5" fixtures="$tmp_dir/$6"
+  if GH="$tmp_dir/gh" GH_STUB_FIXTURES="$fixtures" "$CHECK" "$body" "$branch" "$repo" "$pr" >/dev/null 2>&1; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s (expected exit 0)\n' "$desc"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_fail_tdr() {  # assert_fail_tdr DESC BODY BRANCH REPO PR_NUMBER FIXTURES_SUBDIR NEEDLE
+  local desc="$1" body="$2" branch="$3" repo="$4" pr="$5" fixtures="$tmp_dir/$6" needle="$7" err
+  err="$(GH="$tmp_dir/gh" GH_STUB_FIXTURES="$fixtures" "$CHECK" "$body" "$branch" "$repo" "$pr" 2>&1 >/dev/null)"
+  if GH="$tmp_dir/gh" GH_STUB_FIXTURES="$fixtures" "$CHECK" "$body" "$branch" "$repo" "$pr" >/dev/null 2>&1; then
+    printf 'FAIL - %s (expected non-zero exit)\n' "$desc"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  if [[ -n "$needle" && "$err" != *"$needle"* ]]; then
+    printf 'FAIL - %s\n     expected stderr to contain: %s\n     actual:   %s\n' \
+      "$desc" "$needle" "$err"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  printf 'ok   - %s\n' "$desc"
+}
+
+body_240="Fixes #240.
+<!-- agent-ops:closes-issue item=240 -->"
+
+# No "Filed as" line on the closed issue: passes exactly as today, no new
+# burden on an ordinary issue-closing PR.
+mkdir -p "$tmp_dir/no-filed-line"
+cat > "$tmp_dir/no-filed-line/issue-240.json" <<'JSON'
+{"body": "An ordinary issue with nothing special about its last line.",
+ "labels": [{"name": "pw::type:tech-debt"}]}
+JSON
+assert_pass_tdr "no 'Filed as' line on the closed issue passes as today" \
+  "$body_240" "agent/240" "acme/widgets" "9" "no-filed-line"
+
+# A "Filed as" line, but the issue is not pw::type:tech-debt-labelled: the
+# phrase means nothing without the label, so this is left alone too.
+mkdir -p "$tmp_dir/not-tech-debt"
+cat > "$tmp_dir/not-tech-debt/issue-240.json" <<'JSON'
+{"body": "Some issue whose body happens to end oddly.\n\nFiled as `tech-debt/TD-1.md`, 2026-08-01.",
+ "labels": [{"name": "bug"}]}
+JSON
+assert_pass_tdr "a 'Filed as'-shaped line on a non-tech-debt issue is ignored" \
+  "$body_240" "agent/240" "acme/widgets" "9" "not-tech-debt"
+
+# A "Filed as" line, and this PR's diff flips the named record to resolved.
+mkdir -p "$tmp_dir/flipped"
+cat > "$tmp_dir/flipped/issue-240.json" <<'JSON'
+{"body": "The debt itself, described here.\n\nFiled as `tech-debt/TD-1.md`, 2026-08-01.",
+ "labels": [{"name": "pw::type:tech-debt"}]}
+JSON
+cat > "$tmp_dir/flipped/files.json" <<'JSON'
+[[{"filename": "tech-debt/TD-1.md",
+  "patch": "@@ -1,5 +1,7 @@\n ---\n id: TD-1\n-status: open\n+status: resolved\n+resolved: 2026-09-01\n+ref: https://github.com/acme/widgets/pull/9\n filed: 2026-08-01\n ---"}]]
+JSON
+assert_pass_tdr "'Filed as' present, diff flips status to resolved: pass" \
+  "$body_240" "agent/240" "acme/widgets" "9" "flipped"
+
+# A "Filed as" line, but this PR's diff never touches the file at all.
+mkdir -p "$tmp_dir/untouched"
+cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/untouched/issue-240.json"
+cat > "$tmp_dir/untouched/files.json" <<'JSON'
+[[{"filename": "README.md", "patch": "@@ -1 +1 @@\n-old\n+new"}]]
+JSON
+# The needle is each branch's own distinguishing phrase, never the record
+# path both messages carry: the two failures are a file this PR never touched
+# and a file it touched without flipping, and a needle common to both would
+# let either assertion pass on the other's message — which is exactly how the
+# case below first went green against a malformed fixture.
+assert_fail_tdr "'Filed as' present, diff never touches the record: fail" \
+  "$body_240" "agent/240" "acme/widgets" "9" "untouched" \
+  "does not touch that file"
+
+# A "Filed as" line, and this PR's diff touches the file but never sets
+# status: resolved (left open, or flipped to something else).
+mkdir -p "$tmp_dir/unflipped"
+cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/unflipped/issue-240.json"
+cat > "$tmp_dir/unflipped/files.json" <<'JSON'
+[[{"filename": "tech-debt/TD-1.md",
+  "patch": "@@ -1,5 +1,5 @@\n ---\n id: TD-1\n-title: \"old title\"\n+title: \"clearer title\"\n status: open\n ---"}]]
+JSON
+assert_fail_tdr "'Filed as' present, diff leaves status unchanged: fail" \
+  "$body_240" "agent/240" "acme/widgets" "9" "unflipped" \
+  "does not set its frontmatter status: to resolved"
+
+# A `gh` call that fails outright never fails the check itself — only a
+# positive reading of the issue and the diff decides pass or fail here. Both
+# calls this half makes are covered: the issue lookup (no fixtures directory
+# at all) and the changed-files listing (an issue to read, but no files.json).
+assert_pass_tdr "a failed issue lookup does not fail the check" \
+  "$body_240" "agent/240" "acme/widgets" "9" "no-such-fixtures-dir"
+
+mkdir -p "$tmp_dir/files-unreadable"
+cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/files-unreadable/issue-240.json"
+assert_pass_tdr "a failed changed-files lookup does not fail the check" \
+  "$body_240" "agent/240" "acme/widgets" "9" "files-unreadable"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1
