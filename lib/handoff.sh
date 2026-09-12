@@ -488,18 +488,22 @@ _handoff_pr_query() {
 #
 # Fails — printing nothing, jq's own non-zero status, jq's own diagnostics
 # suppressed — on anything jq cannot iterate: malformed JSON, `null`, a
-# scalar. That is the contract the call sites are written against, every one
-# of them guarding the call — `|| return` in three of them,
-# `scripts/gather-review-feedback.sh`'s own `|| continue` in its per-PR loop —
-# and treating the failure as "the reviews list could not be read" rather than
-# as "nothing blocks this pull request"; do not soften it into an empty-array
+# scalar. That is the contract the live call sites are written against, every
+# one of them guarding the call and leaving the enclosing work undone rather
+# than finishing it on a guess: `|| return 0` in `lib/preflight.sh`'s
+# `preflight_review_feedback_reason`, `|| return 1` in `_handoff_latest_
+# reviews` below, `|| { printf 'unknown'; return; }` in
+# `scripts/sweep-human-visibility.sh`'s `_sweep_round_answered`, and
+# `|| continue` in `scripts/gather-review-feedback.sh`'s per-PR loop. All four
+# read the failure as "the reviews list could not be read" rather than as
+# "nothing blocks this pull request"; do not soften it into an empty-array
 # default, which would turn an unreadable list into a confident negative. An
-# *empty* REVIEWS_JSON is the
-# one input that neither succeeds usefully nor fails: jq runs the filter zero
-# times, so the function prints nothing and exits 0. No live caller can reach
-# it — each validates its input as a JSON array first — and REVIEWS_JSON
-# absent entirely is not a case at all, since every caller runs under
-# `set -u`, where the unset `$2` aborts before jq is reached.
+# *empty* REVIEWS_JSON is the one input that neither succeeds usefully nor
+# fails: jq runs the filter zero times, so the function prints nothing and
+# exits 0. No live caller can reach it — each either validates its input as a
+# JSON array first or builds one — and REVIEWS_JSON absent entirely is not a
+# case at all, since every caller runs under `set -u`, where the unset `$2`
+# aborts before jq is reached.
 handoff_latest_positions() {
   local reviews="$1" key="$2"
   jq -c --arg key "$key" '
