@@ -47,10 +47,16 @@
 # wrong on `main` until a later round caught it by hand. Given a repo slug
 # and this PR's own number (both optional — omitting either just skips this
 # half, preserving every caller that predates it), this fetches each closed
-# issue named by the marker/keyword resolution above, and where its body's
-# last non-blank line has that "Filed as" shape and it carries
-# `pw::type:tech-debt`, requires this PR's own diff (`gh api …/pulls/<n>/files`)
-# to add a `status: resolved` line to the record file it names.
+# issue named by the marker/keyword resolution above **or by a bare closing
+# keyword alone** — issue #1438: a PR that closes a tech-debt issue with a
+# plain `Fixes #N` and no marker, on a branch that is not `agent/N` (a
+# human's PR, or an interactive agent's), never touches `items` above, so the
+# record-flip loop re-extracts every issue number the body cites via a
+# closing keyword and checks each of those too, not only the marker/branch
+# survivors. Where a resolved number's body's last non-blank line has that
+# "Filed as" shape and it carries `pw::type:tech-debt`, this requires this
+# PR's own diff (`gh api …/pulls/<n>/files`) to add a `status: resolved` line
+# to the record file it names.
 #
 # A `gh` call that fails outright (the token, a transient outage) is not
 # turned into a failure of this check — the existing marker/keyword logic
@@ -100,8 +106,8 @@ if [[ "$head_branch" =~ ^agent/([0-9]+)$ ]]; then
   fi
 fi
 
-(( ${#items[@]} > 0 )) || exit 0
-for item in "${items[@]}"; do
+for item in "${items[@]:-}"; do
+  [[ -n "$item" ]] || continue
   # GitHub's own closing-keyword list: close(s|d), fix(es|ed), resolve(s|d),
   # case-insensitive, immediately followed by "#N" (optionally ": #N") for
   # the same number the marker names.
@@ -117,9 +123,26 @@ for item in "${items[@]}"; do
   fi
 done
 
-# --- the tech-debt record-flip check (issue #1363) --------------------------
+# --- the tech-debt record-flip check (issue #1363, extended by #1438) -------
 if [[ -n "$repo_slug" && -n "$pr_number" ]]; then
-  mapfile -t unique_items < <(printf '%s\n' "${items[@]}" | grep -v '^$' | sort -un)
+  # Every issue number the body cites via a bare closing keyword, independent
+  # of the marker/branch anchors above — this is what lets the record-flip
+  # loop below catch a markerless `Fixes #N` PR (issue #1438): a human's PR,
+  # or an interactive agent's, that closes a tech-debt issue with nothing this
+  # script's marker/branch resolution would otherwise notice. The
+  # marker-requires-keyword loop above is unrelated and stays anchored to
+  # `items` alone.
+  #
+  # Same word-of-its-own guard the per-item check above carries, and for the
+  # same reason: "discloses #240" and "unfixed #240" contain a keyword and
+  # close nothing, to GitHub's own parser as to this script — so harvesting a
+  # number out of one would demand a record flip from a pull request that
+  # closes no such issue, failing a required check over a word in prose. The
+  # leading boundary character the match carries is never a digit, so the
+  # number extraction below is unaffected by it.
+  mapfile -t keyword_items < <(grep -oiE '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#[0-9]+' <<<"$body" \
+    | grep -oE '[0-9]+')
+  mapfile -t unique_items < <(printf '%s\n' "${items[@]}" "${keyword_items[@]}" | grep -v '^$' | sort -un)
   for item in "${unique_items[@]:-}"; do
     [[ -n "$item" ]] || continue
 

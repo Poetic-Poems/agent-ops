@@ -304,6 +304,38 @@ cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/files-unreadable/issue-240.json"
 assert_pass_tdr "a failed changed-files lookup does not fail the check" \
   "$body_240" "agent/240" "acme/widgets" "9" "files-unreadable"
 
+# --- Keyword-only closes reach the record-flip check too (issue #1438) ------
+# A markerless `Fixes #N` on a branch that is not `agent/N` — a human's PR, or
+# an interactive agent's — never puts #N into `items` via the marker/branch
+# resolution above, so the record-flip loop must re-derive it from the bare
+# closing keyword itself.
+body_240_bare="Fixes #240 for real this time."
+
+mkdir -p "$tmp_dir/bare-unflipped"
+cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/bare-unflipped/issue-240.json"
+cat > "$tmp_dir/bare-unflipped/files.json" <<'JSON'
+[[{"filename": "tech-debt/TD-1.md",
+  "patch": "@@ -1,5 +1,5 @@\n ---\n id: TD-1\n-title: \"old title\"\n+title: \"clearer title\"\n status: open\n ---"}]]
+JSON
+assert_fail_tdr "a markerless Fixes #N with an unflipped record still fails" \
+  "$body_240_bare" "fix/some-branch" "acme/widgets" "9" "bare-unflipped" \
+  "does not set its frontmatter status: to resolved"
+
+mkdir -p "$tmp_dir/bare-flipped"
+cp "$tmp_dir/flipped/issue-240.json" "$tmp_dir/bare-flipped/issue-240.json"
+cp "$tmp_dir/flipped/files.json" "$tmp_dir/bare-flipped/files.json"
+assert_pass_tdr "a markerless Fixes #N with a correctly flipped record passes" \
+  "$body_240_bare" "fix/some-branch" "acme/widgets" "9" "bare-flipped"
+
+# The same word-of-its-own guard the marker/keyword half carries: "discloses"
+# and "unfixed" contain a keyword and close nothing, to GitHub's own parser as
+# to this script, so neither may drag #240 into the record-flip loop. The
+# fixtures deliberately hold an *unflipped* record — the only way this passes
+# is by never checking #240 at all.
+assert_pass_tdr "a keyword lookalike (discloses/unfixed) demands no record flip" \
+  "This discloses #240, and an unfixed #240 note." \
+  "fix/some-branch" "acme/widgets" "9" "bare-unflipped"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

@@ -9,13 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **CI now enforces the tech-debt record-file flip a closing pull request
-  owes** (issue #1363). `scripts/check-closing-keyword.sh` takes a repo slug
+  owes** (issue #1363, extended by #1438).
+  `scripts/check-closing-keyword.sh` takes a repo slug
   and the pull request's own number as two further, optional arguments;
-  given both, for every issue its existing marker/closing-keyword resolution
-  yields, it reads that issue and — where the issue is
+  given both, it reads every issue the pull request closes — the ones its
+  marker/`agent/<N>`-branch resolution yields, and the ones the body cites
+  via a bare GitHub closing keyword carrying neither anchor, a human's pull
+  request or an interactive agent's (issue #1438) — and, where the issue is
   `pw::type:tech-debt`-labelled and its body's last non-blank line names a
   permanent register file (the "Filed as `tech-debt/<id>.md`, <date>." phrase
-  left by #1039's migration or an earlier direct filing) — requires this pull
+  left by #1039's migration or an earlier direct filing), requires this pull
   request's own changed-files listing to add a `status: resolved` line for
   that file, failing and naming both the issue and the file when it does
   not. Until now the rule lived only in prose (`CLAUDE.md`, `TECH-DEBT.md`
