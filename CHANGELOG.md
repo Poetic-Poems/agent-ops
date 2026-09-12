@@ -828,6 +828,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`test/gh-shim-auth.test.sh`'s "nothing configured" fixture no longer
+  leaks a host's ambient `PW_GH_DEGRADE_TOKEN` into its assertion**
+  (agent-ops#1432). `gh_shim_resolve_token` falls back to
+  `PW_GH_DEGRADE_TOKEN` whenever it is non-empty, and the fixture named
+  `GH_TOKEN=` explicitly but never `PW_GH_DEGRADE_TOKEN=` — so on any node
+  that provisions `PW_GH_DEGRADE_TOKEN` in its own operational shell (every
+  node in this fleet does, for real `gh` calls made outside this test), that
+  ambient credential reached the stub and failed the "the call still reaches
+  the real binary, with an empty token" assertion, byte-identically on a
+  pristine checkout. The fixture now names `PW_GH_DEGRADE_TOKEN=` explicitly
+  too, mirroring `GH_TOKEN=`'s existing idiom.
+
 - **`scripts/render-toc.sh` no longer silently passes a target file whose
   `<!-- toc:start -->` / `<!-- toc:end -->` marker pair is missing, unpaired,
   or reversed** (issue #1402). The awk pass only rewrote content already
