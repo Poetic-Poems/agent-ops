@@ -30,7 +30,14 @@
     --shadow: 0 8px 24px rgba(16, 22, 30, .16);
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --header-h: 60px;
   }
+  /* The header is sticky and now carries an in-page anchor list (.toc), so a
+     jump to a section must stop below it rather than under it. `--header-h`
+     is kept current by a ResizeObserver (it wraps to more lines on a narrow
+     viewport or a long Contents list), and scroll-padding-top applies the
+     offset to every same-page anchor jump, not just clicks through the TOC. */
+  html { scroll-padding-top: calc(var(--header-h) + 8px); }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e;
@@ -52,8 +59,36 @@
   header.top h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   .grow { flex: 1 1 auto; }
   .freshness { font-size: 12px; color: var(--muted); }
+  .navrow { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
   .docs { font-size: 12px; color: var(--muted); }
   .docs a { margin: 0 3px; }
+  /* The Contents menu is a <details> rather than an always-open list of
+     links (contrast .docs above): with ~17 entries it would either read as
+     a wall of inline text or cost a whole extra header row on every load,
+     whether or not anyone was about to jump anywhere. Collapsed, it is one
+     small toggle the same size and weight as "Docs:" beside it. */
+  details.toc { position: relative; font-size: 12px; }
+  details.toc[hidden] { display: none; }
+  details.toc summary { color: var(--muted); cursor: pointer; list-style: none; user-select: none; }
+  details.toc summary::-webkit-details-marker { display: none; }
+  details.toc summary::after { content: "▾"; display: inline-block; font-size: 9px; margin-left: 4px; }
+  details.toc[open] summary::after { content: "▴"; }
+  details.toc summary:hover { color: var(--ink); }
+  details.toc summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  /* A floating panel rather than in-flow content (contrast #prcard, which is
+     the same idea for a different trigger): opening it must not reflow the
+     sticky header's own height, which every section's scroll-padding-top
+     offset (see --header-h) is computed from. Multi-column instead of one
+     link per row for the same reason .costgrid is: the browser balances
+     ~17 short entries into however many 130px+ columns the panel's own
+     max-width leaves room for, rather than this page pinning a column count
+     to today's section list. */
+  .tocmenu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; margin: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 8px 10px;
+    columns: 2 130px; column-gap: 4px; max-width: calc(100vw - 40px); max-height: 70vh; overflow: auto; }
+  .tocmenu a { display: block; padding: 3px 8px; border-radius: 5px; white-space: nowrap; break-inside: avoid; }
+  .tocmenu a:hover, .tocmenu a:focus-visible { background: var(--grey-bg); text-decoration: none; }
   .controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   .controls label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   button.refresh { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
@@ -245,14 +280,30 @@
   <span class="grow"></span>
   <span class="freshness" id="freshness"></span>
   <span class="freshness" id="ghfreshness" title="when the GitHub-sourced panels — PRs, checks, issues, work sources, claims — were last fetched"></span>
-  <nav class="docs" aria-label="Documentation">Docs:
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> ·
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/IMPLEMENTATION-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Pipeline spec</a> ·
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/REVIEW-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Review spec</a> ·
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/DASHBOARD-SPEC.md" target="_blank" rel="noopener noreferrer">Dashboard spec</a> ·
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/METERING-SCHEMA.md" target="_blank" rel="noopener noreferrer">Metering</a> ·
-    <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener noreferrer">Roadmap</a>
-  </nav>
+  <div class="navrow">
+    <nav class="docs" aria-label="Documentation">Docs:
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> ·
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/IMPLEMENTATION-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Pipeline spec</a> ·
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/REVIEW-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Review spec</a> ·
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/DASHBOARD-SPEC.md" target="_blank" rel="noopener noreferrer">Dashboard spec</a> ·
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/METERING-SCHEMA.md" target="_blank" rel="noopener noreferrer">Metering</a> ·
+      <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener noreferrer">Roadmap</a>
+    </nav>
+    <!-- The menu itself (#tocmenu) is populated by renderToc() from the
+         sections renderBody() actually appends — which panels exist (e.g.
+         the fleet strip, live claims) and their h2 text (counts, the active
+         node filter) both vary run to run, so a static list would drift out
+         of sync with the page under it. A <details> disclosure rather than
+         an always-open list: seventeen-odd entries read as a wall of text
+         inline, and cost a whole extra header row every load whether or not
+         anyone was about to jump anywhere. The whole `details.toc` is
+         JS-hidden (not just its menu) whenever there is nothing to list. -->
+    <details class="toc" id="toc">
+      <summary>Contents</summary>
+      <nav class="tocmenu" id="tocmenu" aria-label="Contents"></nav>
+    </details>
+  </div>
+  <span class="grow"></span>
   <div class="controls">
     <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
     <button class="refresh" id="refreshbtn">Refresh now</button>
@@ -709,6 +760,20 @@
   document.addEventListener("focusout", function (ev) { if (prAnchorOf(ev)) prCardHideSoon(); });
   document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") prCardHide(); });
 
+  // <details class="toc"> gets its open/close toggle for free from the
+  // summary, but not the "click away to dismiss" a menu is expected to have
+  // — that part is native to neither element, so it is added here the same
+  // delegated way as the pr-card listeners above.
+  document.addEventListener("click", function (ev) {
+    var toc = document.getElementById("toc");
+    if (toc && toc.open && !toc.contains(ev.target)) toc.open = false;
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape") return;
+    var toc = document.getElementById("toc");
+    if (toc && toc.open) toc.open = false;
+  });
+
   // Carry an open card across a body rebuild, the way the expanded rows and
   // open transcripts are carried (see the state maps up top). A refresh every
   // few seconds that closed the thing being read would make the card useless on
@@ -735,6 +800,7 @@
   var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
   var voidShowAll = false;                // true while the void list shows past its first VOID_ROWS rows
   var voidOpen = Object.create(null);     // "repo/item/row" -> true while that void row shows its full text
+  var tocEntries = [];                    // [{id, label}], rebuilt by renderBody() as sections are appended
 
   // Unlike the state above, this one is meant to survive a real page reload,
   // not just an in-place refresh — the whole point of #186 is a reader
@@ -1467,8 +1533,35 @@
   }
 
   // ---------- section builder ----------
-  function sectionOf(title, body) {
-    return el("section", {}, [ el("h2", {text:title}), body ]);
+  // `label` is a short, stable name — unlike `title`, whose h2 text often
+  // carries a live count or the current node filter and so cannot itself
+  // serve as a stable anchor id or a TOC entry that doesn't jitter every
+  // refresh. It becomes both the section's id (slugged) and its entry in the
+  // header's table of contents, in the order sections are actually built —
+  // so a panel this render skipped (e.g. the fleet strip when `fleetVisible()`
+  // is false) never gets a dead link.
+  function tocSlug(label) {
+    return "sec-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function sectionOf(label, title, body) {
+    var id = tocSlug(label);
+    tocEntries.push({id: id, label: label});
+    return el("section", {id: id}, [ el("h2", {text:title}), body ]);
+  }
+  function renderToc(entries) {
+    // #toc/#tocmenu sit in the static header, outside #app, so unlike every
+    // section below they are never torn down by a refresh — only the menu's
+    // own children are rebuilt here. `details.open` is left untouched: a
+    // reader with the menu open mid-read keeps it open across the next
+    // auto-refresh tick, the same as an expanded cycle row does.
+    var details = document.getElementById("toc");
+    var menu = document.getElementById("tocmenu");
+    if (!details || !menu) return;
+    details.hidden = !entries.length;
+    menu.innerHTML = "";
+    entries.forEach(function (entry) {
+      menu.appendChild(el("a", {href: "#" + entry.id, text: entry.label}));
+    });
   }
 
   // A NUL run `fromjson? // empty` dropped from this window's read — either
@@ -3102,6 +3195,7 @@
     var reopenPinned = prPinned;
     prCardHide();
     app.innerHTML = "";
+    tocEntries = [];
 
     // ---------- banners ----------
     var banners = el("div");
@@ -3344,13 +3438,13 @@
     app.appendChild(banners);
 
     // ---------- fleet strip ----------
-    if (fleetVisible()) app.appendChild(sectionOf("Fleet", fleetStrip()));
+    if (fleetVisible()) app.appendChild(sectionOf("Fleet", "Fleet", fleetStrip()));
 
     // ---------- doctor (agent-ops#543) ----------
-    app.appendChild(sectionOf("Doctor (unattended, hourly)", doctorPanel()));
+    app.appendChild(sectionOf("Doctor", "Doctor (unattended, hourly)", doctorPanel()));
 
     // ---------- stage health (agent-ops#662) ----------
-    app.appendChild(sectionOf("Stage health", stageHealthPanel()));
+    app.appendChild(sectionOf("Stage health", "Stage health", stageHealthPanel()));
 
     // ---------- metric cards ----------
     var c = D.counts || {};
@@ -3509,29 +3603,29 @@
     // requirement 2.0's own gate asks, and the point is answering it before
     // the first `guard-degraded` refusal shows up further down the page,
     // not after (issue #1090).
-    app.appendChild(sectionOf("GitHub API budget", githubBudgetPanel()));
+    app.appendChild(sectionOf("Budget", "GitHub API budget", githubBudgetPanel()));
 
     // ---------- open PRs ----------
-    app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
+    app.appendChild(sectionOf("PRs", "Open pull requests", prsPanel(openPrs)));
 
     // ---------- autonomous landings ----------
     // Above the fleet's own bookkeeping and directly under the open pull
     // requests, because it is the same question one step later: these are the
     // pull requests that stopped being anybody's to merge.
-    app.appendChild(sectionOf("Autonomous landings (last " + (((D.landings || {}).window_hours) || 24) + " h)", landingsPanel()));
+    app.appendChild(sectionOf("Landings", "Autonomous landings (last " + (((D.landings || {}).window_hours) || 24) + " h)", landingsPanel()));
 
     // ---------- decisions ----------
     // Directly under the landings it sits beside in the D18 pattern: both are
     // audits of an autonomous act a human did not approve inline — a landing
     // logged and audited, a decision logged and vetoable.
-    app.appendChild(sectionOf("Decisions (last " + (((D.decisions || {}).window_days) || 7) + " days)", decisionsPanel()));
+    app.appendChild(sectionOf("Decisions", "Decisions (last " + (((D.decisions || {}).window_days) || 7) + " days)", decisionsPanel()));
 
     // ---------- revert rate by repository ----------
     // Directly under the landings it audits: D18's Stage 2 exit criterion
     // ("revert rate ≤ baseline") is a fact this panel makes checkable at a
     // glance, on the day it stops holding, rather than only at a promotion
     // review.
-    app.appendChild(sectionOf("Revert rate by repository" +
+    app.appendChild(sectionOf("Revert rate", "Revert rate by repository" +
       droppedSuffix((D.log_repair || {}).dropped_revert_rate_lines), revertRatePanel()));
 
     // ---------- rework panel ----------
@@ -3539,26 +3633,26 @@
     // merge, this one is the whole cost ladder before and after it — how
     // much rework cost, whose it is, and how far each caught defect got
     // before something stopped it (D23, issue #611).
-    app.appendChild(sectionOf("Rework", reworkPanel()));
+    app.appendChild(sectionOf("Rework", "Rework", reworkPanel()));
 
     // ---------- live claims ----------
-    if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));
+    if (fleetVisible()) app.appendChild(sectionOf("Claims", "Live claims", claimsPanel()));
 
     // ---------- cycle history ----------
-    app.appendChild(sectionOf(nodeFilter ? "Recent cycles — " + nodeFilter + " only (click its card to clear)" : "Recent cycles",
+    app.appendChild(sectionOf("Cycles", nodeFilter ? "Recent cycles — " + nodeFilter + " only (click its card to clear)" : "Recent cycles",
       cyclesPanel(D.cycles || [])));
 
     // ---------- failures & blocked ----------
-    app.appendChild(sectionOf("Failures, blocked & void items", failuresPanel()));
+    app.appendChild(sectionOf("Failures", "Failures, blocked & void items", failuresPanel()));
 
     // ---------- inputs ----------
-    app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
+    app.appendChild(sectionOf("Inputs", "Work sources (what the Co-Ordinator sees)", inputsPanel()));
 
     // ---------- actor and model scorecards ----------
     // Directly under the work sources, and deliberately: that panel is what
     // the Co-Ordinator was handed, this one is how each actor's model choice
     // did with what it was handed (issue #610, D22).
-    app.appendChild(sectionOf("Actor and model scorecards", scorecardsPanel()));
+    app.appendChild(sectionOf("Scorecards", "Actor and model scorecards", scorecardsPanel()));
 
     // ---------- cost & cadence + log ----------
     // A multi-column flow rather than a fixed grid: day, model, actor, then
@@ -3579,13 +3673,17 @@
     costgrid.appendChild(el("p", {class:"costnote", text:
       "All figures on this page are US dollars (USD), regardless of the " +
       "Claude account's own billing currency or region."}));
-    app.appendChild(el("section", {}, [costWindowControl(), costgrid]));
+    var costId = tocSlug("Cost");
+    tocEntries.push({id: costId, label: "Cost"});
+    app.appendChild(el("section", {id: costId}, [costWindowControl(), costgrid]));
 
-    app.appendChild(sectionOf(
+    app.appendChild(sectionOf("Log",
       (nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events") +
         droppedSuffix((D.log_repair || {}).dropped_log_lines),
       logPanel()));
-    app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
+    app.appendChild(sectionOf("Cron log", "cron.log (tail)", cronPanel()));
+
+    renderToc(tocEntries);
 
     window.scrollTo(0, y);
     restoreScrollPositions(savedScroll);
@@ -3775,6 +3873,27 @@
   }
   document.getElementById("autorefresh").addEventListener("change", schedule);
   document.getElementById("refreshbtn").addEventListener("click", tick);
+
+  // ---------- sticky header height, for the .toc anchor offset (see
+  // scroll-padding-top in the stylesheet) ----------
+  // The header wraps onto more lines on a narrow viewport, or as the
+  // Contents list grows, so its height isn't a constant a hand-tuned CSS
+  // value could carry — it's read from the live element instead, on every
+  // size change.
+  (function () {
+    var header = document.querySelector("header.top");
+    // Absent under the render harness's DOM stub (tree-building only, no
+    // layout — querySelector there always returns null by design), which
+    // never runs a real browser, so it never needs a sticky-offset in the
+    // first place.
+    if (!header) return;
+    function syncHeaderHeight() {
+      document.documentElement.style.setProperty("--header-h", header.offsetHeight + "px");
+    }
+    syncHeaderHeight();
+    if (window.ResizeObserver) new ResizeObserver(syncHeaderHeight).observe(header);
+    else if (window.addEventListener) window.addEventListener("resize", syncHeaderHeight);
+  })();
 
   // ---------- first paint ----------
   renderBody();
