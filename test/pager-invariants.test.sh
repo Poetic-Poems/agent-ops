@@ -950,6 +950,27 @@ assert_eq "  ... and the function it fired from" "1" \
   "$(grep -c '\"fn\":\"_pager_ready_pr_candidates\"' "$pr_unreviewed_warn_log")"
 PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
 
+# issue #1403: a schema-illegal cutoff ("2h") never reaches
+# _pager_ready_pr_candidates's own strftime-overflow warning above at all —
+# _pager_pr_unreviewed_candidates's own regex guard turns it away first. That
+# guard must warn for itself, in the same payload shape, naming its own fn.
+pr_unreviewed_illegal_warn_log="$WORKDIR/pr-unreviewed-illegal-warn.jsonl"
+: > "$pr_unreviewed_illegal_warn_log"
+PAGER_REMEDY_LOG_FILE="$pr_unreviewed_illegal_warn_log"
+PAGER_REMEDY_NODE="n1"
+PAGER_REMEDY_CYCLE="c9"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS="2h"
+verdict="$(pager_eval_pr_unreviewed "[]" "$pru_log")"
+assert_eq "a schema-illegal cutoff (2h) still fails safe: never fires" \
+  "false" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "  ... but logs a warning naming the actual config key" "1" \
+  "$(grep -c '\"key\":\"approver_unreviewed_engage_after_hours\"' "$pr_unreviewed_illegal_warn_log")"
+assert_eq "  ... and the raw value that failed the regex" "1" \
+  "$(grep -c '\"value\":\"2h\"' "$pr_unreviewed_illegal_warn_log")"
+assert_eq "  ... and the function it fired from" "1" \
+  "$(grep -c '\"fn\":\"_pager_pr_unreviewed_candidates\"' "$pr_unreviewed_illegal_warn_log")"
+PAGER_EVAL_APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS=2
+
 PAGER_EVAL_REPOS_JSON=""
 assert_eq "no PAGER_EVAL_REPOS_JSON configured: never fires" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_pr_unreviewed "[]" "$pru_log")")"

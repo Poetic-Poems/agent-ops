@@ -879,6 +879,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   function it fired from, before falling back to the unchanged
   continue/return behaviour.
 
+- **A `pr-unreviewed` cutoff rejected by the invariant's own numeric-format
+  guard now warns there too, rather than only at the guard downstream of it**
+  (issue #1403, following on from #1366 above). #1366's warning covers the
+  case where the cutoff computation itself fails, and lives in
+  `_pager_ready_pr_candidates` — but `lib/pager-invariants.sh`'s
+  `_pager_pr_unreviewed_candidates`, its only caller, turns a value that is
+  not a plain number away at its own upstream guard, and returned silently
+  when it did. It now logs the identical warning shape itself at that guard,
+  naming the config key, the raw value and its own function name, before
+  falling back to the unchanged `return 0`. Note that this states the
+  function's contract rather than closing a live silence: the pipeline's own
+  evaluation site, `scripts/publish-dashboard.sh`, already substitutes the
+  schema default (`2`) for an `approver_unreviewed_engage_after_hours`
+  failing that same regex before the pager ever sees it — which is its own,
+  separate silence, filed as issue #1416.
+
 - **Two hand-flag gather scripts no longer read a garbage `labelled_at` off a
   timeline past one page** (issue #1000, TD-PPagop-26082701). `gh api
   --paginate --jq` re-runs its filter once per page and prints each page's

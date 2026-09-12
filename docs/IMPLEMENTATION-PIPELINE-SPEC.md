@@ -17595,14 +17595,24 @@ with the Reviewer's own.
       no `approver-verdict`, no warning naming it and no
       `approver-unreviewed-engaged` event *at all* — never merely stale, the
       total silence of requirement 46's own unreviewed trigger (#890) never
-      having run for this pull request even once. A cutoff that computes
-      empty — a schema-illegal `approver_unreviewed_engage_after_hours`
-      reaching jq's `tonumber` and erroring, or a schema-legal but extreme
-      one overflowing `strftime` — logs its own `warning` (naming
-      `approver_unreviewed_engage_after_hours`, the raw value and
-      `_pager_ready_pr_candidates`) and
-      never fires, rather than being silently indistinguishable from an
-      empty backlog. Caught: PR #1059, stranded
+      having run for this pull request even once. A cutoff that fails to
+      produce a usable value — a schema-illegal
+      `approver_unreviewed_engage_after_hours` (e.g. `"2h"`), rejected by
+      `_pager_pr_unreviewed_candidates`'s own upstream numeric-format guard
+      before it ever reaches `_pager_ready_pr_candidates`, or a schema-legal
+      but extreme one that reaches `_pager_ready_pr_candidates` and overflows
+      `strftime` there — logs its own `warning` either way (naming
+      `approver_unreviewed_engage_after_hours`, the raw value and whichever
+      of the two functions rejected it) and never fires, rather than being
+      silently indistinguishable from an empty backlog. Of the two, only the
+      second is reachable from the pipeline's own evaluation site:
+      `scripts/publish-dashboard.sh` substitutes the schema default (`2`) for
+      a configured value failing that same numeric-format regex before it
+      passes one at all, so the guard in `_pager_pr_unreviewed_candidates`
+      states the function's own contract for a caller that passes the
+      configured value through unchanged, and a schema-illegal key evaluates
+      this invariant at the substituted default rather than disabling it.
+      Caught: PR #1059, stranded
       when the kill-switch read failed closed with no log line (#1081) —
       exactly the silent skip this invariant is built to notice from outside
       the sweep that skipped. The pipeline-act remedy logs the identical
