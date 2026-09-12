@@ -130,8 +130,13 @@ assert_rejected() {
 # approver_app_id against that real value rather than an absent one, and a
 # fixture that never mentions the Approver's runtime credential must not
 # silently inherit it (TD-PPagop-26082201). A fixture that wants one of these
-# variables set has to say so itself, by setting it before calling
-# assert_doctor/assert_doctor_shipped.
+# variables set cannot go through assert_doctor/assert_doctor_shipped at all:
+# it must call doctor.sh directly, setting the variable for that one
+# invocation, the way the PULLWRIGHT_APPROVER_APP_ID mismatch check below
+# does. Prefixing the assert_doctor call itself would not work anyway — the
+# `env -u` below clears all three — and, since the cache described next is
+# keyed on the fixture's content alone, it would silently grade a run made
+# under a different environment.
 #
 # A handful of call sites below build byte-identical fixtures on purpose —
 # most visibly the six assert_doctor_shipped cases that pass the shipped
@@ -146,8 +151,10 @@ assert_rejected() {
 # exact same fixture reuses the prior run's real output instead of spawning
 # doctor.sh again. This changes nothing about what is asserted — each call
 # site still grades its own substring against a real doctor.sh run, just not
-# always a freshly-spawned one — so it must never be reached for a fixture
-# that differs by even one byte from one already cached.
+# always a freshly-spawned one. A fixture that differs by even one byte keys
+# differently and spawns afresh, so content is safe; what the key cannot see
+# is the environment, which is why every call site here has to keep sharing
+# the one above.
 declare -A _DOCTOR_CACHE_OUT _DOCTOR_CACHE_STATUS
 _assert_doctor_check() {
   local desc="$1" expected_exit="$2" expect="$3" fixture="$4" out status key

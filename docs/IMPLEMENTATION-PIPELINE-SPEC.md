@@ -18501,7 +18501,15 @@ What exists, and the requirements each part answers to:
    paths the image is not the delivery path for (requirement 1b-i). The rule lives in
    the script rather than in the workflow for the reason component 10 gives
    about its own file set, and because a rule that decides what reaches a node
-   is worth unit-testing.
+   is worth unit-testing. The build job is bounded twice over: `timeout-minutes:
+   90` on the job, and a per-test `timeout 600` inside the test-suite loop —
+   the same bound `scripts/run-tests.sh` applies, written the same way, so a
+   hung test is cut off at the same point whether a developer or CI is running
+   it. Neither figure grades a slow run: the suite costs ~20 minutes per
+   architecture inside the image, and the margin above that exists only so the
+   job stops falling back to Actions' implicit six-hour default, where a test
+   that hangs — this suite exercises real signal and process-group handling —
+   would spin unexplained for hours before anyone noticed.
 10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
     shell linter and the job that enforces it (acceptance checks 1g and 1g-i).
     The file set and the invocation live in the script, so a developer's run
