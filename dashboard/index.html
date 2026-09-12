@@ -59,12 +59,36 @@
   header.top h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   .grow { flex: 1 1 auto; }
   .freshness { font-size: 12px; color: var(--muted); }
-  .toc,
+  .navrow { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
   .docs { font-size: 12px; color: var(--muted); }
-  .toc a,
   .docs a { margin: 0 3px; }
-  .toc { margin-top: 3px; }
-  .toc:empty { display: none; }
+  /* The Contents menu is a <details> rather than an always-open list of
+     links (contrast .docs above): with ~17 entries it would either read as
+     a wall of inline text or cost a whole extra header row on every load,
+     whether or not anyone was about to jump anywhere. Collapsed, it is one
+     small toggle the same size and weight as "Docs:" beside it. */
+  details.toc { position: relative; font-size: 12px; }
+  details.toc[hidden] { display: none; }
+  details.toc summary { color: var(--muted); cursor: pointer; list-style: none; user-select: none; }
+  details.toc summary::-webkit-details-marker { display: none; }
+  details.toc summary::after { content: "▾"; display: inline-block; font-size: 9px; margin-left: 4px; }
+  details.toc[open] summary::after { content: "▴"; }
+  details.toc summary:hover { color: var(--ink); }
+  details.toc summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  /* A floating panel rather than in-flow content (contrast #prcard, which is
+     the same idea for a different trigger): opening it must not reflow the
+     sticky header's own height, which every section's scroll-padding-top
+     offset (see --header-h) is computed from. Multi-column instead of one
+     link per row for the same reason .costgrid is: the browser balances
+     ~17 short entries into however many 130px+ columns the panel's own
+     max-width leaves room for, rather than this page pinning a column count
+     to today's section list. */
+  .tocmenu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 6; margin: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 8px 10px;
+    columns: 2 130px; column-gap: 4px; max-width: calc(100vw - 40px); max-height: 70vh; overflow: auto; }
+  .tocmenu a { display: block; padding: 3px 8px; border-radius: 5px; white-space: nowrap; break-inside: avoid; }
+  .tocmenu a:hover, .tocmenu a:focus-visible { background: var(--grey-bg); text-decoration: none; }
   .controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   .controls label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   button.refresh { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
@@ -256,7 +280,7 @@
   <span class="grow"></span>
   <span class="freshness" id="freshness"></span>
   <span class="freshness" id="ghfreshness" title="when the GitHub-sourced panels — PRs, checks, issues, work sources, claims — were last fetched"></span>
-  <div>
+  <div class="navrow">
     <nav class="docs" aria-label="Documentation">Docs:
       <a href="https://github.com/Pullwright/agent-ops/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> ·
       <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/IMPLEMENTATION-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Pipeline spec</a> ·
@@ -265,12 +289,21 @@
       <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/METERING-SCHEMA.md" target="_blank" rel="noopener noreferrer">Metering</a> ·
       <a href="https://github.com/Pullwright/agent-ops/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener noreferrer">Roadmap</a>
     </nav>
-    <!-- Populated by renderToc() from the sections renderBody() actually
-         appends — which panels exist (e.g. the fleet strip, live claims)
-         and their h2 text (counts, the active node filter) both vary run to
-         run, so a static list would drift out of sync with the page under it. -->
-    <nav class="toc" id="toc" aria-label="Contents"></nav>
+    <!-- The menu itself (#tocmenu) is populated by renderToc() from the
+         sections renderBody() actually appends — which panels exist (e.g.
+         the fleet strip, live claims) and their h2 text (counts, the active
+         node filter) both vary run to run, so a static list would drift out
+         of sync with the page under it. A <details> disclosure rather than
+         an always-open list: seventeen-odd entries read as a wall of text
+         inline, and cost a whole extra header row every load whether or not
+         anyone was about to jump anywhere. The whole `details.toc` is
+         JS-hidden (not just its menu) whenever there is nothing to list. -->
+    <details class="toc" id="toc">
+      <summary>Contents</summary>
+      <nav class="tocmenu" id="tocmenu" aria-label="Contents"></nav>
+    </details>
   </div>
+  <span class="grow"></span>
   <div class="controls">
     <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
     <button class="refresh" id="refreshbtn">Refresh now</button>
@@ -726,6 +759,20 @@
   });
   document.addEventListener("focusout", function (ev) { if (prAnchorOf(ev)) prCardHideSoon(); });
   document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") prCardHide(); });
+
+  // <details class="toc"> gets its open/close toggle for free from the
+  // summary, but not the "click away to dismiss" a menu is expected to have
+  // — that part is native to neither element, so it is added here the same
+  // delegated way as the pr-card listeners above.
+  document.addEventListener("click", function (ev) {
+    var toc = document.getElementById("toc");
+    if (toc && toc.open && !toc.contains(ev.target)) toc.open = false;
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape") return;
+    var toc = document.getElementById("toc");
+    if (toc && toc.open) toc.open = false;
+  });
 
   // Carry an open card across a body rebuild, the way the expanded rows and
   // open transcripts are carried (see the state maps up top). A refresh every
@@ -1502,14 +1549,18 @@
     return el("section", {id: id}, [ el("h2", {text:title}), body ]);
   }
   function renderToc(entries) {
-    var nav = document.getElementById("toc");
-    if (!nav) return;
-    nav.innerHTML = "";
-    if (!entries.length) return;
-    nav.appendChild(document.createTextNode("Contents: "));
-    entries.forEach(function (entry, i) {
-      if (i) nav.appendChild(document.createTextNode(" · "));
-      nav.appendChild(el("a", {href: "#" + entry.id, text: entry.label}));
+    // #toc/#tocmenu sit in the static header, outside #app, so unlike every
+    // section below they are never torn down by a refresh — only the menu's
+    // own children are rebuilt here. `details.open` is left untouched: a
+    // reader with the menu open mid-read keeps it open across the next
+    // auto-refresh tick, the same as an expanded cycle row does.
+    var details = document.getElementById("toc");
+    var menu = document.getElementById("tocmenu");
+    if (!details || !menu) return;
+    details.hidden = !entries.length;
+    menu.innerHTML = "";
+    entries.forEach(function (entry) {
+      menu.appendChild(el("a", {href: "#" + entry.id, text: entry.label}));
     });
   }
 
