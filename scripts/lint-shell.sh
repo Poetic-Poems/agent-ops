@@ -79,6 +79,14 @@
 # at. The SC1091 suppression above is the one exception, and it is confined to
 # files the guard has already announced.
 #
+# THE DEFAULT `set` CONVENTION: a new script starts `set -uo pipefail`, matching
+# the majority of this repository's scripts. `-e` is an opt-in, not a default —
+# reach for it only when a script's author has a specific reason, and comment
+# why at the point it's set. `-e`'s hazard is documented once, in
+# docs/IMPLEMENTATION-PIPELINE-SPEC.md's Gotchas table ("A helper returns
+# non-zero for a legitimately empty result, and the script runs under `set
+# -e`"); this comment does not repeat it.
+#
 # Arguments are passed through to shellcheck (e.g. `-f gcc`, `--severity=error`).
 
 set -uo pipefail
