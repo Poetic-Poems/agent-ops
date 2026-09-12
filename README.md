@@ -851,6 +851,9 @@ artefact: `/app` inside it *is* agent-ops, so a node updates by pulling a new
 image rather than by pulling a branch. The full runbook — bring-up, operations,
 the failover drill, troubleshooting — is **[deploy/docker/README.md](deploy/docker/README.md)**.
 
+Before deploying to a new installation, see **[docs/DATA-HANDLING.md](docs/DATA-HANDLING.md)** to
+understand what data the pipeline reads, stores, and retains.
+
 The **host install** further below is the laptop's old path, in which the
 scripts ran straight out of a checkout under the user crontab and a SysV init
 script. That cut-over is done — the laptop now runs as a container node like

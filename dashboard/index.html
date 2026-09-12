@@ -933,10 +933,9 @@
         selected: w.key === effective ? "" : null,
         disabled: disabled ? "" : null});
     }));
-    return el("div", {class: "costwindow-bar"}, [
-      el("label", {class: "muted", text: "Time frame (model & actor charts): "}),
-      select
-    ]);
+    return el("div", {class: "costwindow-bar"},
+      el("label", {class: "muted"}, ["Time frame (model & actor charts): ", select])
+    );
   }
 
   // ---------- fleet helpers ----------
