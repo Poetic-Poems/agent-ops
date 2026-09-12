@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **CI now enforces the tech-debt record-file flip a closing pull request
+  owes** (issue #1363). `scripts/check-closing-keyword.sh` takes a repo slug
+  and the pull request's own number as two further, optional arguments;
+  given both, for every issue its existing marker/closing-keyword resolution
+  yields, it reads that issue and — where the issue is
+  `pw::type:tech-debt`-labelled and its body's last non-blank line names a
+  permanent register file (the "Filed as `tech-debt/<id>.md`, <date>." phrase
+  left by #1039's migration or an earlier direct filing) — requires this pull
+  request's own changed-files listing to add a `status: resolved` line for
+  that file, failing and naming both the issue and the file when it does
+  not. Until now the rule lived only in prose (`CLAUDE.md`, `TECH-DEBT.md`
+  "Resolution and history", `prompts/implementer.md`, `prompts/reviewer.md`)
+  plus `lib/work-gone.sh`'s after-the-fact runtime signal: PR #1355's first
+  round closed its issue and left `tech-debt/TD-PPagop-26082412.md` at
+  `status: open`, wrong on `main` until a later round caught it by hand.
+  `.github/workflows/closing-keyword.yml` passes the two new arguments and
+  carries `issues: read`/`pull-requests: read` for them; a `gh` call that
+  cannot be made at all warns rather than failing the check, since the
+  marker/keyword half never depended on the network.
+  `lib/closing-keyword-gate.sh` passes neither argument, so `poetic` and
+  `poetic-fiddle` — which carry no `tech-debt/` register of their own — keep
+  the marker/keyword behaviour unchanged.
+
 - **A per-owner installation map for the forge authoring App**
   (`PULLWRIGHT_AUTHOR_INSTALLATION_IDS`), the shape agent-ops#913/#921 already
   gave the Pullwright Approver. A GitHub App installation is per account, and

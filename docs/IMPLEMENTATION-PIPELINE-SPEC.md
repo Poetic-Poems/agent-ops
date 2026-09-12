@@ -10732,17 +10732,18 @@ implements.
     tech-debt record-file flip requirement 25 asks for.** Where the closing
     keyword's own issue is `pw::type:tech-debt`-labelled and its body's last
     non-blank line names a permanent register file (a "Filed as
-    `tech-debt/<id>.md`, `<date>`." line — `scripts/migrate-tech-debt-
+    `tech-debt/<id>.md`, <date>." line — `scripts/migrate-tech-debt-
     register.sh` or an earlier direct filing), `check-closing-keyword.sh`
     also reads this pull request's own changed-files listing (`gh api
     …/pulls/<n>/files`) and fails, naming the issue and the file, unless its
     diff adds a `status: resolved` line for it. PR #1355's first round is
     the concrete miss this closes: the issue closed, the file left at
     `status: open` on `main` until a later round caught it by hand — nothing
-    before this checked the flip mechanically, only the three prompts
+    before this checked the flip mechanically, only the prose
     (`CLAUDE.md`, `TECH-DEBT.md`, `prompts/implementer.md`,
-    `prompts/reviewer.md`) agreeing. A `gh` call that fails outright (the
-    token, a transient outage) warns rather than failing the check, the same
+    `prompts/reviewer.md`) agreeing. Either `gh` call that fails outright
+    (the token, a transient outage) warns rather than failing the check —
+    the issue read and the changed-files read alike — the same
     "could not ask" reasoning as `unknown` below, applied inline rather than
     as a separate verdict, since the marker/keyword half never depended on
     the network and this half must not fail a pull request over GitHub's own
@@ -19833,17 +19834,21 @@ What exists, and the requirements each part answers to:
     above yields, it fetches that issue (`gh issue view … --json
     body,labels`) and, where it is `pw::type:tech-debt`-labelled and its
     body's last non-blank line reads "Filed as `tech-debt/<id>.md`,
-    `<date>`." (left by `scripts/migrate-tech-debt-register.sh` or an
+    <date>." (left by `scripts/migrate-tech-debt-register.sh` or an
     earlier direct filing), reads this pull request's own changed-files
     listing (`gh api repos/<slug>/pulls/<n>/files`) and exits non-zero,
     naming the issue and the record file, unless that file's diff adds a
     `status: resolved` line. This is the CI-side check for the miss PR
     #1355's first round made by hand — issue closed, `tech-debt/TD-PPagop-
-    26082412.md` left at `status: open` until a later round. A `gh` call
-    that fails outright (the token, a transient outage) warns rather than
-    failing the check: the marker/keyword half above never depended on the
-    network, and this half must not fail a pull request over GitHub's own
-    availability. The workflow passes `github.repository` and
+    26082412.md` left at `status: open` until a later round. Either `gh`
+    call that fails outright (the token, a transient outage) warns rather
+    than failing the check, the issue read and the changed-files read alike:
+    the marker/keyword half above never depended on the network, and this
+    half must not fail a pull request over GitHub's own availability — a
+    changed-files listing that could not be fetched is indistinguishable
+    from an empty one, so the failed call is read as "could not ask" rather
+    than as a pull request that touched nothing. The workflow passes
+    `github.repository` and
     `github.event.pull_request.number` alongside the body and head branch,
     and carries `issues: read` and `pull-requests: read` (`GH_TOKEN:
     ${{ github.token }}` for `gh` itself) besides the `contents: read` the
@@ -23478,9 +23483,12 @@ oblige anyone to edit a test.
    but not `pw::type:tech-debt`-labelled, passes exactly as without the two
    extra arguments; a "Filed as"-line issue whose named record file's diff
    adds `status: resolved` passes; the same issue whose diff never touches
-   that file, or touches it without adding that line, fails naming the file
-   and the issue; and a failed `gh issue view` call (an unreadable issue, a
-   token without access) never fails the check itself. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   that file fails naming that, and one whose diff touches it without adding
+   that line fails naming *that* — each asserted on its own message, never on
+   the record path both carry; and neither a failed `gh issue view` nor a
+   failed changed-files read (an unreadable issue, a token without access, a
+   transient outage) ever fails the check itself.
+   `test/sweep-closed-issues.test.sh` passes against a stubbed
    `gh`: a merged, marker-carrying pull request whose issue is still open is
    closed with the merge cited as evidence; a merged, markerless pull
    request whose head branch is `agent/<N>` closes issue `N` the same way,

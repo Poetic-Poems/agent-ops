@@ -139,9 +139,17 @@ if [[ -n "$repo_slug" && -n "$pr_number" ]]; then
     [[ "$last_line" =~ ^Filed\ as\ \`(tech-debt/[^\`]+\.md)\`,\  ]] || continue
     record_path="${BASH_REMATCH[1]}"
 
-    files_json="$("$GH" api "repos/$repo_slug/pulls/$pr_number/files" --paginate --slurp 2>/dev/null \
-      | jq -c 'add // []' 2>/dev/null)"
-    [[ -n "$files_json" ]] || files_json='[]'
+    # The call's own exit status has to be read separately from the `jq` that
+    # shapes its output: an empty changed-files listing and a `gh` that never
+    # answered look identical downstream, and treating the second as the first
+    # is precisely the "fail a PR over GitHub's availability" this half is
+    # written not to do — with the worst possible message, telling the author
+    # their diff does not touch a file it may well touch.
+    if ! files_raw="$("$GH" api "repos/$repo_slug/pulls/$pr_number/files" --paginate --slurp 2>/dev/null)" \
+      || ! files_json="$(jq -c 'add // []' <<<"$files_raw" 2>/dev/null)"; then
+      echo "::warning::could not read this pull request's changed files to check ${record_path} — skipping the record-flip check for issue #${item}" >&2
+      continue
+    fi
     patch="$(jq -r --arg p "$record_path" \
       'map(select(.filename == $p)) | (.[0].patch // "")' <<<"$files_json" 2>/dev/null)"
 
