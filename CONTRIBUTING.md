@@ -22,6 +22,8 @@ a short human-facing pointer into it, not a replacement for it.
   never left only in a commit message or chat — see `TECH-DEBT.md` for the
   filing and resolution workflow.
 
-For everything else — branch conventions, generated regions, the
-merge-queue and long-running-command rules the autonomous fleet operates
-under — see `CLAUDE.md`.
+For everything else — branch conventions and generated regions — see
+`CLAUDE.md`; the merge-queue behaviour the autonomous fleet operates under
+is in `README.md`'s "Merge autonomy" section, and its long-running-command
+rules are in the pipeline specs under `docs/` and the stage prompts under
+`prompts/`.
