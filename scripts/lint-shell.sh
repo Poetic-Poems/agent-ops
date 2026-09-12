@@ -87,10 +87,23 @@
 # non-zero for a legitimately empty result, and the script runs under `set
 # -e`"); this comment does not repeat it.
 #
-# Arguments are passed through to shellcheck (e.g. `-f gcc`, `--severity=error`).
+# Arguments are passed through to shellcheck (e.g. `-f gcc`, `--severity=error`)
+# — except any argument that names a file that actually exists, which selects
+# that file to lint instead of the full sweep. Given one or more of those, the
+# git ls-files discovery below is skipped entirely and only the named files
+# are checked — through the same one-process-per-file loop, so the size guard
+# and the confined SC1091/SC2154/SC2034 handling apply to them exactly as they
+# do to the sweep. An argument that looks like a file but does not exist is
+# not a selector: it falls through and is forwarded to shellcheck as an
+# option, same as always, so this never grows new error handling for a typo'd
+# path. Argless stays the full sweep, unchanged.
 
 set -uo pipefail
 
+# Captured before the cd below, so a relative file-selector argument (the
+# common case: run from the repo root, name a path from there) resolves
+# against where the caller actually stood rather than against repo_root.
+invocation_dir="$PWD"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
 
@@ -258,15 +271,43 @@ analysed_lines() {  # <file>
   printf '%s\n' "$total"
 }
 
-files=()
-while IFS= read -r -d '' f; do
-  [[ -f "$f" ]] || continue          # a deleted-but-staged path lists too
-  if [[ "$f" == *.sh ]]; then
-    files+=( "$f" )
-  elif head -n1 -- "$f" 2>/dev/null | grep -qE '^#!.*[ /](ba)?sh( |$)'; then
-    files+=( "$f" )
+# Split the arguments into file selectors (paths that actually exist) and
+# everything else, which stays destined for shellcheck as an option (see this
+# file's own header). Tried first as-is against repo_root, which this script
+# has already cd-ed into — the common case, invoked from the repo root with a
+# repo-root-relative path, needs no rewriting and keeps that path exactly as
+# given rather than expanded to an absolute one. Only a path that doesn't
+# resolve there falls back to invocation_dir, for a caller standing somewhere
+# else and naming a path relative to itself.
+selected=()
+opts=()
+for a in "$@"; do
+  if [[ -f "$a" ]]; then
+    selected+=( "$a" )
+  else
+    candidate="$a"
+    [[ "$candidate" == /* ]] || candidate="$invocation_dir/$candidate"
+    if [[ -f "$candidate" ]]; then
+      selected+=( "$candidate" )
+    else
+      opts+=( "$a" )
+    fi
   fi
-done < <(git ls-files -z)
+done
+
+files=()
+if (( ${#selected[@]} > 0 )); then
+  files=( "${selected[@]}" )
+else
+  while IFS= read -r -d '' f; do
+    [[ -f "$f" ]] || continue          # a deleted-but-staged path lists too
+    if [[ "$f" == *.sh ]]; then
+      files+=( "$f" )
+    elif head -n1 -- "$f" 2>/dev/null | grep -qE '^#!.*[ /](ba)?sh( |$)'; then
+      files+=( "$f" )
+    fi
+  done < <(git ls-files -z)
+fi
 
 if (( ${#files[@]} == 0 )); then
   echo "lint-shell: found no shell scripts to check — that cannot be right." >&2
@@ -292,7 +333,7 @@ for f in "${files[@]}"; do
   if (( FOLLOW_MIB == 0 )); then
     # The CI escape hatch (see FOLLOW_MIB's own header): every file follows,
     # whatever the estimate below would have said.
-    shellcheck -x "$@" -- "$f" || rc=1
+    shellcheck -x "${opts[@]}" -- "$f" || rc=1
     continue
   fi
 
@@ -303,7 +344,7 @@ for f in "${files[@]}"; do
   # starved enough (a parented container, agent-ops#1305) can be below even
   # that.
   if (( follow_cost_mib["$f"] <= budget )); then
-    shellcheck -x "$@" -- "$f" || rc=1
+    shellcheck -x "${opts[@]}" -- "$f" || rc=1
   elif (( budget >= PLAIN_MIB )); then
     degraded+=( "$f" )
     # SC2154/SC2034 alongside SC1091: all three are artefacts of not following
@@ -313,7 +354,7 @@ for f in "${files[@]}"; do
     # 25 of them in agent-cycle.sh, against nothing wrong with any of them.
     # They are checked in full wherever there is room to follow, which is why
     # this is a deferral and not a hole.
-    shellcheck -e SC1091,SC2154,SC2034 "$@" -- "$f" || rc=1
+    shellcheck -e SC1091,SC2154,SC2034 "${opts[@]}" -- "$f" || rc=1
   else
     skipped+=( "$f" )
   fi

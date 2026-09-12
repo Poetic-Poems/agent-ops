@@ -111,8 +111,12 @@ export PATH="$bin_dir:$PATH"
 # (degraded/skip) — the same "move the thresholds, not the machine" trick the
 # old LARGE_LINES-based guard used, now aimed at the cost curve instead of a
 # single line-count gate.
+# Any arguments beyond TIER are passed straight through to lint-shell.sh
+# itself, so the same tier-forcing also exercises the file-selector argument
+# handling below.
 run_lint() {
   local tier="$1" big_mib plain
+  shift
   case "$tier" in
     follow)   big_mib=1 ;         plain=1 ;;
     degraded) big_mib=99999999 ;  plain=1 ;;
@@ -123,7 +127,7 @@ run_lint() {
                   LINT_SHELL_COST_P2_LINES=41  LINT_SHELL_COST_P2_MIB="$big_mib" \
                   LINT_SHELL_COST_P3_LINES=1000 LINT_SHELL_COST_P3_MIB="$big_mib" \
                   LINT_SHELL_PLAIN_MIB="$plain" \
-                  ./scripts/lint-shell.sh 2>&1 )
+                  ./scripts/lint-shell.sh "$@" 2>&1 )
 }
 
 # --- One process per file, not one for the lot -----------------------------
@@ -237,6 +241,44 @@ assert_contains "…linted WITHOUT -x, since even that ceiling cannot afford to 
 assert_not_contains "…and is not run with -x" "-x -- midsize.sh" "$(cat "$invocations")"
 assert_contains "…and the warning names the parent cgroup as what actually bound the budget" \
   "the parent cgroup's memory.high" "$out"
+
+# --- File-selector arguments: lint a named subset instead of the sweep -------
+# $repo now tracks small.sh, big.sh, hook-like, wide-entry.sh and lone-entry.sh
+# (findme.sh was dropped earlier). Every case below runs from inside $repo, so
+# a selector is a plain relative path — the common case this exists for.
+: > "$invocations"
+out="$(run_lint follow small.sh big.sh)"
+assert_eq "naming existing files selects only them, not the full sweep" \
+  "2" "$(wc -l < "$invocations" | tr -d ' ')"
+assert_contains "the first named file is linted" "-x -- small.sh" "$(cat "$invocations")"
+assert_contains "the second named file is linted" "-x -- big.sh" "$(cat "$invocations")"
+assert_not_contains "an unnamed tracked file is left out" "hook-like" "$(cat "$invocations")"
+
+: > "$invocations"
+out="$(run_lint follow -e SC2059 small.sh)"
+assert_contains "a non-file argument alongside a selector is still forwarded to shellcheck as an option" \
+  "-x -e SC2059 -- small.sh" "$(cat "$invocations")"
+
+: > "$invocations"
+out="$(run_lint follow -e SC2059)"
+assert_eq "no argument names an existing file, so the sweep still runs, unchanged" \
+  "5" "$(wc -l < "$invocations" | tr -d ' ')"
+assert_contains "…and the option is still forwarded for every swept file" \
+  "-x -e SC2059 -- small.sh" "$(cat "$invocations")"
+
+: > "$invocations"
+out="$(run_lint follow does-not-exist.sh)"
+assert_eq "an argument naming a file that doesn't exist selects nothing — the sweep still runs" \
+  "5" "$(wc -l < "$invocations" | tr -d ' ')"
+assert_contains "…and it is forwarded to shellcheck as an ordinary argument instead, exactly as before" \
+  "does-not-exist.sh" "$(cat "$invocations")"
+
+out="$(run_lint degraded big.sh)"
+assert_contains "the size guard still applies to an explicitly selected file" \
+  "-e SC1091,SC2154,SC2034 -- big.sh" "$(cat "$invocations")"
+assert_contains "…degradation is announced the same way as during a sweep" \
+  "was linted WITHOUT -x" "$out"
+assert_eq "…and only the selected file is processed" "1" "$(wc -l < "$invocations" | tr -d ' ')"
 
 printf '\n%s\n' "-----"
 if (( failures == 0 )); then

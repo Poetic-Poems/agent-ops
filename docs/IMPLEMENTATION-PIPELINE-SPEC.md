@@ -21191,11 +21191,20 @@ oblige anyone to edit a test.
    `set -euo pipefail` — the exact context every `cfg` read in `agent-cycle.sh`
    and `review-cycle.sh` uses — aborts the script rather than silently
    continuing with the qualified string.
-1g. **Every shell script in the repository is shellcheck-clean.**
-   `./scripts/lint-shell.sh` exits 0. It discovers the file set — every tracked
-   `*.sh`, plus every tracked file whose first line is a sh or bash shebang, so
-   the init scripts and git hooks are included and a script added tomorrow is
-   covered without anyone adding it to a list — and checks them **one process
+1g. **Every shell script in the repository is shellcheck-clean, and a caller
+   may lint a named subset instead of the whole tree.** `./scripts/lint-shell.sh`
+   exits 0. Invoked with no arguments, it discovers the file set — every
+   tracked `*.sh`, plus every tracked file whose first line is a sh or bash
+   shebang, so the init scripts and git hooks are included and a script added
+   tomorrow is covered without anyone adding it to a list. Invoked with one or
+   more arguments that each name a file that actually exists, it lints only
+   those files instead, through the same mechanism, so the size guard
+   (requirement 1g-i) and the confined SC1091/SC2154/SC2034 handling apply to
+   a selected file exactly as to a swept one; an argument that does not name
+   an existing file is not a selector and is forwarded to shellcheck as an
+   option instead, same as every argument is when no selector is present —
+   there is no separate flag for this, and no new validation for a typo'd
+   path. Either way the files are checked **one process
    per file** with `-x`, which is what lets `source` resolve between the
    pipelines and `lib/` instead of raising SC1091 on each of them. `-x` follows
    a `source` by path whether or not the target was also passed in, so the file

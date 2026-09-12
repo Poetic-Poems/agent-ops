@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`scripts/lint-shell.sh` can lint a named subset of files instead of
+  always sweeping the whole repository** (issue #1448). One or more
+  arguments that each name a file which actually exists now select those
+  files to check instead — through the same one-process-per-file loop, so
+  the size guard and the confined SC1091/SC2154/SC2034 handling still apply
+  to a selected file exactly as to a swept one.
+  Argless invocation is unchanged (the full sweep), and any argument that
+  does not name an existing file is still forwarded to shellcheck as an
+  option, exactly as before. PR #1447's Implementer had no way to lint only
+  the files it touched, and substituted a raw `shellcheck -x` — silently
+  losing the size guard and the confined SC1091 handling — when the full
+  sweep OOM-killed in a memory-constrained container.
+
 - **CI now enforces the tech-debt record-file flip a closing pull request
   owes** (issue #1363). `scripts/check-closing-keyword.sh` takes a repo slug
   and the pull request's own number as two further, optional arguments;
