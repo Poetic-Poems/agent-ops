@@ -88,8 +88,20 @@ assert_eq "disabled-fleet maps to down" \
   "down	disabled-fleet" "$(node_time_state_for_cause disabled-fleet)"
 assert_eq "usage-limit maps to externally-blocked" \
   "externally-blocked	usage-limit" "$(node_time_state_for_cause usage-limit)"
+assert_eq "github-budget maps to externally-blocked" \
+  "externally-blocked	github-budget" "$(node_time_state_for_cause github-budget)"
 assert_eq "unreachable maps to externally-blocked" \
   "externally-blocked	unreachable" "$(node_time_state_for_cause unreachable)"
+assert_eq "unauthorized maps to externally-blocked" \
+  "externally-blocked	unauthorized" "$(node_time_state_for_cause unauthorized)"
+assert_eq "disk-low maps to externally-blocked" \
+  "externally-blocked	disk-low" "$(node_time_state_for_cause disk-low)"
+assert_eq "disk-full maps to externally-blocked" \
+  "externally-blocked	disk-full" "$(node_time_state_for_cause disk-full)"
+assert_eq "memory-low maps to externally-blocked" \
+  "externally-blocked	memory-low" "$(node_time_state_for_cause memory-low)"
+assert_eq "host-overcommit maps to externally-blocked" \
+  "externally-blocked	host-overcommit" "$(node_time_state_for_cause host-overcommit)"
 assert_eq "back-pressure maps to idle-with-demand" \
   "idle-with-demand	back-pressure" "$(node_time_state_for_cause back-pressure)"
 assert_eq "raced translates to idle-with-demand/peer-claimed (never renamed on its own event)" \
