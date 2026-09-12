@@ -6,6 +6,23 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+usage() {
+  cat <<'EOF'
+usage: open-dashboard.sh [--no-github]
+
+Regenerate the dashboard and open it in your browser.
+
+  --no-github   Skip the (slower) live GitHub fetch.
+
+Every other argument is passed straight through to
+scripts/publish-dashboard.sh.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
 "$SCRIPT_DIR/scripts/publish-dashboard.sh" "$@" || true
 
 expand_home() { local p="$1"; [[ "$p" == "~"* ]] && p="$HOME${p:1}"; printf '%s\n' "$p"; }

@@ -106,11 +106,29 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/report-directory.sh"
 
 # --- Flags ---
+usage() {
+  cat <<'EOF'
+usage: review-cycle.sh [--dry-run] [--once] [--repo <slug>]
+
+Run one repository-review cycle across the configured target repositories.
+Full specification: docs/REVIEW-PIPELINE-SPEC.md.
+
+  --dry-run      Select the repos due for review and print the work list;
+                 clone, stage and run nothing.
+  --once         One verbose run in the foreground.
+  --repo <slug>  Restrict selection to one configured review repo (testing).
+
+The stand-down switch (--disable/--drain/--enable/--status) is shared with
+agent-cycle.sh and managed there, not here.
+EOF
+}
+
 DRY_RUN=0
 ONCE=0
 REPO_FILTER=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --once) ONCE=1; shift ;;
     --repo) REPO_FILTER="${2:-}"; shift 2 ;;

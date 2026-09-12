@@ -16,6 +16,29 @@
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+usage: serve-dashboard.sh [port] [bind-address]
+
+Optional loopback-only web server for the dashboard. Use this only if your
+browser refuses to load data.js over a file:// URL; otherwise
+scripts/open-dashboard.sh (file://) needs no server at all.
+
+  port           TCP port to serve on (default 8787).
+  bind-address   Address to bind (default 127.0.0.1). A server bound to a
+                 container's own loopback is reachable from nothing, which
+                 is why deploy/docker/compose.yaml's `local` profile passes
+                 0.0.0.0 here and publishes the port on the host's loopback
+                 alone instead. Widening the bind on a host is a different
+                 thing entirely, and is never what this flag is for.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
 port="${1:-8787}"
 bind="${2:-127.0.0.1}"
 
