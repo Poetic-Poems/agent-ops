@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`docs/DATA-HANDLING.md`** (issue #975): a data-handling inventory stating
+  what the pipeline reads (public GitHub usernames, issue/PR/comment/review
+  text, repository metadata), what it stores and where (cycle logs and
+  dashboard data under `state_dir` and its replicated mirror), and the
+  retention keys that bound it (`cycles_retained`,
+  `state_local_cycles_retained`, `log_retained_bytes`) — ahead of onboarding
+  any non-Poetic-Poems installation. Linked from README.md's Installation
+  section.
+
+### Fixed
+
+- **The dashboard's cost-window `<select>` is now programmatically
+  associated with its label** (issue #975). `costWindowControl()` built the
+  `<label>` as a plain sibling of the `<select class="costwindow">`, with no
+  `for`/`id` pair — unlike the auto-refresh checkbox elsewhere in the same
+  file, correctly nested. The select is now wrapped inside the label, the
+  same shape the checkbox already uses; same text, same classes, same
+  `onchange` handler.
+
+### Added
+
 - **CI now enforces the tech-debt record-file flip a closing pull request
   owes** (issue #1363). `scripts/check-closing-keyword.sh` takes a repo slug
   and the pull request's own number as two further, optional arguments;
