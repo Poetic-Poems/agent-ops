@@ -611,12 +611,14 @@ assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 
 # --- handoff_latest_positions: the shared standing-position-per-reviewer -------
 # definition (issue #1373, requirement 34a). Direct, fixture-based coverage of
-# the function itself, keyed both ways its three callers use it: `login`
+# the function itself, keyed both ways its four callers use it: `login`
 # (this file's own `_handoff_latest_reviews`, below) and `who`
-# (`scripts/gather-review-feedback.sh` and `lib/preflight.sh`'s
-# `preflight_review_feedback_reason`, covered against their own fixtures in
-# test/review-feedback.test.sh and test/preflight.test.sh respectively). No
-# stub needed — this is a pure jq wrapper over its two arguments.
+# (`scripts/gather-review-feedback.sh`, `lib/preflight.sh`'s
+# `preflight_review_feedback_reason`, and `scripts/sweep-human-visibility.sh`'s
+# `_sweep_round_answered`, covered against their own fixtures in
+# test/review-feedback.test.sh, test/preflight.test.sh and
+# test/sweep-human-visibility.test.sh respectively). No stub needed — this is
+# a pure jq wrapper over its two arguments.
 out="$(handoff_latest_positions '[
   {"login": "a", "state": "CHANGES_REQUESTED", "at": "2026-08-03T10:01:00Z"},
   {"login": "a", "state": "APPROVED", "at": "2026-08-03T10:02:00Z"}

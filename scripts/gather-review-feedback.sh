@@ -288,7 +288,7 @@ while IFS= read -r pr; do
   # standing position, so it is filtered out *before* picking each
   # reviewer's latest, not after — a reviewer who requested changes and then
   # merely commented is still blocking.
-  latest_per_reviewer="$(handoff_latest_positions "$reviews" "who")"
+  latest_per_reviewer="$(handoff_latest_positions "$reviews" "who")" || continue
   blocking="$(jq -c '
     (map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
   ' <<<"$latest_per_reviewer")"

@@ -489,10 +489,12 @@ _handoff_pr_query() {
 # Fails — printing nothing, jq's own non-zero status, jq's own diagnostics
 # suppressed — on anything jq cannot iterate: malformed JSON, `null`, a
 # scalar. That is the contract the call sites are written against, every one
-# of them guarding the call with `|| return` and treating the failure as "the
-# reviews list could not be read" rather than as "nothing blocks this pull
-# request"; do not soften it into an empty-array default, which would turn an
-# unreadable list into a confident negative. An *empty* REVIEWS_JSON is the
+# of them guarding the call — `|| return` in three of them,
+# `scripts/gather-review-feedback.sh`'s own `|| continue` in its per-PR loop —
+# and treating the failure as "the reviews list could not be read" rather than
+# as "nothing blocks this pull request"; do not soften it into an empty-array
+# default, which would turn an unreadable list into a confident negative. An
+# *empty* REVIEWS_JSON is the
 # one input that neither succeeds usefully nor fails: jq runs the filter zero
 # times, so the function prints nothing and exits 0. No live caller can reach
 # it — each validates its input as a JSON array first — and REVIEWS_JSON
