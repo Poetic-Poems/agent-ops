@@ -19860,11 +19860,14 @@ What exists, and the requirements each part answers to:
     human's PR, or an interactive agent's, that closes a tech-debt issue with
     a plain `Fixes #N` and nothing else this script's marker/branch
     resolution would otherwise notice), it fetches that issue (`gh issue
-    view … --json body,labels`) and, where it is `pw::type:tech-debt`-labelled
-    and its
-    body's last non-blank line reads "Filed as `tech-debt/<id>.md`,
+    view … --json body,labels`). A number is harvested from a keyword only
+    under the same word-of-its-own rule the marker half applies, so
+    "discloses #N" and "unfixed #N" drag nothing into this loop either — a
+    lookalike that closes no issue must not demand a record flip of a pull
+    request that closes none. Where the issue is `pw::type:tech-debt`-labelled
+    and its body's last non-blank line reads "Filed as `tech-debt/<id>.md`,
     <date>." (left by `scripts/migrate-tech-debt-register.sh` or an
-    earlier direct filing), reads this pull request's own changed-files
+    earlier direct filing), it reads this pull request's own changed-files
     listing (`gh api repos/<slug>/pulls/<n>/files`) and exits non-zero,
     naming the issue and the record file, unless that file's diff adds a
     `status: resolved` line. This is the CI-side check for the miss PR

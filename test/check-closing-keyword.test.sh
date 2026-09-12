@@ -327,6 +327,15 @@ cp "$tmp_dir/flipped/files.json" "$tmp_dir/bare-flipped/files.json"
 assert_pass_tdr "a markerless Fixes #N with a correctly flipped record passes" \
   "$body_240_bare" "fix/some-branch" "acme/widgets" "9" "bare-flipped"
 
+# The same word-of-its-own guard the marker/keyword half carries: "discloses"
+# and "unfixed" contain a keyword and close nothing, to GitHub's own parser as
+# to this script, so neither may drag #240 into the record-flip loop. The
+# fixtures deliberately hold an *unflipped* record — the only way this passes
+# is by never checking #240 at all.
+assert_pass_tdr "a keyword lookalike (discloses/unfixed) demands no record flip" \
+  "This discloses #240, and an unfixed #240 note." \
+  "fix/some-branch" "acme/widgets" "9" "bare-unflipped"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

@@ -132,7 +132,15 @@ if [[ -n "$repo_slug" && -n "$pr_number" ]]; then
   # script's marker/branch resolution would otherwise notice. The
   # marker-requires-keyword loop above is unrelated and stays anchored to
   # `items` alone.
-  mapfile -t keyword_items < <(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#[0-9]+' <<<"$body" \
+  #
+  # Same word-of-its-own guard the per-item check above carries, and for the
+  # same reason: "discloses #240" and "unfixed #240" contain a keyword and
+  # close nothing, to GitHub's own parser as to this script — so harvesting a
+  # number out of one would demand a record flip from a pull request that
+  # closes no such issue, failing a required check over a word in prose. The
+  # leading boundary character the match carries is never a digit, so the
+  # number extraction below is unaffected by it.
+  mapfile -t keyword_items < <(grep -oiE '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#[0-9]+' <<<"$body" \
     | grep -oE '[0-9]+')
   mapfile -t unique_items < <(printf '%s\n' "${items[@]}" "${keyword_items[@]}" | grep -v '^$' | sort -un)
   for item in "${unique_items[@]:-}"; do
