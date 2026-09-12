@@ -10741,10 +10741,16 @@ implements.
     setting is verified, it being the one piece of requirement 25a no file
     in this repository carries.
 
-    **A second, independent gap the same check closes (issue #1363): the
-    tech-debt record-file flip requirement 25 asks for.** Where the closing
-    keyword's own issue is `pw::type:tech-debt`-labelled and its body's last
-    non-blank line names a permanent register file (a "Filed as
+    **A second, independent gap the same check closes (issue #1363, extended
+    by #1438): the tech-debt record-file flip requirement 25 asks for.**
+    This half checks every issue number the closing keyword covers — the
+    marker- and branch-anchored ones above, **and any issue number the PR
+    body cites via a bare closing keyword with no marker and no `agent/<N>`
+    head branch at all** (issue #1438: a human's PR, or an interactive
+    agent's, that closes a `pw::type:tech-debt` issue with a plain
+    `Fixes #N` and nothing else the marker/branch anchors above would have
+    caught). Where such an issue is `pw::type:tech-debt`-labelled and its
+    body's last non-blank line names a permanent register file (a "Filed as
     `tech-debt/<id>.md`, <date>." line — `scripts/migrate-tech-debt-
     register.sh` or an earlier direct filing), `check-closing-keyword.sh`
     also reads this pull request's own changed-files listing (`gh api
@@ -19849,8 +19855,13 @@ What exists, and the requirements each part answers to:
     predates issue #1363 — gets exactly the behaviour above and nothing
     more), the same script also enforces requirement 25's tech-debt
     record-file flip: for each issue number the marker/keyword resolution
-    above yields, it fetches that issue (`gh issue view … --json
-    body,labels`) and, where it is `pw::type:tech-debt`-labelled and its
+    above yields, **or that the PR body cites via a bare closing keyword
+    alone with no marker and no `agent/<N>` head branch** (issue #1438 — a
+    human's PR, or an interactive agent's, that closes a tech-debt issue with
+    a plain `Fixes #N` and nothing else this script's marker/branch
+    resolution would otherwise notice), it fetches that issue (`gh issue
+    view … --json body,labels`) and, where it is `pw::type:tech-debt`-labelled
+    and its
     body's last non-blank line reads "Filed as `tech-debt/<id>.md`,
     <date>." (left by `scripts/migrate-tech-debt-register.sh` or an
     earlier direct filing), reads this pull request's own changed-files
