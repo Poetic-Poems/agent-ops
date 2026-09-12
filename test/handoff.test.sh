@@ -609,6 +609,40 @@ assert_eq "  ... and neither reached the API" "0" "$(posts)"
 ) >/dev/null 2>&1
 assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 
+# --- handoff_latest_positions: the shared standing-position-per-reviewer -------
+# definition (issue #1373, requirement 34a). Direct, fixture-based coverage of
+# the function itself, keyed both ways its four callers use it: `login`
+# (this file's own `_handoff_latest_reviews`, below) and `who`
+# (`scripts/gather-review-feedback.sh`, `lib/preflight.sh`'s
+# `preflight_review_feedback_reason`, and `scripts/sweep-human-visibility.sh`'s
+# `_sweep_round_answered`, covered against their own fixtures in
+# test/review-feedback.test.sh, test/preflight.test.sh and
+# test/sweep-human-visibility.test.sh respectively). No stub needed — this is
+# a pure jq wrapper over its two arguments.
+out="$(handoff_latest_positions '[
+  {"login": "a", "state": "CHANGES_REQUESTED", "at": "2026-08-03T10:01:00Z"},
+  {"login": "a", "state": "APPROVED", "at": "2026-08-03T10:02:00Z"}
+]' login)"
+assert_eq "a later APPROVED supersedes an earlier CHANGES_REQUESTED, same key" \
+  '[{"login":"a","state":"APPROVED","at":"2026-08-03T10:02:00Z"}]' "$out"
+
+out="$(handoff_latest_positions '[
+  {"who": "a", "state": "CHANGES_REQUESTED", "at": "2026-08-03T10:01:00Z"},
+  {"who": "b", "state": "CHANGES_REQUESTED", "at": "2026-08-03T10:02:00Z"}
+]' who)"
+assert_eq "two distinct reviewers under the REST shape's own key field both survive" \
+  '[{"who":"a","state":"CHANGES_REQUESTED","at":"2026-08-03T10:01:00Z"},{"who":"b","state":"CHANGES_REQUESTED","at":"2026-08-03T10:02:00Z"}]' \
+  "$out"
+
+out="$(handoff_latest_positions '[
+  {"who": "a", "state": "COMMENTED", "at": "2026-08-03T10:01:00Z"},
+  {"who": "a", "state": "CHANGES_REQUESTED", "at": "2026-08-03T10:00:00Z"}
+]' who)"
+assert_eq "a COMMENTED review never changes a reviewer's standing position" \
+  '[{"who":"a","state":"CHANGES_REQUESTED","at":"2026-08-03T10:00:00Z"}]' "$out"
+
+assert_eq "an empty input decides nothing" "[]" "$(handoff_latest_positions '[]' who)"
+
 # --- _handoff_pr_approved: the APPROVED half of the same computation -----------
 # (agent-ops#391). `reviewDecision` never becomes `APPROVED` on a repository
 # whose branch ruleset requires zero approving reviews — this repository's

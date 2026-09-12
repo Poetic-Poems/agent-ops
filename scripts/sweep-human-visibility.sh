@@ -195,17 +195,22 @@ _sweep_reviews_read_kind() {
 # 38c's self-heal needs (see the header's design note).
 #
 # Computes the blocking review the same "latest CHANGES_REQUESTED per
-# reviewer" way scripts/gather-review-feedback.sh does — the same rule
-# lib/handoff.sh's own `_handoff_blocking_reviewers` applies, duplicated here
-# rather than depended on because that function returns only logins, not the
-# timestamp this needs (the same trade-off lib/review-gate.sh's
-# `_review_gate_pr_parts` documents) — then asks `handoff_round_answered`
+# reviewer" way scripts/gather-review-feedback.sh does, through the same
+# shared definition: `handoff_latest_positions` (lib/handoff.sh), keyed on
+# `who` for this script's own REST review shape and deliberately called
+# without a bot filter, exactly as that script and `preflight_review_feedback_
+# reason` call it (requirement 34a, issue #1373). `_handoff_blocking_
+# reviewers` cannot serve this caller directly — it returns only logins, not
+# the timestamp this needs (the same trade-off lib/review-gate.sh's
+# `_review_gate_pr_parts` documents) — but the rule underneath it is shared
+# rather than copied, because `handoff_latest_positions` keeps every field its
+# input carried, `.at` included. Then asks `handoff_round_answered`
 # (lib/handoff.sh) with REREQUESTS_JSON omitted: this script's own
 # `confirm_review_requested`, once it fires below, would otherwise read back
 # next cycle as the round having answered itself.
 _sweep_round_answered() {
   local slug="$1" number="$2" gh_bin="${SWEEP_GH:-gh}"
-  local reviews issue_comments blocking blocking_at
+  local reviews issue_comments latest_per_reviewer blocking blocking_at
 
   # One JSON object per line, slurped into an array here rather than wrapped
   # inside `--jq`: `--paginate` concatenates a separate document per page, so
@@ -222,11 +227,11 @@ _sweep_round_answered() {
               2>/dev/null)" || { printf 'unknown'; return; }
   reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)" || { printf 'unknown'; return; }
 
+  latest_per_reviewer="$(handoff_latest_positions "$reviews" "who")" \
+    || { printf 'unknown'; return; }
   blocking="$(jq -c '
-    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-     | group_by(.who) | map(last)) as $latest_per_reviewer
-    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
-  ' <<<"$reviews" 2>/dev/null)" || { printf 'unknown'; return; }
+    (map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
+  ' <<<"$latest_per_reviewer" 2>/dev/null)" || { printf 'unknown'; return; }
   if [[ "$blocking" == "null" || -z "$blocking" ]]; then
     printf 'unknown'
     return

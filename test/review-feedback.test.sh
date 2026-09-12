@@ -94,13 +94,16 @@ assert_eq "a human's own branch is never ours to push to" \
 
 # --- The turn rule: is the feedback unanswered? ---
 #
-# Mirrors scripts/gather-review-feedback.sh's own jq exactly (kept in step, per
-# the file header): the review currently blocking `reviewDecision` (a
-# reviewer's own latest APPROVED-or-CHANGES_REQUESTED review, filtered to
-# CHANGES_REQUESTED), then "answered" is any marked reply or review-requested
-# event *after* that review's timestamp — never a commit's date, which a
-# force-push can re-stamp without a human, or the agent, having done anything
-# (agent-ops#239; PR #205 silently dropped out of selection this way).
+# `blocking_of` below calls `lib/handoff.sh`'s `handoff_latest_positions`
+# directly — the same shared standing-position-per-reviewer definition
+# scripts/gather-review-feedback.sh calls (requirement 34a, issue #1373) —
+# rather than keeping its own copy of the jq in step by hand: the review
+# currently blocking `reviewDecision` (a reviewer's own latest
+# APPROVED-or-CHANGES_REQUESTED review, filtered to CHANGES_REQUESTED), then
+# "answered" is any marked reply or review-requested event *after* that
+# review's timestamp — never a commit's date, which a force-push can re-stamp
+# without a human, or the agent, having done anything (agent-ops#239; PR #205
+# silently dropped out of selection this way).
 
 marker="$PIPELINE_COMMENT_MARKER_PREFIX"
 
@@ -114,11 +117,10 @@ reviews='[
 ]'
 
 blocking_of() {
-  jq -c '
-    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-     | group_by(.who) | map(last)) as $latest_per_reviewer
-    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
-  ' <<<"$1"
+  local latest_per_reviewer
+  latest_per_reviewer="$(handoff_latest_positions "$1" "who")"
+  jq -c '(map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null' \
+    <<<"$latest_per_reviewer"
 }
 # extract_answer_events REVIEWS ISSUE_COMMENTS REREQUESTS
 # The exact extraction scripts/gather-review-feedback.sh runs: a marked review

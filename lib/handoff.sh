@@ -457,6 +457,60 @@ _handoff_pr_query() {
   printf '%s' "$out"
 }
 
+# handoff_latest_positions REVIEWS_JSON KEY
+# Print each reviewer's *standing position* — the last of their own APPROVED
+# or CHANGES_REQUESTED review, a COMMENTED review never changing it — one
+# entry per distinct value of the field named KEY, keeping every field the
+# matching review object already carries (not just `state`), so a caller
+# needing `.at`/`.submitted_at`/`.id`/anything else never has to re-derive it.
+#
+# This is the one "standing-position-per-reviewer" computation issue #1373
+# names (requirement 34a): four call sites used to each embed their own copy
+# of `group_by(...) | map(last)`, cross-referenced only by comments — and one
+# of them, `scripts/sweep-human-visibility.sh`'s `_sweep_round_answered`, not
+# even that — with nothing mechanically tying them together. KEY exists
+# because they disagree on the reviewer-identifying field's name — `who` for
+# the REST review shape `scripts/gather-review-feedback.sh`,
+# `_sweep_round_answered` and `lib/preflight.sh`'s
+# `preflight_review_feedback_reason` all read, `login` for `_handoff_pr_
+# query`'s GraphQL shape below — not because the rule itself differs.
+#
+# Bot filtering is deliberately not a parameter here: it is a property of
+# REVIEWS_JSON, applied (or not) by the caller before this ever runs.
+# `_handoff_latest_reviews` below filters bots out first, because a
+# Bot-authored review is not a human's standing position for either of its
+# own callers. The three REST-shaped callers deliberately do not:
+# `reviewDecision` — the selection filter they key off — counts bot reviews,
+# and the marked reply they gather is the only event that can ever answer a
+# bot's own CHANGES_REQUESTED, since the pipeline can neither dismiss a review
+# on its own PR nor re-request a bot. Bot findings are addressed there; bots
+# are just never pinged over them.
+#
+# Fails — printing nothing, jq's own non-zero status, jq's own diagnostics
+# suppressed — on anything jq cannot iterate: malformed JSON, `null`, a
+# scalar. That is the contract the live call sites are written against, every
+# one of them guarding the call and leaving the enclosing work undone rather
+# than finishing it on a guess: `|| return 0` in `lib/preflight.sh`'s
+# `preflight_review_feedback_reason`, `|| return 1` in `_handoff_latest_
+# reviews` below, `|| { printf 'unknown'; return; }` in
+# `scripts/sweep-human-visibility.sh`'s `_sweep_round_answered`, and
+# `|| continue` in `scripts/gather-review-feedback.sh`'s per-PR loop. All four
+# read the failure as "the reviews list could not be read" rather than as
+# "nothing blocks this pull request"; do not soften it into an empty-array
+# default, which would turn an unreadable list into a confident negative. An
+# *empty* REVIEWS_JSON is the one input that neither succeeds usefully nor
+# fails: jq runs the filter zero times, so the function prints nothing and
+# exits 0. No live caller can reach it — each either validates its input as a
+# JSON array first or builds one — and REVIEWS_JSON absent entirely is not a
+# case at all, since every caller runs under `set -u`, where the unset `$2`
+# aborts before jq is reached.
+handoff_latest_positions() {
+  local reviews="$1" key="$2"
+  jq -c --arg key "$key" '
+    [.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+    | group_by(.[$key]) | map(last)' <<<"$reviews" 2>/dev/null
+}
+
 # _handoff_latest_reviews SLUG NUMBER
 # Print a compact JSON array of `{login, state}`, one entry per non-bot
 # reviewer, giving each reviewer's *standing position* — the last of their own
@@ -468,7 +522,9 @@ _handoff_pr_query() {
 # argument. Returns non-zero, printing nothing, when GitHub could not be
 # asked — the same rule as `_handoff_draft_flag`, for the same reason.
 #
-# Bots are excluded. This org runs Copilot code review on every PR, and a
+# Bots are excluded, before `handoff_latest_positions` ever runs (see that
+# function's own comment on why the filter lives at the call site rather than
+# inside it). This org runs Copilot code review on every PR, and a
 # Bot-authored review is not a human's standing position, whichever way a
 # caller reads it: not a reviewer to re-request (a bot can be, exactly like a
 # person, and doing so would spend money and noise on the one reviewer that
@@ -481,12 +537,12 @@ _handoff_pr_query() {
 # set safe to POST verbatim: requesting a review from the author is a 422, and
 # it is unreachable here.
 _handoff_latest_reviews() {
-  local slug="$1" number="$2" out
+  local slug="$1" number="$2" out filtered latest
   out="$(_handoff_pr_query "$slug" "$number" 2>/dev/null)" || return 1
-  jq -c '
-    [.reviews[] | select(.submitted_at != null) | select(.bot | not)
-                | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-    | group_by(.login) | map(last) | map({login, state})' <<<"$out" 2>/dev/null || return 1
+  filtered="$(jq -c '[.reviews[] | select(.submitted_at != null) | select(.bot | not)]' \
+              <<<"$out" 2>/dev/null)" || return 1
+  latest="$(handoff_latest_positions "$filtered" "login")" || return 1
+  jq -c 'map({login, state})' <<<"$latest" 2>/dev/null || return 1
 }
 
 # _handoff_blocking_reviewers SLUG NUMBER
