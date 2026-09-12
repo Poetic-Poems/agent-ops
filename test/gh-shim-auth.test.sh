@@ -208,10 +208,17 @@ assert_eq "a mint failure degrades to PW_GH_DEGRADE_TOKEN" \
 
 # === Nothing configured at all: GH_TOKEN stays empty — the pre-existing
 #     "no credential" case, unchanged and never a crash ======================
+#
+# PW_GH_DEGRADE_TOKEN is named explicitly here, empty, same as GH_TOKEN: a
+# node that runs this suite in its own operational shell — this fleet's own
+# nodes provision PW_GH_DEGRADE_TOKEN ambiently, for real `gh` calls made
+# outside this test — must not let that ambient value leak into "nothing
+# configured", the one case this file asserts resolves to no credential at
+# all (agent-ops#1432).
 
 clear_author_env
 rm -f "$log_dir"/*.log
-run_shim GH_TOKEN= -- pr view 5 >/dev/null
+run_shim GH_TOKEN= PW_GH_DEGRADE_TOKEN= -- pr view 5 >/dev/null
 assert_eq "nothing configured: the call still reaches the real binary, with an empty token" \
   "" "$(last_token)"
 
