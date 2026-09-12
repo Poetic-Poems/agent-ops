@@ -3557,6 +3557,17 @@ implements.
    committed to the state repository's history before this pass existed —
    a one-off cleanup, not a push-time behaviour this requirement covers.
 
+   That one-off cleanup was decided, not left open: content pushed to
+   `agent-ops-state` before this pass landed (2026-09-08T17:55Z) went up
+   unredacted. What it carried was home paths, with no token-shaped string
+   found in a 90.7 MB sample scanned against `lib/redact.sh`'s own pattern
+   set. Every node branch tip has been redacted since the fleet rolled onto
+   a post-fix image (all four `nodes/*` branches, by 2026-09-11T02:10Z). The
+   owner accepted the resulting unreachable-object GC tail on 2026-09-11 and
+   declined a purge, a GitHub Support ticket, a history rewrite, or
+   credential rotation (agent-ops#1298). `main`, the repository's one
+   append-only ref, was verified to carry nothing sensitive.
+
    **Mirror integrity.** Before either mode below touches the mirror,
    `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
    trust a bare directory check used to hand it for free: a host whose disk
