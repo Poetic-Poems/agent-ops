@@ -479,6 +479,57 @@ assert_eq "git-credential for an owner named by neither degrades to the PAT" \
 unset PULLWRIGHT_AUTHOR_INSTALLATION_IDS PULLWRIGHT_AUTHOR_INSTALLATION_ID
 clear_author_env
 
+# === gh_shim_identity after gh_shim_resolve_token: a minted token is named
+#     by its installation, everything else by its own hash (agent-ops#1422) ==
+#
+# An installation token rotates hourly. Were the identity its hash, every
+# rotation would open a fresh cache and a fresh budget reading for the same
+# installation — 484 identities on one node in two days, no conditional read
+# ever hitting across a rotation. So a token this seam minted is tagged
+# `app-<app id>-<installation id>`; a credential it did not mint (the PAT it
+# degraded to, or a caller's own GH_TOKEN) keeps the hash.
+identity_after() {  # [ENV_ASSIGNS...] -- ARGS...
+  local -a env_assigns=()
+  while [[ "$1" != "--" ]]; do env_assigns+=("$1"); shift; done
+  shift
+  # shellcheck disable=SC2016  # the inner script's own expansions, deliberately not this shell's
+  ( cd "$no_repo_dir" && env "${env_assigns[@]}" bash -c '
+      . "$1/lib/gh-shim.sh"; shift
+      gh_shim_resolve_token "$@"
+      gh_shim_identity' _ "$SCRIPT_DIR" "$@" )
+}
+setup_map_env 882110044
+rm -f "$cache_dir"/* "$log_dir"/*.log "$tmp_dir/curl_calls"
+id_first="$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R acme-org/widgets pr view 5)"
+assert_eq "a minted token's identity is its App and installation, not a hash of the token" \
+  "app-7710033-111111111" "$id_first"
+rm -f "$cache_dir"/*   # the cached mint gone, the next call mints afresh
+id_again="$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now_past_expiry" \
+  -- -R acme-org/widgets pr view 5)"
+assert_eq "…and a fresh mint for the same installation keeps that identity" \
+  "$id_first" "$id_again"
+assert_eq "…while the other installation is its own identity" \
+  "app-7710033-222222222" "$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+    -- -R other-org/widgets pr view 5)"
+assert_eq "…and an invocation naming no owner is the scalar default's" \
+  "app-7710033-882110044" "$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+    -- api rate_limit)"
+assert_eq "…and an unmapped owner, with a scalar default to fall back to, is the default's" \
+  "app-7710033-882110044" "$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+    -- -R third-org/widgets pr view 5)"
+setup_map_env   # no scalar default: an unmapped owner now degrades to the PAT
+id_pat="$(identity_after GH_TOKEN= PW_GH_DEGRADE_TOKEN=ghp_the_owner_pat PW_GH_NOW_EPOCH="$now0" \
+  -- -R third-org/widgets pr view 5)"
+assert_eq "the PAT the seam degrades to for an unmapped owner is hashed, never App-tagged" \
+  "yes" "$([[ "$id_pat" =~ ^[0-9a-f]{16}$ ]] && echo yes || echo no)"
+id_own="$(identity_after GH_TOKEN=approver_own_token PW_GH_NOW_EPOCH="$now0" \
+  -- -R acme-org/widgets pr view 5)"
+assert_eq "a caller's own GH_TOKEN is hashed too, even for a mapped owner" \
+  "yes" "$([[ "$id_own" =~ ^[0-9a-f]{16}$ && "$id_own" != "$id_pat" ]] && echo yes || echo no)"
+unset PULLWRIGHT_AUTHOR_INSTALLATION_IDS PULLWRIGHT_AUTHOR_INSTALLATION_ID
+clear_author_env
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'
