@@ -18,7 +18,23 @@ name: Closing keyword check
 #
 # Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
 # runs with write-scoped secrets, and ungated by `paths:` — the body can be
-# edited without touching any file.
+# edited without touching any file. `issues: read` (below) is safe under the
+# same guarantee: GitHub forces a `pull_request` run from a fork to a
+# read-only token regardless of what this file requests, so declaring it
+# grants nothing extra there — it only lifts the same-repo case from
+# `contents: read`'s implicit no-access default.
+#
+# A second, independent gap this also gates (issue #1363): a pull request
+# closing a `pw::type:tech-debt` issue whose body names a permanent register
+# file (a final "Filed as `tech-debt/<id>.md`, <date>." line — #1039's
+# migration, or an earlier direct filing) must flip that file's frontmatter
+# to `status: resolved` in the same diff. PR #1355's first round is the
+# concrete miss this closes: issue closed, the file left at `status: open`
+# on `main` until a later round caught it by hand. `scripts/check-closing-
+# keyword.sh` fetches the closed issue (`issues: read`) and this pull
+# request's own changed-files listing (`gh api …/pulls/<n>/files`, gated by
+# `pull-requests: read` — a distinct scope from `contents`, since it reads
+# through the API rather than the checkout) to check it.
 
 on:
   pull_request:
@@ -27,6 +43,8 @@ on:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
   closing-keyword:
@@ -42,6 +60,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check closing keyword
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_HEAD_BRANCH: ${{ github.head_ref }}
-        run: scripts/check-closing-keyword.sh "$PR_BODY" "$PR_HEAD_BRANCH"
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/check-closing-keyword.sh "$PR_BODY" "$PR_HEAD_BRANCH" "$PR_REPO" "$PR_NUMBER"

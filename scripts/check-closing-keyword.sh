@@ -35,15 +35,47 @@
 # source with nothing to close (register-hygiene, security, project-review,
 # …), and passes.
 #
-# Usage: check-closing-keyword.sh <pr-body-text> [<head-branch>]
-# Exit 0: nothing claims an issue, or every claim has its closing keyword.
-# Exit 1: a marker with no matching closing keyword, or an `agent/<N>`
-#   branch missing the marker or the keyword — printing why.
+# A second, independent gap (issue #1363): a `pw::type:tech-debt` issue
+# migrated by #1039 (or filed directly) can name a permanent register file in
+# its own body — a final line reading "Filed as `tech-debt/<id>.md`, <date>."
+# (`scripts/migrate-tech-debt-register.sh`, `TECH-DEBT.md` "Resolution and
+# history"). The pull request that closes such an issue must, in the same
+# diff, flip that file's frontmatter to `status: resolved`
+# (`prompts/implementer.md`/`prompts/reviewer.md`, TECH-DEBT.md "Claiming an
+# item" step 6) — but nothing before this checked it mechanically. PR #1355's
+# first round is the concrete miss: issue closed, `status: open` left behind,
+# wrong on `main` until a later round caught it by hand. Given a repo slug
+# and this PR's own number (both optional — omitting either just skips this
+# half, preserving every caller that predates it), this fetches each closed
+# issue named by the marker/keyword resolution above, and where its body's
+# last non-blank line has that "Filed as" shape and it carries
+# `pw::type:tech-debt`, requires this PR's own diff (`gh api …/pulls/<n>/files`)
+# to add a `status: resolved` line to the record file it names.
+#
+# A `gh` call that fails outright (the token, a transient outage) is not
+# turned into a failure of this check — the existing marker/keyword logic
+# above never depended on the network, and making the record-flip half do so
+# risks failing a PR over GitHub's own availability rather than over anything
+# it did wrong. It warns to stderr and moves on; only a positive reading of
+# the issue and the diff decides pass or fail here.
+#
+# Usage: check-closing-keyword.sh <pr-body-text> [<head-branch>] [<repo-slug>] [<pr-number>]
+# Exit 0: nothing claims an issue, or every claim has its closing keyword and
+#   (where applicable) its tech-debt record correctly flipped.
+# Exit 1: a marker with no matching closing keyword, an `agent/<N>` branch
+#   missing the marker or the keyword, or a named tech-debt record this PR's
+#   diff does not flip to `status: resolved` — printing why in each case.
+#
+# GH overrides the `gh` binary, for tests.
 
 set -uo pipefail
 
+GH="${GH:-gh}"
+
 body="${1:-}"
 head_branch="${2:-}"
+repo_slug="${3:-}"
+pr_number="${4:-}"
 
 # Every marker this PR body carries, one item number per line. A PR could in
 # principle carry more than one (unusual, but the check must not silently
@@ -84,5 +116,43 @@ for item in "${items[@]}"; do
     status=1
   fi
 done
+
+# --- the tech-debt record-flip check (issue #1363) --------------------------
+if [[ -n "$repo_slug" && -n "$pr_number" ]]; then
+  mapfile -t unique_items < <(printf '%s\n' "${items[@]}" | grep -v '^$' | sort -un)
+  for item in "${unique_items[@]:-}"; do
+    [[ -n "$item" ]] || continue
+
+    issue_json="$("$GH" issue view "$item" -R "$repo_slug" --json body,labels 2>/dev/null)" || issue_json=""
+    if [[ -z "$issue_json" ]]; then
+      echo "::warning::could not read issue #${item} to check for a tech-debt \"Filed as\" record — skipping the record-flip check for it" >&2
+      continue
+    fi
+
+    is_tech_debt="$(jq -r '(.labels // []) | any(.name == "pw::type:tech-debt")' <<<"$issue_json" 2>/dev/null)"
+    [[ "$is_tech_debt" == "true" ]] || continue
+
+    issue_body="$(jq -r '.body // ""' <<<"$issue_json" 2>/dev/null)"
+    # The last non-blank line, ignoring any trailing blank lines the body ends
+    # with — the same "final line" #1039's migration and TECH-DEBT.md mean.
+    last_line="$(awk 'NF{line=$0} END{print line}' <<<"$issue_body")"
+    [[ "$last_line" =~ ^Filed\ as\ \`(tech-debt/[^\`]+\.md)\`,\  ]] || continue
+    record_path="${BASH_REMATCH[1]}"
+
+    files_json="$("$GH" api "repos/$repo_slug/pulls/$pr_number/files" --paginate --slurp 2>/dev/null \
+      | jq -c 'add // []' 2>/dev/null)"
+    [[ -n "$files_json" ]] || files_json='[]'
+    patch="$(jq -r --arg p "$record_path" \
+      'map(select(.filename == $p)) | (.[0].patch // "")' <<<"$files_json" 2>/dev/null)"
+
+    if [[ -z "$patch" ]]; then
+      echo "::error::issue #${item} names ${record_path} (its body's \"Filed as\" line) but this pull request's diff does not touch that file — closing the issue must also flip its frontmatter to status: resolved (TECH-DEBT.md \"Claiming an item\" step 6)" >&2
+      status=1
+    elif ! grep -qE '^\+status:[[:space:]]*resolved[[:space:]]*$' <<<"$patch"; then
+      echo "::error::issue #${item} names ${record_path} (its body's \"Filed as\" line) but this pull request's diff does not set its frontmatter status: to resolved" >&2
+      status=1
+    fi
+  done
+fi
 
 exit "$status"
