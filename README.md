@@ -2770,8 +2770,11 @@ into groups that each finish comfortably inside that ceiling, and run
 unbounded call over the whole thing.
 
 That copies the working tree into a throwaway container built from the image
-and runs the suite there. It takes a few minutes, and it is worth them: the
-tests will *start* anywhere and only *pass* in the environment CI uses, and
+and runs the suite there. Budget half an hour or more — CI runs the identical
+loop inside the same image in about 20 minutes per architecture, and a
+developer host is usually slower still, so a run that looks stuck probably is
+not. It is worth the wait: the tests will
+*start* anywhere and only *pass* in the environment CI uses, and
 both ways of getting that wrong produce failures on an untouched `main` that
 read as a broken branch rather than a broken invocation.
 

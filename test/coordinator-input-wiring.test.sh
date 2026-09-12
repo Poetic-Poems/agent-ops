@@ -345,7 +345,14 @@ assert_eq "a cycle that needed no trimming logs nothing" "" "$(cat "$events")"
 # there is nothing for the ladder to shed and the warning has to say so rather
 # than reading as the bound being switched off.
 repos_hopeless="$(mk_repos 40 6000 6 6000)"
-run_fit 1 "$repos_hopeless" >/dev/null
+# Captured to a file rather than discarded: the assertions below through
+# n_hopeless all read this one fitted cycle (both its events and its byte
+# count), so a second `run_fit 1 "$repos_hopeless"` later just to get the byte
+# count back would re-walk the same ladder over the same 1.7 MB fixture for no
+# new coverage — the file lets one direct call (not a `$(...)` subshell, so
+# the globals the lifted fit block sets stay visible to the assertions below,
+# same as before) serve both.
+run_fit 1 "$repos_hopeless" > "$tmp_dir/hopeless.out"
 assert_ok "a maximum the prompt text alone exceeds logs a warning" \
   "$(( $(grep -c '^warning' "$events") >= 1 ))"
 assert_true "the warning names the maximum it could not work inside" \
@@ -367,7 +374,7 @@ assert_eq "…and still sheds, rather than sending the array whole" \
   "1" "$(grep -c '^coordinator-input-fitted' "$events")"
 assert_true "…down to the ladder's last rung, which reports it does not fit" \
   "$(grep '^coordinator-input-fitted' "$events" | cut -f2- | jq -e '.fits == false' >/dev/null && echo true || echo false)"
-n_hopeless="$(run_fit 1 "$repos_hopeless")"
+n_hopeless="$(cat "$tmp_dir/hopeless.out")"
 n_unbounded="$(run_fit 0 "$repos_hopeless")"
 assert_ok "…so a hopeless bound sends strictly less than no bound at all" \
   "$(( n_hopeless < n_unbounded ))"

@@ -236,6 +236,18 @@ jobs:
             cache-scope: arm64
     runs-on: ${{ matrix.runner }}
 
+    # The `test/` suite is the bulk of this job and takes ~20 minutes per
+    # architecture inside the image (this workflow's own run history is the
+    # measurement — README.md's "Running the tests" figure is a developer
+    # host's, and slower); the image build and the toolchain/crontab/stamp
+    # checks around it add the rest. 90 minutes is deliberately generous
+    # margin over that, because the point of the bound is not to grade a slow
+    # run but to stop falling back to Actions' implicit 6-hour job timeout —
+    # a hung test (this suite exercises real signal/process-group handling
+    # with background `sleep` stand-ins) would otherwise spin, unexplained,
+    # for hours before anyone noticed.
+    timeout-minutes: 90
+
     # Resolved once here and read by every step's `if:` below, so the rule is
     # stated in one place rather than nine. Only an explicit "yes" skips: a
     # `changes` job that failed rather than answered leaves this empty, which
@@ -358,11 +370,11 @@ jobs:
           docker run --rm agent-ops:ci bash -lc '
             failed=0
             for t in /app/test/*.test.sh; do
-              if bash "$t" > /tmp/out 2>&1; then
+              if out="$(timeout 600 bash "$t" 2>&1)"; then
                 echo "PASS $(basename "$t")"
               else
                 echo "FAIL $(basename "$t")"
-                cat /tmp/out
+                printf "%s\n" "$out"
                 failed=1
               fi
             done

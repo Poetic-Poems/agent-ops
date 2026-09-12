@@ -1122,8 +1122,23 @@ assert_eq "bulk spend total counts every envelope" \
 
 # --- The launcher's exit status --------------------------------------------------
 # A shortened window (LAUNCHER_WINDOW) runs one real tick and stops; five
-# minutes of wall clock is the one thing a test may not spend.
-env HOME="$a" LAUNCHER_WINDOW=15 "$LAUNCHER" >/dev/null 2>&1
+# minutes of wall clock is the one thing a test may not spend. Both ticks
+# below are genuine: the real launcher wraps the real publish-dashboard.sh,
+# unstubbed — what is asserted is the launcher's own exit code and its
+# lock-skip logging, neither of which depends on what a GitHub fetch answers,
+# so `DASHBOARD_GH_CMD` points at a stand-in that fails every call at once
+# rather than reaching the network. Without it, "$a"'s real config.json (this
+# repo's own, real repos and a real state_repo) sends the real publish on a
+# real fetch — several seconds to many minutes depending on the host's GitHub
+# reachability and rate limits — to answer a question this section never asks.
+launcher_gh_stub="$tmp_dir/launcher-gh-stub.sh"
+cat > "$launcher_gh_stub" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$launcher_gh_stub"
+
+env HOME="$a" LAUNCHER_WINDOW=15 DASHBOARD_GH_CMD="$launcher_gh_stub" "$LAUNCHER" >/dev/null 2>&1
 assert_eq "launcher exits 0 on a healthy window" "0" "$?"
 
 # And with the lock already held: every tick skips (exit 111 inside), which
@@ -1133,7 +1148,7 @@ log="$a/.local/state/poetic-agents/dashboard.log"
 : > "$log"
 flock "$lck" sleep 30 &
 holder=$!
-env HOME="$a" LAUNCHER_WINDOW=15 "$LAUNCHER" >/dev/null 2>&1
+env HOME="$a" LAUNCHER_WINDOW=15 DASHBOARD_GH_CMD="$launcher_gh_stub" "$LAUNCHER" >/dev/null 2>&1
 rc=$?
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 assert_eq "launcher exits 0 while another publish holds the lock" "0" "$rc"
@@ -1324,7 +1339,23 @@ assert_eq "and they stay on the 5-second cadence" "1" "$(( $(min_gap) <= 6 ))"
 
 # An expensive tick earns a backoff proportional to what it cost: 1s at 1:9 owes
 # at least 9 seconds of idle before the next tick may start.
-run_paced 30 1 9
+#
+# 40 seconds, not 30, because a 30-second window cannot always fit the second
+# tick this asserts on — it raced, and lost on CI's arm64 leg during the review
+# of agent-ops#1383. The arithmetic: the loop admits a tick only while
+# `EPOCHSECONDS < endat - tick_margin` and re-checks `endat - reserve_s` (both
+# `startat + 20` at this window size, `tick_margin` and the unmeasured
+# `local_cost_s` floor being 10 apiece). Tick one starts on the first 5-second
+# boundary, so anywhere in `startat + 1..5`; it costs ~1.05s and earns
+# ~9.45s of backoff; and the boundary alignment at the top of iteration two
+# adds another 1..5s. That puts tick two's start anywhere in
+# `startat + 12.5..20.5` — and the top of that range is past the bound, for no
+# reason to do with how loaded the box is. Widening the window moves the bound
+# to `startat + 30` and leaves the same range 10 seconds of headroom, without
+# touching the backoff being measured: `min_gap` below still reads the ~10.5s
+# gap the 1:9 duty ratio produces, because the clamp that could shorten it
+# (`max_next_tick_ms`) is looser here, not tighter.
+run_paced 40 1 9
 assert_eq "an expensive tick is followed by a real backoff" "1" "$(( $(grep -c . "$pace_log") >= 2 ))"
 assert_eq "and the backoff is proportional to its cost" "1" "$(( $(min_gap) >= 9 ))"
 assert_contains "the cost and the backoff are logged, not left to top" "pacing: tick cost" \

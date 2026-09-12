@@ -665,6 +665,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A hung test in CI now fails in ten minutes instead of spinning for six
+  hours, and the nine slowest test files spawn far fewer real subprocesses**
+  (agent-ops#969). `.github/workflows/build-image.yml`'s test-suite loop
+  carries the same per-test `timeout 600` `scripts/run-tests.sh` has always
+  applied, and its build job carries `timeout-minutes: 90`; between them, the
+  one environment that actually gates a merge stops relying on Actions'
+  implicit six-hour default — the gap that would have let a watchdog-kill
+  regression sit as an unexplained, spinning step. The nine runtime outliers
+  the item named now reach the same assertions through fewer real entry-point
+  invocations: `doctor.test.sh`, `toggle.test.sh`, `config-schema.test.sh`,
+  `review-claim.test.sh` and `state-sync.test.sh` consolidate fixtures that
+  differed only in configuration into single multi-repository runs (or, for
+  `config-schema.test.sh`, reuse a prior run's output for a byte-identical
+  fixture), `toggle.test.sh` writes state directly through `lib/toggle.sh`
+  where a `run_node` call was pure setup for a later assertion, and
+  `coordinator-input-wiring.test.sh` drops one re-invocation that recomputed
+  a byte count it already had. Every file keeps at least one genuine
+  subprocess-based assertion; `review-not-before.test.sh` and `role.test.sh`
+  are unchanged, each of their invocations having been confirmed to prove a
+  distinct branch. Two of those files were also making real, unstubbed `gh`
+  calls against this repository's own live GitHub state —
+  `publish-dashboard.test.sh`'s launcher-exit-status section and
+  `state-sync.test.sh`'s `--disable`/`--enable` pair, both now pointed at the
+  existing `DASHBOARD_GH_CMD` seam. README.md's "Running the tests" states
+  what a full run actually costs, measured against CI's own history rather
+  than a developer host's.
+
 - **`san()`, `expand_home`/`cfg`/`cfg_json`, and `log_event`'s envelope logic
   are each defined once instead of copy-pasted** (agent-ops#967). `san()`
   (the claim-path sanitizer) now lives in `lib/claim-key.sh`, sourced by

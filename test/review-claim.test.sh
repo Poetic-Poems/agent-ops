@@ -9,6 +9,18 @@
 # implementation pipeline fixed in its own workspace path (#55) must not be
 # reintroduced here.
 #
+# All three outcomes run inside a single real review-cycle.sh invocation
+# (issue #969): review-cycle.sh processes every configured repository in one
+# pass (R6's usage-limit re-check between repos assumes exactly that), so
+# three synthetic repositories — one pre-claimed by another node, one whose
+# claim can never reach GitHub, one that wins its claim and then fails to
+# clone — exercise all three outcomes while paying this file's dominant cost
+# (sourcing every lib/*.sh review-cycle.sh sources, regardless of what is
+# tested) exactly once instead of three times. The one CLAIM_GH stub tells
+# the three apart by the target slug in the path it is called with, which is
+# the same seam each scenario always keyed off — nothing here removes an
+# assertion, only reads it off a shared run.
+#
 # Offline throughout: `gh` and `claude` on PATH fail fast (the skip-guards
 # degrade to "proceed", no model ever runs), `CLONE_GIT=/bin/false` fails the
 # clone, the claim goes through CLAIM_GH to the same filesystem-CAS stub
@@ -61,6 +73,13 @@ assert_contains() {
   fi
 }
 
+# --- The three synthetic repositories, one per claim outcome ------------------
+slug_lost="test/lost-repo"     # pre-claimed by another node -> claim_rc=3
+slug_err="test/error-repo"     # every call on this slug fails -> claim_rc=1
+slug_won="test/won-repo"       # claims cleanly, then its clone fails
+safe_lost="${slug_lost//\//_}"
+safe_won="${slug_won//\//_}"
+
 # --- The stub gh for CLAIM_GH (same filesystem CAS as test/claim.test.sh) -----
 stub_bin="$tmp_dir/claim-bin"
 mkdir -p "$stub_bin"
@@ -82,6 +101,14 @@ for (( i=0; i<${#args[@]}; i++ )); do
     repos/*) path="${args[i]}" ;;
   esac
 done
+
+# GH_STUB_ERROR_SLUG (the test's $slug_err) needs every call to fail
+# outright — a claim that cannot reach GitHub at all, not one that reaches
+# it and loses (that is $slug_lost, below, via the ordinary create-only CAS
+# logic). Read from the environment like GH_STUB_DIR above, so this stub
+# stays a single-quoted here-document: nothing in it is expanded by the
+# test's own shell, which is what keeps its every $ safe to write plainly.
+[[ -n "${GH_STUB_ERROR_SLUG:-}" && "$path" == *"repos/$GH_STUB_ERROR_SLUG/"* ]] && exit 1
 
 emit() {
   if [[ -n "$jqf" ]]; then jq -r "$jqf" <<<"$1"; else printf '%s\n' "$1"; fi
@@ -145,76 +172,70 @@ git init --quiet --bare --initial-branch=main "$state_remote"
 
 review_date="$(date -u +%Y-%m-%d)"
 
-# The shipped config with any dated stand-down removed — both the default
-# and any per-repo override. `not_before` (R3.3) is an operational value
-# that comes and goes at either level, and every assertion in this file is
-# about what happens *after* the stand-down checks — so a date set for real
-# reasons must not quietly decide whether this file tests anything.
+# The shipped config with any dated stand-down removed (both the default and
+# any per-repo override — `not_before` (R3.3) is operational and must not
+# quietly decide whether this file tests anything), and `project_review.repos`
+# replaced outright by the three synthetic entries above: an entry carrying
+# only `slug` inherits every other setting from `project_review.defaults`
+# (requirement 342), so nothing else needs restating per repository.
 claim_config="$tmp_dir/config.json"
-jq 'del(.project_review.defaults.not_before) | .project_review.repos |= map(del(.not_before))' \
+jq --arg lost "$slug_lost" --arg err "$slug_err" --arg won "$slug_won" \
+  'del(.project_review.defaults.not_before)
+   | .project_review.repos = [{slug: $lost}, {slug: $err}, {slug: $won}]' \
   "$SCRIPT_DIR/config.json" > "$claim_config"
-
-run_review() {  # run_review <home> <claim-gh> [env…] — real review-cycle.sh, offline
-  local home="$1" claim_gh="$2"; shift 2
-  mkdir -p "$home/.local/state/poetic-agents" "$home/.cache/poetic-agents/workspaces"
-  env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
-    PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false \
-    CLAIM_GH="$claim_gh" GH_STUB_DIR="$GH_STUB_DIR" \
-    CLONE_GIT=/bin/false \
-    AGENT_OPS_CONFIG="$claim_config" \
-    STATE_SYNC_REMOTE="$state_remote" \
-    GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" "$@" \
-    "$REVIEW" --repo poetic >/dev/null 2>&1
-}
 
 export GH_STUB_DIR="$tmp_dir/gh-state"
 mkdir -p "$GH_STUB_DIR"
 
+# $slug_lost's review branch is pre-claimed by another node, at a different
+# sha, so this node's own claim on it must lose.
+mkdir -p "$GH_STUB_DIR/refs/$slug_lost/review"
+printf 'othersha00' > "$GH_STUB_DIR/refs/$slug_lost/review/$review_date"
+
+home="$tmp_dir/node"
+mkdir -p "$home/.local/state/poetic-agents" "$home/.cache/poetic-agents/workspaces"
+env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
+  PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false \
+  CLAIM_GH="$stub_bin/gh" GH_STUB_DIR="$GH_STUB_DIR" GH_STUB_ERROR_SLUG="$slug_err" \
+  CLONE_GIT=/bin/false \
+  AGENT_OPS_CONFIG="$claim_config" \
+  STATE_SYNC_REMOTE="$state_remote" \
+  GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" \
+  "$REVIEW" >/dev/null 2>&1
+rc=$?
+log="$(cat "$home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
+
 # --- A lost claim skips the repo before anything is cloned --------------------
 
-mkdir -p "$GH_STUB_DIR/refs/Poetic-Poems/poetic/review"
-printf 'othersha00' > "$GH_STUB_DIR/refs/Poetic-Poems/poetic/review/$review_date"
-
-lost_home="$tmp_dir/node-lost"
-run_review "$lost_home" "$stub_bin/gh"
-assert_eq "a lost claim exits cleanly" "0" "$?"
-lost_log="$(cat "$lost_home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
-assert_contains "a lost claim logs review-skipped" '"event":"review-skipped"' "$lost_log"
+assert_eq "a lost claim exits cleanly" "0" "$rc"
+assert_contains "a lost claim logs review-skipped" '"event":"review-skipped"' "$log"
 assert_contains "naming the branch and the other node" \
-  "review branch review/$review_date is already claimed by another node" "$lost_log"
+  "review branch review/$review_date is already claimed by another node" "$log"
 assert_eq "nothing was cloned" "0" \
-  "$(find "$lost_home/.cache/poetic-agents/workspaces" -mindepth 1 -maxdepth 1 -name '[!.]*' 2>/dev/null | wc -l)"
-assert_eq "no clone was even attempted" "0" \
-  "$(find "$lost_home/.local/state/poetic-agents/reviews" -name 'clone-*.err' 2>/dev/null | wc -l)"
+  "$(find "$home/.cache/poetic-agents/workspaces" -mindepth 1 -maxdepth 1 -name '[!.]*' 2>/dev/null | wc -l)"
+assert_eq "no clone was even attempted for the lost repo" "0" \
+  "$(find "$home/.local/state/poetic-agents/reviews" -name "clone-$safe_lost.err" 2>/dev/null | wc -l)"
 assert_eq "the other node's claim ref is untouched" "othersha00" \
-  "$(cat "$GH_STUB_DIR/refs/Poetic-Poems/poetic/review/$review_date")"
+  "$(cat "$GH_STUB_DIR/refs/$slug_lost/review/$review_date")"
 
 # --- A claim error also skips, fail closed ------------------------------------
 
-err_home="$tmp_dir/node-err"
-run_review "$err_home" /bin/false
-assert_eq "a claim error exits cleanly" "0" "$?"
-err_log="$(cat "$err_home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
-assert_contains "a claim error logs review-skipped" '"event":"review-skipped"' "$err_log"
-assert_contains "and says it failed closed" "standing this repo down, fail closed" "$err_log"
+assert_eq "a claim error exits cleanly" "0" "$rc"
+assert_contains "a claim error logs review-skipped" '"event":"review-skipped"' "$log"
+assert_contains "and says it failed closed" "standing this repo down, fail closed" "$log"
 assert_eq "nothing was cloned there either" "0" \
-  "$(find "$err_home/.cache/poetic-agents/workspaces" -mindepth 1 -maxdepth 1 -name '[!.]*' 2>/dev/null | wc -l)"
+  "$(find "$home/.cache/poetic-agents/workspaces" -mindepth 1 -maxdepth 1 -name '[!.]*' 2>/dev/null | wc -l)"
 
 # --- A won claim proceeds, and a failed clone releases it ----------------------
 
-rm -f "$GH_STUB_DIR/refs/Poetic-Poems/poetic/review/$review_date"
-
-won_home="$tmp_dir/node-won"
-run_review "$won_home" "$stub_bin/gh"
-assert_eq "a won claim's run exits cleanly" "0" "$?"
-won_log="$(cat "$won_home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
+assert_eq "a won claim's run exits cleanly" "0" "$rc"
 assert_contains "the clone failure is the recorded outcome, not the claim" \
-  '"stage":"workspace"' "$won_log"
+  '"stage":"workspace"' "$log"
 assert_eq "the failed clone released the claim ref (unmoved, PR-less)" "0" \
-  "$(test -f "$GH_STUB_DIR/refs/Poetic-Poems/poetic/review/$review_date" && echo 1 || echo 0)"
+  "$(test -f "$GH_STUB_DIR/refs/$slug_won/review/$review_date" && echo 1 || echo 0)"
 assert_eq "and dropped the registry entry" "0" \
   "$(find "$GH_STUB_DIR/contents/claims" -type f 2>/dev/null | wc -l)"
-claim_log="$(cat "$won_home"/.local/state/poetic-agents/reviews/*/claim-Poetic-Poems_poetic.log 2>/dev/null)"
+claim_log="$(cat "$home"/.local/state/poetic-agents/reviews/*/claim-"$safe_won".log 2>/dev/null)"
 assert_contains "the claim log shows the win" "claim" "$claim_log"
 
 printf '\n'
