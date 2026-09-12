@@ -75,7 +75,9 @@
 #
 # Sourced, never executed: this file sets no shell options, because
 # agent-cycle.sh runs under `set -euo pipefail`. `preflight_done_reason`
-# depends on `work_gone_clearances` (lib/work-gone.sh), sourced first.
+# depends on `work_gone_clearances` (lib/work-gone.sh), sourced first;
+# `preflight_review_feedback_reason` likewise depends on `handoff_latest_
+# positions` (lib/handoff.sh), also sourced first.
 
 # The four sources whose branch (and PR) already existed before this cycle's
 # claim — the Implementer prompt's own "the branch and the PR exist" sources.
@@ -172,12 +174,18 @@ PREFLIGHT_REVIEW_FEEDBACK_ITEM_RE='^pr-([0-9]+)-review-([0-9]+)$'
 
 # preflight_review_feedback_reason SLUG ITEM — the review-feedback item's own
 # blocking review has been superseded: re-fetch the pull request's reviews and
-# recompute "the review currently blocking" exactly as `gather-review-
-# feedback.sh` does when deciding whether to offer the candidate at all (the
-# same standing-position-per-reviewer rule, deliberately without
-# `_handoff_blocking_reviewers`'s bot filter — see that script's own comment
-# on why a bot's `APPROVED` must count here). ITEM is the claimed item's own
-# ref; anything not shaped like `pr-<n>-review-<id>` decides nothing.
+# recompute "the review currently blocking" via `lib/handoff.sh`'s
+# `handoff_latest_positions` exactly as `gather-review-feedback.sh` does when
+# deciding whether to offer the candidate at all (requirement 34a's one
+# shared definition, called here without a bot filter, same as there — see
+# that function's own comment on why a bot's `APPROVED` must count here).
+# ITEM is the claimed item's own ref; anything not shaped like
+# `pr-<n>-review-<id>` decides nothing.
+#
+# Depends on `lib/handoff.sh` being sourced first, same as `preflight_done_
+# reason` depends on `lib/work-gone.sh` (see this file's own header) — true
+# of every real caller (agent-cycle.sh sources handoff.sh well before this
+# file) and of test/preflight.test.sh, which sources it for the same reason.
 #
 # Environment: PREFLIGHT_GH overrides `gh` (tests stub it).
 #
@@ -185,7 +193,7 @@ PREFLIGHT_REVIEW_FEEDBACK_ITEM_RE='^pr-([0-9]+)-review-([0-9]+)$'
 # function cannot parse, decides nothing — the same direction every other
 # signal here already fails safe in.
 preflight_review_feedback_reason() {
-  local slug="$1" item="$2" gh="${PREFLIGHT_GH:-gh}" number review_id reviews
+  local slug="$1" item="$2" gh="${PREFLIGHT_GH:-gh}" number review_id reviews latest_per_reviewer
   [[ -n "$slug" && -n "$item" ]] || return 0
   [[ "$item" =~ $PREFLIGHT_REVIEW_FEEDBACK_ITEM_RE ]] || return 0
   number="${BASH_REMATCH[1]}"
@@ -198,12 +206,12 @@ preflight_review_feedback_reason() {
   reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)" || return 0
   jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || return 0
 
+  latest_per_reviewer="$(handoff_latest_positions "$reviews" "who")" || return 0
+
   jq -r --arg rid "$review_id" '
-    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-     | group_by(.who) | map(last)) as $latest_per_reviewer
-    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) as $blocking
+    (map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) as $blocking
     | if $blocking == null then "the review no longer blocks the pull request"
       elif ($blocking.id | tostring) != $rid
       then "the review no longer blocks the pull request"
-      else "" end' <<<"$reviews" 2>/dev/null || true
+      else "" end' <<<"$latest_per_reviewer" 2>/dev/null || true
 }

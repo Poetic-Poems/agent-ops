@@ -12,7 +12,9 @@
 # `preflight_done_reason`'s answer. `preflight_branch_merged_reason` is the
 # other, impure, done-signal — one live `gh api compare` call, stubbed below —
 # and `preflight_existing_branch_source` is the gate that gh call is never
-# reached without.
+# reached without. `preflight_review_feedback_reason` is the third, and
+# reuses `lib/handoff.sh`'s `handoff_latest_positions` (issue #1373,
+# requirement 34a), hence sourcing that file below too.
 #
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
@@ -26,6 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 # shellcheck source=lib/preflight.sh
 . "$SCRIPT_DIR/lib/preflight.sh"
 

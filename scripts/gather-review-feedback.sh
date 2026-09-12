@@ -274,23 +274,24 @@ while IFS= read -r pr; do
 
   # The review currently blocking `reviewDecision`: the most recent
   # CHANGES_REQUESTED review among each reviewer's own most recent
-  # APPROVED-or-CHANGES_REQUESTED review — the same "standing position per
-  # reviewer" computation as lib/handoff.sh's `_handoff_blocking_reviewers`,
-  # minus — deliberately — its bot filter (requirement 34a). Candidate
-  # selection keys off GitHub's `reviewDecision`, which counts bot reviews,
-  # and the marked reply this round produces is the only event that can ever
-  # answer a bot's CHANGES_REQUESTED: the pipeline cannot dismiss a review on
-  # its own PR, and handoff never re-requests a bot. Bots are excluded from
-  # re-request, not from feedback — their findings still reach the
-  # Implementer; nobody is ever pinged over them. A COMMENTED review never
-  # changes anyone's standing position, so it is filtered out *before*
-  # picking each reviewer's latest, not after — a reviewer who requested
-  # changes and then merely commented is still blocking.
+  # APPROVED-or-CHANGES_REQUESTED review — `lib/handoff.sh`'s
+  # `handoff_latest_positions`, the one "standing position per reviewer"
+  # definition requirement 34a names, keyed on `who` (this script's own REST
+  # review shape) and deliberately called here without a bot filter — see
+  # that function's own comment for why. Candidate selection keys off
+  # GitHub's `reviewDecision`, which counts bot reviews, and the marked reply
+  # this round produces is the only event that can ever answer a bot's
+  # CHANGES_REQUESTED: the pipeline cannot dismiss a review on its own PR,
+  # and handoff never re-requests a bot. Bots are excluded from re-request,
+  # not from feedback — their findings still reach the Implementer; nobody
+  # is ever pinged over them. A COMMENTED review never changes anyone's
+  # standing position, so it is filtered out *before* picking each
+  # reviewer's latest, not after — a reviewer who requested changes and then
+  # merely commented is still blocking.
+  latest_per_reviewer="$(handoff_latest_positions "$reviews" "who")"
   blocking="$(jq -c '
-    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-     | group_by(.who) | map(last)) as $latest_per_reviewer
-    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
-  ' <<<"$reviews")"
+    (map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
+  ' <<<"$latest_per_reviewer")"
   [[ "$blocking" != "null" ]] || continue
   blocking_at="$(jq -r '.at' <<<"$blocking")"
 

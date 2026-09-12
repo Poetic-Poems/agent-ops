@@ -4867,20 +4867,28 @@ implements.
      the round already answered and finishes it properly. A legacy marked
      comment with no `actor=` field does not answer the round either, for the
      same reason.
-   - **The blocking review shares `_handoff_blocking_reviewers`'
-     standing-position rule but deliberately not its bot filter**
-     (requirement 34a): each reviewer's own most recent
-     APPROVED-or-CHANGES_REQUESTED review, filtered to CHANGES_REQUESTED,
-     latest across reviewers. A COMMENTED review never changes a reviewer's
-     standing position, so a human who requested changes and later left a
-     comment is still blocking. Bots count here and not in re-request:
-     `reviewDecision` — the selection filter — counts bots, and the marked
-     reply is the only event that can answer a bot's round, since the
-     pipeline can neither dismiss a review on its own PR nor (by design)
+   - **The blocking review is computed by `lib/handoff.sh`'s
+     `handoff_latest_positions`, the same standing-position-per-reviewer
+     definition `_handoff_blocking_reviewers` calls below — deliberately
+     without that caller's bot filter** (requirement 34a): each reviewer's own
+     most recent APPROVED-or-CHANGES_REQUESTED review, filtered to
+     CHANGES_REQUESTED, latest across reviewers. A COMMENTED review never
+     changes a reviewer's standing position, so a human who requested changes
+     and later left a comment is still blocking. Bots count here and not in
+     re-request: `reviewDecision` — the selection filter — counts bots, and
+     the marked reply is the only event that can answer a bot's round, since
+     the pipeline can neither dismiss a review on its own PR nor (by design)
      re-request a bot. Bot findings are addressed; bots are never pinged.
-     Stating the difference here, in both places, is requirement 34a's
-     point — an asserted-but-false equivalence is exactly the confident
-     wrong answer it exists to prevent.
+     `lib/preflight.sh`'s `preflight_review_feedback_reason` (3s, requirement
+     34m) calls the same function, the same way, when it re-checks this
+     source's own candidate rule at claim time — one jq definition, three
+     callers (this script, that preflight check, and `_handoff_blocking_
+     reviewers`/`_handoff_pr_approved` below), keyed on whichever
+     reviewer-identifying field its own review shape carries (`who` here and
+     in preflight, `login` over `_handoff_pr_query`'s GraphQL shape), each
+     filtering (or not) for bots before calling it rather than the function
+     doing so itself — issue #1373, since two copies of a rule cross-referenced
+     only by comment drift exactly as easily as no comment at all.
    - **Gather every review in the round, not just the blocking one.** The
      substance and the formal signal routinely live in different reviews by
      different accounts, precisely *because* an author cannot request changes on
@@ -13096,10 +13104,11 @@ implements.
     open throughout, so that clearance never fires for it. Run only for
     `review-feedback`, the one source whose item names a specific review:
     one live `gh api repos/<slug>/pulls/<n>/reviews` call, recomputing
-    "the review currently blocking" exactly as `scripts/gather-review-
-    feedback.sh` does when deciding whether to offer the candidate at all
-    (requirement 34a's one shared definition — the same standing-position-
-    per-reviewer rule, deliberately without a bot filter, since a bot
+    "the review currently blocking" via `lib/handoff.sh`'s `handoff_latest_
+    positions` — the same call `scripts/gather-review-feedback.sh` makes when
+    deciding whether to offer the candidate at all (requirement 34a's one
+    shared definition — the same standing-position-per-reviewer rule,
+    deliberately called without a bot filter here too, since a bot
     reviewer's own `APPROVED` is exactly the signal that answers its
     `CHANGES_REQUESTED` in the first place) — a hit is the ref's own review
     id no longer matching that recomputed blocking review, whether because
@@ -18312,11 +18321,15 @@ What exists, and the requirements each part answers to:
    use this check. `preflight_review_feedback_reason` is the third done-signal
    (requirement 34m, issue #1360), scoped to `review-feedback` items alone:
    one live `gh api pulls/<n>/reviews` call, recomputing the blocking review
-   the way `scripts/gather-review-feedback.sh` (3c) already does and voiding
+   via `lib/handoff.sh`'s `handoff_latest_positions` — the one
+   standing-position-per-reviewer definition `scripts/gather-review-
+   feedback.sh` (3c) also calls (requirement 34a, issue #1373) — and voiding
    when the item's own review id no longer names it. `preflight_done_reason`
    and `preflight_open_pr_reason` are pure — they read nothing themselves —
    sourced after `lib/work-gone.sh`, whose function `preflight_done_reason`
-   wraps. Unit-tested (`test/preflight.test.sh`); must pass `shellcheck`.
+   wraps, and after `lib/handoff.sh`, whose `handoff_latest_positions`
+   `preflight_review_feedback_reason` calls. Unit-tested
+   (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*`, `<branch_prefix>*` and
    `td-record/*` ref — the last unconditionally, never gated by
